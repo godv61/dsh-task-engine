@@ -326,7 +326,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
         <p>提交消息要求 <code>【模块】【TASK】做了什么</code>，且只提交任务 <code>files</code> 范围内的文件。要彻底封死模型绕过 <code>dev_task</code> 直接 <code>git commit</code>，给仓库装一道机械钩子：</p>
         <pre><code>dev_task operation=install_hook   # 装入 .git/hooks/commit-msg，装上后任何 git commit 都被同一套规则校验
 dev_task operation=verify_hook    # 随时比对安装钩子与内置门禁的 hash，被替换/篡改立即报错</code></pre>
-        <p><strong>钩子的额外硬校验（0.21/0.22）：</strong>① 任务记录的流程快照带 SHA-256 hash，被手改过的快照一律拒绝提交；② 触及敏感路径（<code>.env</code>、credentials、secrets、<code>.dsh</code>、<code>.git</code>）的提交，要求任务为 <code>high_risk</code> 且验证有真实命令回执，否则拒绝；③ 删除、类型变换、重命名的旧·新路径都受范围检查。</p>
+        <p><strong>钩子的额外硬校验（0.21/0.22）：</strong>① 任务记录的流程快照带 SHA-256 hash，被手改过的快照一律拒绝提交；② 触及敏感路径（<code>.env</code>、credentials、secrets、<code>.git</code>；<code>.dsh</code> 的任务记录与流程配置由快照 hash 与豁免保护，项目级 rules/skills 属常规内容）的提交，要求任务为 <code>high_risk</code> 且验证有真实命令回执，否则拒绝；③ 删除、类型变换、重命名的旧·新路径都受范围检查。</p>
         <p><strong>风险降级（0.22）：</strong><code>set_risk</code> 把 <code>high_risk</code> 降为 <code>standard</code> 必须人工批准，并写入任务的 <code>risk_downgrades</code> 审计记录；降级后高风险回执门不再适用，请谨慎。</p>
       </section>
 

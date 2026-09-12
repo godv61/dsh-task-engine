@@ -527,4 +527,12 @@ function memProbe(files) {
     'apply with the matching hash writes the file')
 }
 
+// ── 28. risk policy excludes project binding dirs ───────────────────────────
+{
+  const policy = project.DEFAULT_RISK_POLICY
+  assert(!policy.sensitive_paths.includes('.dsh'),
+    'project binding dir (.dsh/rules, .dsh/skills) stays committable by normal tasks')
+  assert(policy.sensitive_paths.includes('.env'), 'env files remain sensitive')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)
