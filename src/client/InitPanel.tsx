@@ -78,9 +78,9 @@ export function InitPanel({ workspace, remote }: {
     setDraft(r.value)
   }
 
-  const write = async (content: string): Promise<void> => {
+  const write = async (content: string, overwrite: boolean): Promise<void> => {
     setMsg('')
-    const r = await remote.writeInit({ path: workspace, content })
+    const r = await remote.writeInit({ path: workspace, content, overwrite })
     if (!r.ok) {
       setMsg('保存失败：' + describeError(r.error))
       return
@@ -147,7 +147,7 @@ export function InitPanel({ workspace, remote }: {
           createElement(Button, {
             variant: 'primary', size: 'md',
             disabled: draft.lines > 200,
-            onClick: () => { void write(draft.content) },
+            onClick: () => { if (exists && !window.confirm('确定覆盖现有 AGENTS.md？')) return; void write(draft.content, exists) },
           }, exists ? '保存并覆盖' : '保存'),
           draft.lines > 200 ? createElement('span', { style: styles.sourceBadge }, `草稿 ${draft.lines} 行超限，请点「放弃」后重试`) : null,
           createElement(Button, { variant: 'ghost', size: 'md', onClick: () => { setDraft(null) } }, '放弃'),
@@ -157,7 +157,7 @@ export function InitPanel({ workspace, remote }: {
             createElement(Button, {
               variant: 'primary', size: 'md',
               disabled: body.trim() === '',
-              onClick: () => { void write(body) },
+              onClick: () => { if (exists && !window.confirm('确定覆盖现有 AGENTS.md？')) return; void write(body, exists) },
             }, exists ? '保存并覆盖' : '保存'),
             createElement(Button, { variant: 'ghost', size: 'md', onClick: () => { setEditing(false) } }, '取消'),
           )

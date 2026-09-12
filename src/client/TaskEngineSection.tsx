@@ -140,7 +140,7 @@ export interface TaskEngineRemote {
   deleteRule(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   readTasks(path: string): Promise<RemoteResult<TaskLedgerView>>
   readInit(path: string): Promise<RemoteResult<InitView>>
-  writeInit(request: { path: string; content: string }): Promise<RemoteResult<InitWriteResult>>
+  writeInit(request: { path: string; content: string; overwrite?: boolean }): Promise<RemoteResult<InitWriteResult>>
   generateInit(request: { path: string }): Promise<RemoteResult<InitDraft>>
 }
 

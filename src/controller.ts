@@ -202,6 +202,8 @@ export interface InitWriteRequest {
   path: string
   /** Full AGENTS.md body. */
   content: string
+  /** Must be true to replace an existing AGENTS.md; the workbench sets it only after a user confirmation. */
+  overwrite?: boolean
 }
 
 /** `generateInit` request: scan the workspace and prompt the model for a draft. */
@@ -575,6 +577,17 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     const { root } = locateInitRoot(request.path)
     const fs = this.fs()
+    const existing = await readTextAt(fs, root, INITFILE)
+    // Aligns workbench writes with `dev_task init apply`: an existing governance
+    // file is protected unless the caller explicitly opts in to overwrite (the
+    // workbench sets `overwrite: true` only after a user confirmation).
+    if (existing !== undefined && request.overwrite !== true) {
+      return {
+        ok: false,
+        lines,
+        error: 'AGENTS.md 已存在且受保护；若确要覆盖，请在该工作台确认覆盖后重试（overwrite: true）。',
+      }
+    }
     const target = await fs.resolve(INITFILE, { cwd: root })
     await fs.writeText(target, request.content, undefined, undefined, {
       mode: 'workspace-write',

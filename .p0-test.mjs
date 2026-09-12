@@ -267,4 +267,16 @@ await assertThrows(
   assert(hook.includes('--diff-filter=ACMRD'), 'hook includes deletions in the scope check')
 }
 
+// ── 20. 4.1/4.3: hook uses the frozen snapshot; writeInit guards overwrite ──
+{
+  const hook = readFileSync('./hooks/commit-msg', 'utf8')
+  assert(hook.includes('state.flow && state.flow.config'), 'hook checks the task frozen flow snapshot')
+  assert(hook.includes('function extractTaskId'), 'hook extracts the task id independent of the live config')
+}
+{
+  const controller = readFileSync('./lib/controller.js', 'utf8')
+  assert(controller.includes('AGENTS.md 已存在且受保护'), 'workbench writeInit refuses to overwrite without an explicit intent')
+  assert(controller.includes('overwrite'), 'writeInit request carries an overwrite field')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

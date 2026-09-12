@@ -256,17 +256,13 @@ function readCommitMessage() {
     .trim()
 }
 
-// Mirrors engine.taskIdFromMessage: the pattern's first capture group is the
-// task id (`【<task_id>】…`). Undefined for pattern-less flows or non-matching
-// summaries (the latter are already rejected by validateCommitMessage).
-function parseTaskId(message, config) {
-  if (config.commit.message_pattern === '') return undefined
-  try {
-    const match = new RegExp(config.commit.message_pattern).exec(message)
-    return match ? match[1] : undefined
-  } catch {
-    return undefined
-  }
+// Extract the task id from the summary's leading 【…】 field. Deliberately
+// config-independent (unlike engine.taskIdFromMessage): the hook must locate the
+// task BEFORE it knows that task's frozen config, so it cannot use the config's
+// pattern to parse the id. Pattern-less flows (minimal) simply carry no 【…】 here.
+function extractTaskId(message) {
+  const match = /^【([^【】\s]+)】/.exec(message)
+  return match ? match[1] : undefined
 }
 
 // --- the gate ---
@@ -275,14 +271,12 @@ if (!messageFile) {
 }
 
 const message = readCommitMessage()
-
-const verdict = validateCommitMessage(message, config)
-if (!verdict.ok) {
-  refuse(verdict.reason)
-}
-
 const tasks = loadTasks()
-const taskId = parseTaskId(message, config)
+
+// Locate the task by id from the summary first; only then read its frozen config.
+// No branch/mtime guessing for pattern flows, so sibling tasks on one branch
+// cannot be cross-locked.
+const taskId = extractTaskId(message)
 let state
 if (taskId !== undefined) {
   const found = tasks.find(({ task }) => task.id === taskId)
@@ -295,6 +289,18 @@ if (taskId !== undefined) {
 }
 if (!state) {
   refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
+}
+
+// 4.1 fix: check this task against its frozen flow snapshot, not the live
+// .dsh/eng.json (which may have drifted mid-task). Fall back to the live config
+// only for legacy records that predate the snapshot field.
+if (state.flow && state.flow.config) {
+  config = state.flow.config
+}
+
+const verdict = validateCommitMessage(message, config)
+if (!verdict.ok) {
+  refuse(verdict.reason)
 }
 
 const checkpoint = commitCheckpoint(state, config)

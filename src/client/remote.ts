@@ -190,10 +190,11 @@ const initViewSchema = z.object({
   path: z.string().optional(),
 })
 
-/** `writeInit` request: workspace directory + full body. */
+/** `writeInit` request: workspace directory + full body + optional overwrite intent. */
 const initWriteRequestSchema = z.object({
   path: z.string(),
   content: z.string(),
+  overwrite: z.boolean().optional(),
 })
 
 /** `writeInit` result: write succeeded, or failed with the offending line count. */
