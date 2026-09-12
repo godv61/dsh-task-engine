@@ -81,7 +81,7 @@
         </div>
         <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
         <div class="callout warn">
-          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮。</p>
+          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
         </div>
       </section>
 
@@ -227,14 +227,14 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
         <h3>对话式 init</h3>
         <ol>
-          <li><b>inspect</b>：对 AI 说「帮我初始化这个项目」；AI 读现有 <code>AGENTS.md</code>（若有）返回，没有则扫目录结构、技术栈、构建 / 运行命令、约定与红线。</li>
-          <li><b>propose</b>：AI 写成 <code>AGENTS.md</code> 草稿，此步<b>只预览、不落盘</b>，同样硬校验<b>行数 ≤ 200 行</b>。</li>
-          <li><b>apply</b>：落盘。首次创建直接写入；覆盖已有 <code>AGENTS.md</code> 必须带 <code>overwrite</code> 且<b>经人工批准</b>。</li>
+          <li><b>inspect</b>：对 AI 说「帮我初始化这个项目」；AI 读现有 <code>AGENTS.md</code>（若有）返回，没有则扫目录结构、技术栈、构建 / 运行命令、约定与红线。同时报告：项目根（自动从 workspace 向上发现）、语言栈（Node / Java / Python / Go / Rust）与默认验证命令、其它治理文件（<code>CLAUDE.md</code>、<code>.cursorrules</code>——init 只管理 AGENTS.md，不覆盖它们）、项目级 skill/rule 目录（<code>.dsh/rules/*.md</code>、<code>.dsh/skills/&lt;name&gt;/SKILL.md</code>）。</li>
+          <li><b>propose</b>：AI 写成 <code>AGENTS.md</code> 草稿，此步<b>只预览、不落盘</b>，同样硬校验<b>行数 ≤ 200 行</b>，并返回内容 hash。</li>
+          <li><b>apply</b>：落盘。首次创建直接写入；覆盖已有 <code>AGENTS.md</code> 必须带 <code>overwrite</code> 且<b>经人工批准</b>；传回 <code>expected_hash</code> 与 propose 的内容 hash 不一致会被拒绝（防止预览与落盘之间内容被换）。写入目标必须在项目根内。</li>
         </ol>
         <pre><code>项目根/
 ├─ AGENTS.md          ← init 生成，DSH 每会话自动注入
 └─ .dsh/
-   ├─ eng.json
+   ├─ eng.json        ← flow + verify_command（可覆盖语言默认验证命令）
    ├─ skills/ · rules/
    └─ task-*.json</code></pre>
       </section>
@@ -308,6 +308,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li>差异没变时复用有效证据，不重复跑相同命令。</li>
           <li>无法联调外部系统时必须如实写「未联调」，不能把编译成功说成功能通过。</li>
           <li><code>high_risk</code> 任务过验证门必须跑真实命令回执（引擎运行命令、取退出码，非自报通过）。</li>
+          <li><code>verify</code> 不带 <code>command</code> 时引擎自动选命令：<code>.dsh/eng.json</code> 的 <code>verify_command</code> 优先，其次按项目语言用默认（node → <code>npm test</code>、java → <code>mvn -q test</code>、python → <code>python -m pytest</code>、go → <code>go test ./...</code>、rust → <code>cargo test</code>）；识别不出语言且未配置时保留自报路径。跑命令依赖宿主 shell 服务，未挂载会明确报错。</li>
         </ul>
         <h3>评审</h3>
         <p>开发阶段每项做「规格 + 质量」两阶段评审，都 pass 才标 done；缺评审或任一阶段 fail 会挡住「开发 → 交付」。</p>
@@ -323,7 +324,10 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           </table>
         </div>
         <p>提交消息要求 <code>【模块】【TASK】做了什么</code>，且只提交任务 <code>files</code> 范围内的文件。要彻底封死模型绕过 <code>dev_task</code> 直接 <code>git commit</code>，给仓库装一道机械钩子：</p>
-        <pre><code>dev_task operation=install_hook   # 装入 .git/hooks/commit-msg，装上后任何 git commit 都被同一套规则校验</code></pre>
+        <pre><code>dev_task operation=install_hook   # 装入 .git/hooks/commit-msg，装上后任何 git commit 都被同一套规则校验
+dev_task operation=verify_hook    # 随时比对安装钩子与内置门禁的 hash，被替换/篡改立即报错</code></pre>
+        <p><strong>钩子的额外硬校验（0.21/0.22）：</strong>① 任务记录的流程快照带 SHA-256 hash，被手改过的快照一律拒绝提交；② 触及敏感路径（<code>.env</code>、credentials、secrets、<code>.dsh</code>、<code>.git</code>）的提交，要求任务为 <code>high_risk</code> 且验证有真实命令回执，否则拒绝；③ 删除、类型变换、重命名的旧·新路径都受范围检查。</p>
+        <p><strong>风险降级（0.22）：</strong><code>set_risk</code> 把 <code>high_risk</code> 降为 <code>standard</code> 必须人工批准，并写入任务的 <code>risk_downgrades</code> 审计记录；降级后高风险回执门不再适用，请谨慎。</p>
       </section>
 
       <section id="example">
@@ -367,7 +371,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 最后更新：2026-09-12</p>
+        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 通用项目适配（0.21.0）· 审计与发布质量（0.22.0）· 最后更新：2026-09-12</p>
       </section>
     </main>
   </div>
