@@ -26,6 +26,7 @@ import {
   commitCheckpoint,
   legalTargets,
   newTask,
+  taskIdFromMessage,
   unmetGuards,
   validateCommitMessage,
   validateWorkflow,
@@ -586,6 +587,10 @@ export function registerDevTask(ctx: Context): void {
         }
         const message = validateCommitMessage(a.message ?? '', workflow)
         if (!message.ok) throw new Error(message.errors!.join('; '))
+        const committedId = taskIdFromMessage(a.message ?? '', workflow)
+        if (committedId !== undefined && committedId !== state.id) {
+          throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
+        }
         if (a.hash) state.commits.push({ label: checkpoint.label!, hash: a.hash })
         await writeTask(fs, state, cwd)
         return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
@@ -598,6 +603,9 @@ export function registerDevTask(ctx: Context): void {
           const def = workflow.artifacts.find(artifact => artifact.id === a.artifact)
           if (!def) {
             throw new Error(`unknown artifact "${a.artifact}"; declared: ${workflow.artifacts.map(x => x.id).join(', ') || 'none'}`)
+          }
+          if (def.stage !== state.stage) {
+            throw new Error(`artifact "${def.id}" belongs to stage "${def.stage}", but the task is at "${state.stage}" — record it at its owning stage`)
           }
           const merged = { ...(state.artifacts[def.id] ?? {}) }
           for (const [field, value] of Object.entries(a.fields ?? {})) {

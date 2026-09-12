@@ -80,6 +80,9 @@
           <p><strong>它不是常驻程序。</strong>只有你在「工程化开发引擎」预设的会话里提出开发请求时，才触发 <code>dev_task</code> 和这套门禁；换到别的预设，流程完全不介入。</p>
         </div>
         <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
+        <div class="callout warn">
+          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定是<b>代码硬校验</b>（不匹配直接拒绝）；但「验证通过」「评审通过」「实施项完成」是模型通过工具上报的状态，代码只校验这些状态在流程里自洽，<b>不验证上报内容本身是否属实</b>——要硬保证请叠加外部 CI 或人工评审。只有「需求确认」「方案确认」两扇门由人工批准点亮。</p>
+        </div>
       </section>
 
       <section id="install">
@@ -127,7 +130,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
               <tr><td><code>.dsh/skills/</code></td><td>项目级 skill（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
               <tr><td><code>.dsh/rules/</code></td><td>项目级 rule（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
               <tr><td><code>.dsh/task-*.json</code></td><td>当前任务的有效状态快照</td><td>确认、实施、验证、评审、切换阶段时更新</td></tr>
-              <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>同名时优先于项目级、内置</td></tr>
+              <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>同名时让位于内置（内置 &gt; 用户 &gt; 项目）</td></tr>
             </tbody>
           </table>
         </div>
@@ -185,7 +188,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>最重要的轻量原则：团队想改「提交消息格式」「交付要自测」这类约定，直接覆盖对应 rule / skill 的正文，而不是改一堆参数。</p>
+        <p>最重要的轻量原则：团队想改「提交消息格式」「交付要自测」这类约定，新建一个项目级规则 / 技能（用<b>新名字</b>）再挂到对应节点，而不是改一堆参数；内置 skill / rule 的正文<b>不可被同名覆盖</b>。</p>
       </section>
 
       <section id="configure">
@@ -205,7 +208,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
   }
 }</code></pre>
         <div class="callout warn"><p>页面实时校验：挂到不存在的阶段、空名等会红字提示并置灰保存；保存前主机再校验一遍。错误的配置存不进去。</p></div>
-        <p>三层来源与优先级：同名 skill / rule，<strong>项目级 &gt; 用户级 &gt; 内置</strong>。想改内置某条，新建同名项目级版本即可顶替，内置留着兜底。</p>
+        <p>三层来源与优先级：同名 skill / rule，<strong>内置 &gt; 用户 &gt; 项目</strong>——内置不可被同名覆盖（新建同名会被拒，解析同名只读内置版）。要加团队约定，新建一个<b>不同名</b>的项目级 / 用户级资源再挂到节点上。</p>
       </section>
 
       <section id="init">
@@ -359,8 +362,8 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
           <p>引擎只允许：读取仓库事实、修改<b>已确认任务范围内</b>的文件、按策略创建<b>范围受控的本地提交</b>。远程 push / 合并 / 发布、数据库写入，需人单独决定。</p>
         </div>
         <details open><summary>切换预设就是开关吗？</summary><div>是。选「工程化开发引擎」才挂 <code>dev_task</code> 和内置技能；选 <code>standard</code> 等其它预设则完全不介入。</div></details>
-        <details><summary>想改内置 skill / rule 怎么办？</summary><div>不删内置（升级又回来）。新建一个<b>同名</b>的项目级 skill / rule，系统自动用你这份，内置留着兜底。</div></details>
-        <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
+        <details><summary>想改内置 skill / rule 怎么办？</summary><div>内置正文不可被同名覆盖（同名新建会被拒）。要加团队约定，新建一个<b>不同名</b>的项目级 skill / rule 再挂到对应节点，与内置并存。</div></details>
+        <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交——引擎已豁免 <code>.dsh/task-*.json</code> 与 <code>.dsh/eng.json</code>，不受文件范围门拦截；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>

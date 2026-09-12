@@ -200,8 +200,11 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
     if (!config.stages.includes(artifact.stage)) {
       problems.push(`artifact ${index + 1}: stage "${artifact.stage}" is not a stage`)
     }
-    const key = `${artifact.stage}:${artifact.id}`
-    if (artifactKeys.has(key)) problems.push(`duplicate artifact "${key}"`)
+    const key = artifact.id
+    // Artifact ids must be unique across ALL stages, not just within a stage:
+    // `state.artifacts` is keyed by id, so two stages sharing an id would let a
+    // later stage silently reuse an earlier stage's recorded values.
+    if (artifactKeys.has(key)) problems.push(`duplicate artifact id "${key}" (ids are unique across all stages)`)
     artifactKeys.add(key)
     if (artifact.fields.length === 0) {
       problems.push(`artifact ${index + 1} ("${artifact.id}"): fields must not be empty`)
@@ -311,8 +314,11 @@ function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConf
       return todosBlockers(state).length === 0
     case 'verified':
       if (!state.verification.passed) return false
+      // High-risk tasks must cite at least one non-blank evidence string; the
+      // blank-string trim matches the artifacts_present field check so a bare
+      // `[""]` or `["  "]` can never satisfy the gate.
       return config.high_risk_requires_verification && state.risk_level === 'high_risk'
-        ? state.verification.evidence.length > 0
+        ? state.verification.evidence.some(evidence => evidence.trim() !== '')
         : true
     case 'review_passed':
       return state.review.outcome === 'pass'
@@ -382,6 +388,19 @@ export function validateCommitMessage(message: string, config: WorkflowConfig): 
   }
 }
 
+/**
+ * Extract the task id from a commit summary. The first capture group of the
+ * message pattern is the task id by convention (`【<task_id>】【T1】…`). Returns
+ * `undefined` when the flow declares no pattern (so the summary carries no
+ * canonical id) or the summary does not match. The commit-msg hook uses the id
+ * to locate the exact task instead of guessing by branch.
+ */
+export function taskIdFromMessage(message: string, config: WorkflowConfig): string | undefined {
+  if (config.commit.message_pattern === '') return undefined
+  const match = new RegExp(config.commit.message_pattern).exec(message)
+  return match?.[1]
+}
+
 export interface CommitCheckpoint {
   allowed: boolean
   label?: string
@@ -435,10 +454,19 @@ export interface FileScopeResult {
  * `file_scope` is off; an empty declared scope refuses every commit (the task
  * must first declare what it may touch).
  */
+/**
+ * Engine bookkeeping files that travel with the branch as team-shared facts
+ * (`.dsh/task-*.json`, `.dsh/eng.json`). They are metadata, not deliverables,
+ * so the file-scope gate never counts them as out-of-scope.
+ */
+function isEngineMeta(file: string): boolean {
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
+}
+
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }
-  const outside = committing.filter(file => !state.files.includes(file))
+  const outside = committing.filter(file => !state.files.includes(file) && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }

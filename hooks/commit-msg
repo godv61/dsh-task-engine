@@ -51,7 +51,7 @@ const FLOWS = {
     commit: {
       policy: 'task',
       message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
-      message_hint: '【<module>】【TASK/T1】说明',
+      message_hint: '【<task_id>】【TASK/T1】说明',
       checkpoints: ['交付'],
       file_scope: true,
     },
@@ -71,7 +71,7 @@ const FLOWS = {
     commit: {
       policy: 'item',
       message_pattern: '^【(\\S+)】【T\\d+】.+',
-      message_hint: '【<module>】【T1】说明',
+      message_hint: '【<task_id>】【T1】说明',
       checkpoints: ['交付'],
       file_scope: true,
     },
@@ -110,7 +110,7 @@ function guardSatisfied(guard, state, config) {
     case 'verified':
       if (!state.verification || state.verification.passed !== true) return false
       return config.high_risk_requires_verification && state.risk_level === 'high_risk'
-        ? Array.isArray(state.verification.evidence) && state.verification.evidence.length > 0
+        ? Array.isArray(state.verification.evidence) && state.verification.evidence.some(evidence => evidence.trim() !== '')
         : true
     case 'review_passed': return state.review && state.review.outcome === 'pass'
     case 'artifacts_present': {
@@ -157,12 +157,16 @@ function validateCommitMessage(message, config) {
   }
 }
 
-// Mirrors engine.checkFileScope.
+// Mirrors engine.checkFileScope + engine.isEngineMeta.
+function isEngineMeta(file) {
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
+}
+
 function checkFileScope(state, committing, config) {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   const files = Array.isArray(state.files) ? state.files : []
   if (files.length === 0) return { ok: false, outside: [], noScope: true }
-  const outside = committing.filter(file => !files.includes(file))
+  const outside = committing.filter(file => !files.includes(file) && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }
@@ -170,8 +174,12 @@ function checkFileScope(state, committing, config) {
 
 function stagedFiles() {
   try {
-    return execSync('git diff --cached --name-only --diff-filter=ACMR', { encoding: 'utf8' })
-      .split('\n')
+    // `-z` emits raw bytes (no core.quotePath octal escaping) NUL-separated, so
+    // non-ASCII filenames survive the scope comparison verbatim; `quotePath=false`
+    // is a belt-and-braces fallback. `D` is included so a deletion outside the
+    // declared scope is caught too, not just adds/renames/modifies.
+    return execSync('git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRD', { encoding: 'utf8' })
+      .split('\0')
       .map(line => line.trim())
       .filter(Boolean)
   } catch {
@@ -229,6 +237,8 @@ function fileMtime(file) {
   }
 }
 
+// Fallback only for pattern-less flows (e.g. minimal), which carry no task id in
+// the summary. Pattern flows locate the exact task by id via parseTaskId below.
 function pickTask(tasks, branch) {
   if (tasks.length === 0) return undefined
   const byBranch = tasks.find(({ task }) => task.branch === branch)
@@ -238,12 +248,51 @@ function pickTask(tasks, branch) {
   return sorted[0].task
 }
 
+function readCommitMessage() {
+  return fs.readFileSync(messageFile, 'utf8')
+    .split('\n')
+    .filter(line => !line.startsWith('#'))
+    .join('\n')
+    .trim()
+}
+
+// Mirrors engine.taskIdFromMessage: the pattern's first capture group is the
+// task id (`【<task_id>】…`). Undefined for pattern-less flows or non-matching
+// summaries (the latter are already rejected by validateCommitMessage).
+function parseTaskId(message, config) {
+  if (config.commit.message_pattern === '') return undefined
+  try {
+    const match = new RegExp(config.commit.message_pattern).exec(message)
+    return match ? match[1] : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // --- the gate ---
 if (!messageFile) {
   process.exit(0)
 }
 
-const state = pickTask(loadTasks(), currentBranch())
+const message = readCommitMessage()
+
+const verdict = validateCommitMessage(message, config)
+if (!verdict.ok) {
+  refuse(verdict.reason)
+}
+
+const tasks = loadTasks()
+const taskId = parseTaskId(message, config)
+let state
+if (taskId !== undefined) {
+  const found = tasks.find(({ task }) => task.id === taskId)
+  if (!found) {
+    refuse(`提交消息里的任务 id "${taskId}" 找不到对应的任务记录（.dsh/task-<id>.json）`)
+  }
+  state = found.task
+} else {
+  state = pickTask(tasks, currentBranch())
+}
 if (!state) {
   refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
 }
@@ -259,17 +308,6 @@ if (!scope.ok) {
     refuse('任务没有声明文件范围（files 为空）——先用 dev_task operation=scope 声明本任务涉及的文件')
   }
   refuse('提交了任务范围之外的文件: ' + scope.outside.join(', '))
-}
-
-const message = fs.readFileSync(messageFile, 'utf8')
-  .split('\n')
-  .filter(line => !line.startsWith('#'))
-  .join('\n')
-  .trim()
-
-const verdict = validateCommitMessage(message, config)
-if (!verdict.ok) {
-  refuse(verdict.reason)
 }
 
 process.exit(0)

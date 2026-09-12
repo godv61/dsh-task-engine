@@ -4,7 +4,7 @@
 // unknown flow, core-rule shadow protection, and init three-phase flow.
 import { readFileSync } from 'node:fs'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask } from './lib/engine.js'
+import { assertAdvance, checkFileScope, newTask, taskIdFromMessage, validateWorkflow } from './lib/engine.js'
 import {
   FLOW_PRESETS,
   HIGH_RISK_REQUIRED_CAPABILITIES,
@@ -199,6 +199,72 @@ await assertThrows(
   await exe({ operation: 'create', task_id: 'T12', title: 'x', branch: 'main' }, sessionExec(cwd))
   assert(fs._files.get(`${cwd}/.dsh/task-T12.json`) !== undefined, 'task record lands in the session workspace')
   assert(fs._files.get('.dsh/task-T12.json') === undefined, 'task record does not land in the backend base')
+}
+
+// ── 14. K: artifact ids must be unique across ALL stages ────────────────────
+{
+  const withDup = { ...FLOW_PRESETS.standard.config, artifacts: [
+    { stage: '需求评审', id: 'doc', name: '需求', fields: ['scope'] },
+    { stage: '设计', id: 'doc', name: '设计', fields: ['approach'] },
+  ] }
+  const problems = validateWorkflow(withDup)
+  assert(problems.some(p => p.includes('duplicate artifact id "doc"')),
+    'cross-stage duplicate artifact id is rejected')
+}
+
+// ── 15. K: record rejects an artifact owned by another stage ─────────────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'K1', title: 'x', branch: 'main' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'record', task_id: 'K1', artifact: 'design', fields: { approach: 'a', risks: 'r', impact: 'i' } }, EXEC),
+    'belongs to stage',
+    'recording an artifact at a non-owning stage is rejected',
+  )
+}
+
+// ── 16. L: high-risk verification requires non-blank evidence ───────────────
+{
+  const cfg = FLOW_PRESETS.standard.config
+  const mk = () => {
+    const s = newTask({ id: 'L1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'high_risk', flow: snapshot })
+    s.stage = '交付'
+    return s
+  }
+  let s = mk(); s.verification = { passed: true, evidence: [''] }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with empty-string evidence is blocked at the verified gate')
+  s = mk(); s.verification = { passed: true, evidence: ['   '] }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with whitespace-only evidence is blocked')
+  s = mk(); s.verification = { passed: true, evidence: ['单测通过'] }
+  assert(assertAdvance(s, '代码审核', cfg).ok, 'high_risk with non-blank evidence passes the verified gate')
+}
+
+// ── 17. J: task id extracted from the summary (the hook uses it, not a guess) ─
+{
+  const cfg = FLOW_PRESETS.standard.config
+  assert(taskIdFromMessage('【GREET-001】【TASK】实现登录', cfg) === 'GREET-001', 'standard summary yields its task id')
+  assert(taskIdFromMessage('【GREET-001】【T1】实现登录', cfg) === 'GREET-001', 'item-label summary yields its task id')
+  assert(taskIdFromMessage('实现登录', cfg) === undefined, 'non-matching summary yields no task id')
+  assert(taskIdFromMessage('随意', FLOW_PRESETS.minimal.config) === undefined, 'pattern-less flow yields no task id')
+}
+
+// ── 18. N: engine bookkeeping files are exempt from file scope ───────────────
+{
+  const s = newTask({ id: 'N1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'standard', flow: snapshot })
+  s.files = ['src/a.ts']
+  assert(checkFileScope(s, ['src/a.ts', '.dsh/task-N1.json', '.dsh/eng.json'], FLOW_PRESETS.standard.config).ok,
+    'task record and eng.json do not violate file scope')
+  assert(!checkFileScope(s, ['src/b.ts'], FLOW_PRESETS.standard.config).ok,
+    'an out-of-scope code file is still flagged')
+}
+
+// ── 19. H/I: hook reads raw-byte paths, NUL-separated, including deletions ───
+{
+  const hook = readFileSync('./hooks/commit-msg', 'utf8')
+  assert(hook.includes('-c core.quotePath=false'), 'hook disables git octal path quoting')
+  assert(hook.includes('-z'), 'hook reads NUL-separated raw-byte paths')
+  assert(hook.includes('--diff-filter=ACMRD'), 'hook includes deletions in the scope check')
 }
 
 console.log(`\nP0 acceptance: ${passed} checks passed`)

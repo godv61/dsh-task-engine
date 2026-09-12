@@ -58,7 +58,7 @@ const STANDARD: WorkflowConfig = {
   commit: {
     policy: 'task',
     message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
-    message_hint: '【<module>】【TASK/T1】说明 —— 写结果，不写空泛动作',
+    message_hint: '【<task_id>】【TASK/T1】说明 —— 第一段填本任务 id（如 GREET-001），写结果不写空泛动作',
     checkpoints: ['交付'],
     file_scope: true,
   },
@@ -87,7 +87,7 @@ const AGILE: WorkflowConfig = {
   commit: {
     policy: 'item',
     message_pattern: '^【(\\S+)】【T\\d+】.+',
-    message_hint: '【<module>】【T1】说明',
+    message_hint: '【<task_id>】【T1】说明 —— 第一段填本任务 id',
     checkpoints: ['交付'],
     file_scope: true,
   },
