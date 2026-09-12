@@ -1,0 +1,10 @@
+{
+  "flow": "standard",
+  "stage_bindings": {
+    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
+    "设计": { "skills": ["solution-design"] },
+    "开发": { "skills": ["code-implement"], "rules": ["coding-conventions"] },
+    "交付": { "skills": ["code-verify", "code-commit"], "rules": ["coding-conventions", "commit-conventions"] },
+    "代码审核": { "skills": ["code-review"], "rules": ["security-redlines"] }
+  }
+}

@@ -1,0 +1,175 @@
+# dsh-task-engine
+
+一个**可安装、项目无关、硬约束**的工程化交付引擎，把「需求评审 → 设计 → 开发 → 交付 → 代码审核」这套流程做成 DeepSeek Harness 的一个 bundle。**按预设激活**：装 bundle 后在目标预设的 `agent.cordis.yml` 加一行，该预设的会话才挂上 `dev_task` 工具、内置技能和人设；换到别的预设（不加那行）就完全不激活——不需要每个项目手写 `.agents` / `.claude` / `.harness`。
+
+核心是一个 `dev_task` 工具 + 内置技能。工具的硬约束在代码里执行，不是"提醒模型"：
+
+- **阶段流转**：只能沿所选流程预设的阶段图走（`standard` / `agile` / `minimal`）；非法流转直接报错拒绝。
+- **确认/验证门**：需求/方案未确认 → 进不了设计/开发；实施项没完 → 不能交付；高风险没验证证据 → 不能过评审。
+- **产物门**：每个阶段要交的产物 + 必填字段（需求说明 / 设计文档 / 评审记录…已固化在预设里），字段没填全 → 不让流转。
+- **提交门禁**：到检查点才能提交，消息必须匹配预设的提交格式，`manual` 策略永不自动提交。
+- **文件范围**：任务声明 `files`（本任务该改的文件），提交碰了范围外的文件 → 工具和 git 钩子都拒绝。
+- **skill / rule 挂载**：流程预设里每个阶段默认挂了「这个阶段用什么 skill」+「守哪条 rule」；项目可覆盖挂载，模型走到该阶段时，`dev_task` 只**渐进披露**这阶段挂载的内容，不一次性全给。内置一套通用库，也能在网页里新建自己的 skill/rule。
+
+## 目录
+
+```
+cordis.patch.yml        bundle 声明 + host 组合 patch（一行，只挂 host 半：Remote 控制器 + 工作台 UI）
+defaults/eng.json       标准预设的默认声明示例（flow + stage_bindings）
+hooks/commit-msg        git 提交门禁钩子（install_hook 装进 .git/hooks/）
+src/engine.ts           纯函数状态机 + 配置校验（无 harness 依赖，双端复用）
+src/workflows.ts        内置 3 套流程预设（阶段图/守卫/产物/提交规则/默认绑定全部固化）
+src/index.ts            host 入口：挂 task-engine Remote 控制器 + 首次启动自动 seed「工程化开发引擎」预设
+src/seed-preset.ts      对齐当前 standard 复制出 eng 预设（换人设 + 加 agent 行，幂等）
+src/agent.ts            agent 入口（./agent 出品）：在调用它的预设 scope 里注册 dev_task + 内置技能
+src/dev-task.ts         dev_task 工具定义 + 全部文件系统辅助（模型门禁，随 agent 入口激活）
+src/shipped-skills.ts   内置技能扫描 + 注册（随 agent 入口激活）
+src/controller.ts       Host 端 Remote 控制器：网页读写 .dsh/eng.json + skill/rule + 项目初始化（AGENTS.md）
+src/client/             浏览器半：全屏工作台（项目初始化 / 流程配置 / 任务 / 技能 skill / 规则 rule 五个标签页）
+skills/                 内置技能库（需求分析/方案设计/实现/验证/审核/提交/交付编排）
+rules/                  内置规则库（编码规范/提交规范/安全红线）
+preset/agent.cordis.yml 预设接入片段（persona 行 + agent 行，供自定义预设照抄）
+preset/enable.mjs       手动重建 eng 预设的命令行兜底（bin: dsh-task-engine-enable）
+preset/preset.yml       预设元数据
+preset/persona.md       预设 persona 文案
+```
+
+## 构建
+
+> 依赖走**公共 npm**：`@deepseek-ai/*` 已发到 `0.1.2-rc.1`（tag `next`）/ `0.1.2-alpha.5`，`cordis` 是 `4.0.2`。本包依赖对齐到 `^0.1.2-rc.1` + `^4.0.2`，已实测 `npm install`（公网）+ `tsc` 构建/typecheck + 运行时冒烟全部通过。
+
+```powershell
+npm install           # 从公共 npm 解析 @deepseek-ai/* 依赖
+npm run typecheck     # 严格模式零错误（host tsconfig + client tsconfig）
+npm run build         # tsc 产出 host lib（index/controller/engine）+ esbuild 产出双端 lib/client.js
+```
+
+## 安装（别人集成）
+
+```powershell
+# 从公共 npm（发布后）
+dsh plugin --profile <name> add @godv61/dsh-task-engine
+# 从你的 git 仓库
+dsh plugin --profile <name> add github:<你的org>/dsh-task-engine
+# 或本地 checkout
+dsh plugin --profile <name> add .
+```
+
+## 启用（点选即用）
+
+装完 bundle、重启 web，预设列表里会**自动多出一个「工程化开发引擎」**——host 半在首次启动时把它对齐当前 `standard` 生成（换好工程人设 + 加好 agent 行），落在 `~/.dsh/.agent-presets/eng/`。
+
+- **用**：新建会话（或设置 → agent 预设）选「工程化开发引擎」，这个会话就挂上 `dev_task` + 内置技能 + 工程人设，按流程走。
+- **不用**：选 `standard` / `minimal` / 其它预设，就没有 `dev_task`、没有内置技能、没有工程人设，流程完全不介入。
+- 侧边栏「工程流程」工作台不受影响，随时供人选流程预设、给节点挂 skill / rule、在线编辑 skill / rule 正文。
+
+这一层对称由 DSH 的工具/技能 scope 机制保证：host 半从不把 `dev_task` 注册进全局工具层，agent 半（`@godv61/dsh-task-engine/agent` 行）只在命名它的预设里注册——所以切换预设本身就是开关。
+
+### 兜底 / 自定义
+
+自动生成只在 `eng` 不存在时发生，绝不覆盖你手改过的预设；删掉 `eng` 后下次启动会重新生成。想**手动**造一个（不同名字、或改人设）才需要：复制 `standard` → 在 `agent.cordis.yml` 末尾加一行：
+
+```yaml
+- id: task-engine-agent
+  name: '@godv61/dsh-task-engine/agent'
+```
+
+也可重跑 `dsh-task-engine-enable` 强制重建默认的 `eng`。
+
+## 项目配置（选流程 + 挂 skill/rule）
+
+在项目根放 `.dsh/eng.json`（没有就用 `standard` 预设）。收敛后只需写两件事：
+
+```json
+{
+  "flow": "standard",
+  "stage_bindings": {
+    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
+    "开发":     { "skills": ["code-implement"], "rules": ["coding-conventions"] }
+  }
+}
+```
+
+- `flow`：选一套内置流程预设 —— `standard`（需求评审→设计→开发→交付→代码审核，含产物门+确认门）/ `agile`（需求→开发→交付→审查，四阶段少产物）/ `minimal`（开发→交付，只留提交门禁）。
+- `stage_bindings`：每个节点挂哪些 skill / rule（可整体省略，省略即用该预设自带的默认绑定）。
+
+**阶段图、流转守卫、产物字段、提交规则、验证证据开关全部固化在预设里，不再手工配置**。团队要改「提交消息格式」「交付要自测」这些约定，就覆盖内置的 `code-commit`/`code-verify` skill 和 `commit-conventions` rule（正文即规范），而不是改一堆参数。
+
+`dev_task`（operation=config）随时查看当前生效配置；配置写错（未知 flow / 绑定到不存在的阶段 / 空名）会报错，不悄悄退回默认。
+
+## 网页配置界面
+
+不用手写 `.dsh/eng.json`。装在带 Web 的 profile 里后，打开 Web GUI → 侧边栏「工程流程」工作台 →「流程配置」标签页：
+
+- 顶部选工作区，页面读出该工作区的 `.dsh/eng.json`（没有就用 `standard` 预设）。
+- 只有两件事可配：**选流程预设**（standard / agile / minimal）+ **给每个节点挂 skill / rule**。阶段流转、守卫、产物、提交规则、验证证据开关都是预设固化的，页面只读展示「流程节点」，不再开放编辑。
+- 编辑时实时跑 `validateWorkflow`：有问题红字列出、保存按钮置灰；主机保存前再校验一遍，有问题的配置永不落盘。
+- 保存写入所选工作区的 `.dsh/eng.json`，和 `dev_task` 用的是**同一套**校验（单一事实来源）。
+
+> 纯 headless 装机不受影响（只是没有这个页）；Web profile 需要包含 `@deepseek-ai/dsh-web-app`。
+
+## skill / rule 挂载（0.6.0）
+
+流程不止"走到哪个阶段"，还有"这个阶段该用哪本手册"。每个阶段可以在 `stage_bindings` 里挂 skill 和 rule：
+
+```json
+{
+  "flow": "standard",
+  "stage_bindings": {
+    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
+    "开发":     { "skills": ["code-implement"], "rules": ["coding-conventions"] }
+  }
+}
+```
+
+- **渐进披露**：模型走到某阶段时，`dev_task`（`status` / `advance`）只返回**这个阶段**挂载的 skill 名 + rule 内容；skill 用 DSH 的 `skill` 工具按名加载，rule 直接把正文给出。阶段推进到哪，才给哪。
+- **三层来源**：技能和规则都来自「内置 + 项目 + 用户」三层——内置（本包 `skills/`、`rules/`）、项目（`.dsh/skills/`、`.dsh/rules/`）、用户（`$DSH_HOME/skills/`、`$DSH_HOME/rules/`），同名时项目优先于用户优先于内置。
+- **网页新建 / 查看 / 编辑 / 删除**：工作台「技能 / 规则」标签页里可新建、查看、编辑、删除项目级/用户级 skill 和 rule（内置只能查看、不可删改）。查看时正文以 markdown **富文本**渲染在宽弹窗里；编辑时正文保持纯文本。项目级写进 `.dsh/skills|rules/`（团队共享），用户级写进 `$DSH_HOME/skills|rules/`（个人全局），写好后自动出现在挂载清单里。
+- **内置库**：6 个节点技能（`requirement-analysis` / `solution-design` / `code-implement` / `code-verify` / `code-review` / `code-commit`）+ 3 条规则（`coding-conventions` / `commit-conventions` / `security-redlines`），开箱即用；想加项目专属的，用 DSH 原生技能机制或网页新建即可。
+
+## git 提交门禁（防止绕过）
+
+默认提交是「工具校验 + 模型执行 git」，模型理论上能绕过 `dev_task` 直接 `git commit`。装个机械钩子彻底封死：
+
+1. 用 `dev_task`（operation=install_hook）装进 `.git/hooks/commit-msg`（每个克隆本机装一次）。
+2. 之后任何 `git commit`，钩子都用和引擎**同一套规则**检查：没有 dev_task 任务、阶段没到提交检查点、消息不匹配预设的提交格式、提交文件不在任务 `files` 内——一律拒绝并打印原因。
+
+> 钩子读 `.dsh/eng.json` + `.dsh/task-*.json`，跨仓库零依赖、自包含。
+
+## 项目初始化（init）
+
+二开 / 遗留项目常常没有文档，AI 接手前需要先「认识」这个项目。`dev_task`（operation=init）走 **inspect → propose → apply** 三阶段管理项目根的 `AGENTS.md`，绝不直接覆盖已有治理文件：
+
+1. `inspect`——读取现有 `AGENTS.md`（若有）返回给模型；没有则提示扫描项目。
+2. `propose`——模型扫描（目录结构、技术栈、构建/运行命令、约定、红线）后给出全文草稿，此步**只预览不落盘**。
+3. `apply`——落盘。首次创建直接写入；覆盖已有 `AGENTS.md` 必须 `overwrite: true` 且**经人工批准**，否则拒绝。
+
+- **为什么是 `AGENTS.md`**：DSH 平台会把项目根的 `AGENTS.md` **自动注入到每个会话**——生成一次，之后每个任务开工 AI 都自带这份项目认知，引擎无需额外的注入逻辑。
+- **行数上限**：`AGENTS.md` 每次都进上下文，200 行（约 4–6K token）是硬约束，逼着只写「项目是什么 → 怎么跑 → 结构 → 约定 → 坑」，而不是塞长篇文档。
+- **治理文件保护**：`AGENTS.md` 默认受保护——已有文件时 `apply` 不裸覆盖，需显式 `overwrite` + 人工批准。
+- **工作台可视化入口（0.19.0）**：以上三阶段也能在网页工作台点按钮完成。工作台第一个标签页「项目初始化」会**加载展示**当前 `AGENTS.md`（无则显示「未初始化」）；点「让 AI 初始化 / 重新初始化」由工作台调用默认模型扫描项目生成草稿（预览，不落盘），点「保存并覆盖」才写回；也可「手动编辑」后保存。页面入口与 `dev_task init` 读写的是同一份 `AGENTS.md`，两处共用 200 行硬约束。
+
+## 状态与待办
+
+- **脚本级已验证**：strict `tsc` typecheck/build 零错误；`dsh plugin add` 装进独立实例、`--dump-config` 确认 `task-engine` 进组合树；`validateWorkflow`（配置校验）、`artifacts_present`（产物门）、`file_scope`（文件范围门）、`hooks/commit-msg`（机械门禁）单测/冒烟全过——非法配置逐条报错、产物没填全挡流转、范围外文件挡提交、钩子该放放该拦拦。
+- **真实模型端到端（0.4.1）**：headless + NewAPI DeepSeek 下让真模型走 `dev_task` 全流程，抓到并修掉一个真实 bug——`readText`/`writeText` 调 `fs.resolve()` 漏了 `await`，把 `Promise<FsTarget>` 当 `target` 传给了读写方法，导致 create/record/advance/commit 全部写不了任务文件、读永远返回 undefined。0.4.1 修复（`await fs.resolve(relPath)`），并把 `task_id` 在 create 也必填的说明补进工具 schema 与技能。修复后走真实 `ctx.fs` 路径冒烟全绿。
+- **网页图形化配置界面（0.5.0）**：新增 `src/client/` 设置页「工程流程配置」+ Host 端 `task-engine` Remote 控制器；`@godv61/dsh-task-engine` 升级为双端包（`dsh.client` manifest + `./client` 出品，`exports` 暴露）。已实机验证：`dsh web` 起服务后 boot 数据里 `@godv61/dsh-task-engine` 以 `inject:["@deepseek-ai/dsh-api-gateway"]` 进入 application batch、`/plugins/…/client.js` 正常服务；headless 冒烟确认 boot + `dev_task` 未被新控制器破坏。浏览器点击级 e2e 留到发布后用真浏览器收尾。
+- **skill/rule 挂载与渐进披露（0.6.0）**：`WorkflowConfig` 新增 `stage_bindings`（每阶段挂 skills/rules，可选字段），`dev_task` 的 `status`/`advance` 按当前阶段披露挂载的 skill 名 + rule 正文；内置 6 技能 + 3 规则库；Host 控制器新增 `listSkills`/`listRules`/`writeSkill`/`writeRule`；设置页新增「节点挂载」和「新建 skill / rule」两块，同时补上 `dev_task` 缺失的 `items` 操作（更新实施项状态）。引擎层 `stage_bindings` 校验（未知阶段/空名）与合并已单测通过。
+- **配置页精简 + 自建 skill 可观测（0.6.1）**：设置页的流转/产物/提交规则/新建默认折叠，「节点挂载」从六阶段全平铺改成「选一个阶段再看它挂了什么」；新建成功提示带回显路径（`.dsh/skills/<name>/SKILL.md` 或 `$DSH_HOME/…`），挂载清单给非内置的 skill/rule 标「（项目）/（用户）」来源。修复 `listSkills` 依赖 host skill registry 导致项目 `.dsh/skills` 自建技能不显示的问题——改为与 `listRules` 一致，直接扫「内置 + 项目 + 用户」三层目录。浏览器 e2e 全绿。
+- **全屏工作台 + 在线编辑（0.7.0）**：配置页从设置弹窗迁出，改为侧边栏 `sidebar.footer.action`「工程流程」按钮，点开 `shell.overlay` 全屏工作台（触发按钮与覆盖层共享一个 store 控制开关）。工作台分「流程配置 / 技能 skill / 规则 rule」三个标签页；技能和规则列表支持在线编辑——`readSkill`/`readRule` 读回正文、改 description/whenToUse/正文、`writeSkill`/`writeRule` 写回；内置项只读，项目/用户项可原地编辑，新建同时支持项目级/用户级。旧的 `settings.section` 入口移除，统一走侧边栏按钮。浏览器 e2e 全绿。
+- **按预设激活（0.8.0）**：`dev_task` 工具与内置技能从 host 全局层拆到 agent 层。host 入口只挂 `task-engine` Remote 控制器 + 工作台 UI（`src/index.ts`）；新增 `src/agent.ts`（`./agent` 出品）、`src/dev-task.ts`、`src/shipped-skills.ts`，由预设的 `agent.cordis.yml` 命名后，在**该预设的 scope** 里注册工具与技能。实机 boot 验证：`standard` 会话工具目录不含 `dev_task`（26 个工具），加了 `@godv61/dsh-task-engine/agent` 行的 `eng` 会话含 `dev_task`（27 个工具）且描述正确，换回 `standard` 再次不含——切换预设即切换流程激活状态。
+- **一键激活（0.8.1）**：新增 `preset/enable.mjs`（bin: `dsh-task-engine-enable`），一条命令自动复制 `standard` → `eng`、把 persona 换成工程人设、追加 agent 行、写 `preset.yml`。persona 从「必须换」降级为「可选」——`eng-delivery` 技能自带 `whenToUse`，即使不加人设，模型遇到开发请求也自己加载技能走 `dev_task`；最简激活只剩「复制预设 + 追加一行 agent 行」。实机验证：脚本生成的 `eng` 预设挂载后 `dev_task` 可见、persona 以工程人设（含「铁律」）渲染、`standard` 仍无 `dev_task`。
+- **点选即用（0.9.0）**：host 入口新增 `src/seed-preset.ts`——首次启动自动把当前 `standard` 复制成 `eng` 预设（换工程人设 + 追加 agent 行，幂等、不覆盖手改）。装 bundle 重启后预设列表直接出现「工程化开发引擎」，点选即激活、切走即不激活，零复制/零编辑/零脚本。实机 boot 验证：boot 后 `.agent-presets/eng` 自动生成（agent 行 + 工程人设齐全）、roster 列出 `eng`（user）、`eng` 会话有 `dev_task` 且 persona 含「铁律」、`standard` 会话无 `dev_task`。
+- **工作台可用性（0.9.1）**：修复「新建 skill / 新建 rule」按钮点击不弹出表单（`formOpen` 只认编辑态，新建态缺少显式标志）；给六个守卫补 hover 说明、把「产物齐全」改名「产物字段已填全」并讲清「产物 = 阶段要写清楚的记录、字段 = 这份记录里必填的空」，「节点挂载」改名「阶段技能 / 规则」。
+- **需求/方案人工确认门（0.10.0）**：`requirement_confirmation` / `solution_confirmation` 两个守卫从「模型自己标记」升级为「人来批准」。走 `advance` 撞上确认门时，`dev_task` 用 `@deepseek-ai/dsh-user-approval` 发起审批；人在页面点「允许」才放行，模型不能自己确认、也不能绕过。headless e2e 验证真模型全流程时两个确认都会触发。
+- **派工 / 审核审计（0.11.0）**：`TaskItem` 新增 `dispatch`（子代理派工留痕）与 `review`（spec / quality 两阶段评审）字段；`dev_task` 新增 `dispatch`、`review_item` 操作；工作台新增「任务台账」视图展示逐项审计。派工留痕是软约束——模型可自己实现小项而不强制派子代理。
+- **台账硬门 + 软约束修复（0.12.0）**：`todos_done` 守卫改为「实施项非空且全部 done」；`code-implement` 技能里写清「两阶段都 pass 才标 done」。
+- **两阶段评审硬门（0.13.0）**：`todos_done` 进一步收紧——每个 done 的 item 必须带 spec + quality 都 pass 的评审记录，缺评审或任一阶段 fail 都会挡住「开发 → 交付」，并以具体 item 报出阻塞原因（`todosBlockers`）。派工审计保持软约束。
+- **skill / rule 查看 + 删除（0.14.0）**：内置 skill/rule 从「只读不可见」改为「可查看正文」；自建（项目/用户）skill/rule 新增删除（两步确认）。删改在类型层即把 `bundled` 排除，内置资源永不误删。
+- **弹窗 + markdown 查看（0.15.0）**：skill/rule 的查看与编辑从内联卡片改为居中宽弹窗；查看时正文用 DSH 自带的 `MarkdownText` 渲染成 markdown 富文本（不引入任何新依赖），编辑时正文保持纯文本。
+- **流程预设收敛（0.16.0）**：把「自由编辑阶段图/守卫/产物/提交规则/验证开关」收敛为「选一套内置流程预设 + 给节点挂 skill/rule」。新增 `src/workflows.ts` 内置 `standard` / `agile` / `minimal` 三套流程（阶段图、守卫、产物字段、提交规则、验证证据开关全部固化）；`.dsh/eng.json` 从完整配置精简为 `{ flow, stage_bindings }`；工作台删掉流转/产物/提交规则/验证开关编辑 UI，只剩「流程预设 + 流程节点（只读）+ 阶段技能/规则」；git 提交钩子同步按 `flow` 选预设。
+- **项目初始化 + 语言无关内置规则（0.17.0）**：`dev_task` 新增 `init` 操作，生成项目根 `AGENTS.md`（DSH 每会话自动注入），落盘前做 200 行硬校验、已存在需 `overwrite` 才覆盖；内置 `solution-design` / `coding-conventions` / `security-redlines` 去掉 Java 专属概念（Impl / DTO / VO、Controller / Mapper），改成语言中立骨架，语言特定规范交给项目自建 rule。
+- **工程可靠性加固（0.18.0）**：① 高风险任务与流程能力绑定——`high_risk` 任务只能在具备「验证门 + 文件范围 + 评审门」能力的流程创建，选 `agile`/`minimal` 直接拒绝；② 任务创建时固化流程快照（预设 id + version + 完整配置），后续 `status`/`advance`/`verify`/`review`/`commit` 一律用快照，中途改 `.dsh/eng.json` 不再漂移在途任务的门禁；③ 未知流程失败关闭——`.dsh/eng.json` 缺 `flow` 或 `flow` 不在预设里一律报错（`UNKNOWN_FLOW` / 缺字段），不再静默回退 `standard`；④ 核心 skill/rule 不可取消、不可被同名覆盖——项目阶段绑定只能追加不能移除预设自带绑定，同名规则/技能读内置版、新建同名被拒；⑤ `init` 升级 `inspect → propose → apply` 三阶段，覆盖已有 `AGENTS.md` 需人工批准。
+- **会话工作目录修复（0.18.1）**：`dev_task` 的所有文件操作此前用 `fs.resolve(相对路径)` 不带 cwd，落到了 fs 后端默认目录（DSH 进程目录）而非会话工作区——在 web 会话里会把台账、配置、`AGENTS.md`、git 钩子写到/读到错误位置。改为从 `exec.agent.session.header.cwd` 取会话工作区并传给每个解析，补 4 项回归测试。
+- **工作台项目初始化（0.19.0）**：工作台新增置顶的「项目初始化」标签页——加载展示项目根 `AGENTS.md`、一键让 AI 扫描项目生成草稿（预览后再确认写回）、支持手动编辑与覆盖；Host 控制器新增 `readInit`/`writeInit`/`generateInit` 三个 Remote，`generateInit` 通过 `ctx.llm` + 默认模型在 Host 端直接生成，复用 `dev_task init` 的 200 行硬约束。
+- **使用手册跟进（0.19.1）**：随包发布的 `docs/manual.html` 补上工作台「项目初始化」（默认置顶标签页、项目根自动发现、AI 生成 150 秒超时 + 覆盖需人工确认），第 7 节标签页从「三个」改为「五个」；安装章节补全 dsh CLI（非源码）安装方式与 pnpm 前置、`dsh plugin add` 的挂载机制；删除顶层已废弃的 `USER_GUIDE.html`（v0.9.1、无引用、不随包发布），README 目录结构描述同步为五标签页。

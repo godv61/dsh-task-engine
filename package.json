@@ -1,0 +1,80 @@
+{
+  "name": "@godv61/dsh-task-engine",
+  "version": "0.19.1",
+  "description": "Preset-workflow engineering delivery engine for DeepSeek Harness: a `dev_task` tool that hard-gates stage transitions and commit scope/message, per-node skill/rule bindings with progressive disclosure, a workbench to pick a flow preset and mount skills/rules, and preset-scoped activation — the tool and skills activate only for sessions on a preset that names the agent row.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "bin": {
+    "dsh-task-engine-enable": "preset/enable.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./agent": {
+      "types": "./lib/agent.d.ts",
+      "default": "./lib/agent.js"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./defaults/eng.json": "./defaults/eng.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**",
+    "cordis.patch.yml",
+    "defaults/eng.json",
+    "hooks/**",
+    "skills/**",
+    "rules/**",
+    "preset/**",
+    "docs/**",
+    "README.md"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway"
+      ],
+      "external": []
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build-client.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "node .p0-test.mjs",
+    "prepare": "npm run build"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent-presets": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.2-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent-default-model": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-agent-presets": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-fs": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.2-rc.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "esbuild": "^0.24.0",
+    "react": "^18.2.0",
+    "typescript": "^5.7.2",
+    "zod": "^3.23.8"
+  }
+}

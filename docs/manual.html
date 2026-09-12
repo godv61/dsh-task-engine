@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>工程化交付引擎 使用手册</title>
+  <style>
+    :root {
+      --ink:#16232d; --muted:#5f6f78; --paper:#f5f7fa; --card:#fff;
+      --line:#dce3ee; --brand:#1d4ed8; --dark:#1e3a8a; --soft:#e7edfb;
+      --amber:#9a5a00; --amber-soft:#fff2d8; --red:#9d302f; --red-soft:#fbe7e5;
+      --shadow:0 16px 42px rgba(20,40,80,.08);
+    }
+    *{box-sizing:border-box} html{scroll-behavior:smooth}
+    body{margin:0;color:var(--ink);background:radial-gradient(circle at 90% 0,rgba(59,130,246,.10),transparent 30rem),var(--paper);font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;line-height:1.75}
+    a{color:var(--brand);text-decoration-thickness:1px;text-underline-offset:3px}
+    code,pre{font-family:Consolas,"Cascadia Code",monospace} code{padding:.1rem .35rem;border-radius:.35rem;background:#edf1f6;color:#24415c}
+    pre{margin:1rem 0;padding:1rem 1.1rem;overflow:auto;color:#ecf3ff;background:#12233f;border-radius:.75rem;line-height:1.6} pre code{padding:0;color:inherit;background:transparent}
+    h1,h2,h3{line-height:1.3} h2{margin-top:0;font-size:1.6rem} h3{margin-top:1.5rem;color:var(--dark)}
+    .hero{color:#fff;background:linear-gradient(125deg,#0f2f66,#1d4ed8 58%,#3b82f6);padding:3.5rem max(1.25rem,calc((100vw - 1180px)/2))}
+    .hero .eyebrow{margin:0 0 .5rem;letter-spacing:.14em;opacity:.72}.hero h1{margin:0;font-size:clamp(2rem,5vw,3.2rem)}.hero .lead{max-width:880px;margin:1rem 0;font-size:1.08rem;opacity:.92}
+    .badges,.flow{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}.badge{padding:.25rem .7rem;border:1px solid rgba(255,255,255,.3);border-radius:999px;background:rgba(255,255,255,.1);font-size:.88rem}
+    .layout{display:grid;grid-template-columns:250px minmax(0,900px);gap:2rem;width:min(1180px,calc(100% - 2rem));margin:2rem auto 4rem;align-items:start}
+    nav{position:sticky;top:1rem;padding:1rem;border:1px solid var(--line);border-radius:1rem;background:rgba(255,255,255,.92);box-shadow:var(--shadow)}nav strong{display:block;margin-bottom:.55rem;color:var(--dark)}nav a{display:block;padding:.35rem .45rem;border-radius:.45rem;text-decoration:none}nav a:hover{background:var(--soft)}
+    main{min-width:0}section{margin-bottom:1.35rem;padding:clamp(1.2rem,3vw,2rem);border:1px solid var(--line);border-radius:1rem;background:var(--card);box-shadow:var(--shadow)}
+    .cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.card{padding:1rem;border:1px solid var(--line);border-radius:.75rem;background:#fbfcfe}.card h3{margin:0 0 .35rem;font-size:1rem}.card p{margin:.25rem 0;color:var(--muted)}
+    .callout{margin:1rem 0;padding:.9rem 1rem;border-left:.3rem solid var(--brand);border-radius:.3rem .7rem .7rem .3rem;background:var(--soft)}.callout.warn{border-color:var(--amber);background:var(--amber-soft)}.callout.danger{border-color:var(--red);background:var(--red-soft)}
+    .flow span{padding:.4rem .65rem;border-radius:.55rem;background:var(--soft);color:var(--dark);font-weight:700}.flow i{color:var(--muted);font-style:normal}
+    .table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.94rem}th,td{padding:.7rem .75rem;border:1px solid var(--line);vertical-align:top;text-align:left}th{color:var(--dark);background:#edf2fb}tbody tr:nth-child(even){background:#fafbfe}
+    ul,ol{padding-left:1.35rem}li+li{margin-top:.3rem}details{margin:.65rem 0;border:1px solid var(--line);border-radius:.65rem;background:#fbfcfe}summary{cursor:pointer;padding:.8rem 1rem;color:var(--dark);font-weight:700}details>div{padding:0 1rem 1rem}.stamp{margin-top:2rem;color:var(--muted);font-size:.9rem}
+    @media(max-width:850px){.layout{display:block}nav{position:static;margin-bottom:1rem;columns:2}nav strong{column-span:all}}@media(max-width:620px){.cards{grid-template-columns:1fr}nav{columns:1}.hero{padding-top:2.5rem;padding-bottom:2.5rem}}@media print{body{background:#fff}.hero{padding:1.5rem;print-color-adjust:exact}.layout{display:block;width:100%;margin:1rem 0}nav{display:none}section{box-shadow:none;break-inside:avoid}}
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <p class="eyebrow">DSH · ENGINEERING DELIVERY ENGINE</p>
+    <h1>工程化交付引擎 使用手册</h1>
+    <p class="lead">这是一套装在 DeepSeek Harness 里的工程流程约束。它把「需求评审 → 设计 → 开发 → 交付 → 代码审核」做成硬门槛：阶段不能跳、关键节点必须人来拍板、验证和提交都被机械检查。团队只选一套流程，再给每个节点挂上合适的 skill 和 rule。</p>
+    <div class="badges">
+      <span class="badge">选流程预设即可</span>
+      <span class="badge">standard / agile / minimal</span>
+      <span class="badge">需求、方案人工确认</span>
+      <span class="badge">范围受控本地提交</span>
+      <span class="badge">按预设激活</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="目录">
+      <strong>目录</strong>
+      <a href="#overview">1. 工作原理</a>
+      <a href="#install">2. 安装与启用</a>
+      <a href="#structure">3. 文件与目录</a>
+      <a href="#flows">4. 三套流程预设</a>
+      <a href="#skills">5. Skills</a>
+      <a href="#rules">6. Rules</a>
+      <a href="#configure">7. 配置流程与挂载</a>
+      <a href="#init">8. 项目初始化（init）</a>
+      <a href="#start">9. 如何开始一个任务</a>
+      <a href="#run">10. 流程如何逐阶段执行</a>
+      <a href="#state">11. 任务状态如何记录进度</a>
+      <a href="#verify">12. 验证、评审与提交</a>
+      <a href="#example">13. 一个标准任务的完整走查</a>
+      <a href="#boundaries">14. 边界与常见问题</a>
+    </nav>
+
+    <main>
+      <section id="overview">
+        <h2>1. 工作原理</h2>
+        <p>开发者在「工程化开发引擎」会话里提出开发请求后，统一由 <code>dev_task</code> 工具接管，再由编排技能 <code>eng-delivery</code> 读任务状态、按当前阶段推进，一个阶段一个阶段地走。</p>
+        <pre><code>开发请求
+  → dev_task（统一入口，硬约束在代码里执行）
+  → eng-delivery（编排：读状态 → 选阶段 → 推进）
+      → 需求评审 · requirement-analysis
+      → 设计     · solution-design
+      → 开发     · code-implement
+      → 交付     · code-verify + code-commit
+      → 代码审核 · code-review</code></pre>
+        <div class="callout">
+          <p><strong>它不是常驻程序。</strong>只有你在「工程化开发引擎」预设的会话里提出开发请求时，才触发 <code>dev_task</code> 和这套门禁；换到别的预设，流程完全不介入。</p>
+        </div>
+        <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
+      </section>
+
+      <section id="install">
+        <h2>2. 安装与启用</h2>
+        <h3>2.1 前置：Node.js ≥ 22 + pnpm</h3>
+        <pre><code>npm install -g pnpm   # dsh 的 plugin 子命令底层转发给 pnpm，必须先装</code></pre>
+        <h3>2.2 先装 DSH（三选一）</h3>
+        <pre><code># 方式 A：npm 装 CLI（非源码，推荐给使用者）
+npm install -g @deepseek-ai/dsh
+dsh web
+
+# 方式 B：npx 免安装直接跑
+npx @deepseek-ai/dsh web
+
+# 方式 C：从源码 clone（开发者）
+git clone https://github.com/deepseek-ai/deepseek-harness.git
+cd deepseek-harness
+pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
+        <h3>2.3 把引擎插件装进 profile</h3>
+        <pre><code>dsh plugin --profile web add @godv61/dsh-task-engine</code></pre>
+        <p><code>dsh plugin --profile &lt;name&gt; add &lt;package&gt;</code> 会在 <code>$DSH_HOME/profiles/&lt;name&gt;/</code> 里执行 <code>pnpm add</code>，并自动识别插件声明的 <code>dsh.bundle.patch</code>，把它挂进该 profile 的插件层栈——<b>不要</b>手写 <code>npm i</code> 装到别处，那样不会挂载。</p>
+        <p>装完<b>重启 <code>dsh web</code></b> 生效，自动完成两件事：侧边栏多出「工程流程」工作台；预设列表多出「工程化开发引擎」。</p>
+        <h3>2.4 启用</h3>
+        <p>新建会话 → 预设选「工程化开发引擎」。这个会话就挂上 <code>dev_task</code> + 内置技能 + 工程人设，开始按流程走。</p>
+        <div class="callout"><p>想「正式开发」就选它；想「让 AI 自由探索」就选 <code>standard</code>。切换预设本身就是开关，零配置。</p></div>
+      </section>
+
+      <section id="structure">
+        <h2>3. 文件与目录</h2>
+        <pre><code>D:\workspace\
+├─ AGENTS.md       ← init 生成的项目描述（DSH 每会话自动注入）
+├─ .dsh\
+│  ├─ eng.json       ← 流程预设 + 节点挂载（团队共享，可进 git）
+│  ├─ skills\        ← 项目级 skill
+│  ├─ rules\         ← 项目级 rule
+│  └─ task-*.json    ← 每个任务的状态快照
+└─ $DSH_HOME\
+   ├─ skills\        ← 用户级 skill（个人所有项目通用）
+   └─ rules\         ← 用户级 rule</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>路径</th><th>作用</th><th>何时读取或修改</th></tr></thead>
+            <tbody>
+              <tr><td><code>.dsh/eng.json</code></td><td>声明用哪套流程 + 每个节点挂哪些 skill / rule</td><td>任务推进前读取；工作台保存时写入</td></tr>
+              <tr><td><code>.dsh/skills/</code></td><td>项目级 skill（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
+              <tr><td><code>.dsh/rules/</code></td><td>项目级 rule（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
+              <tr><td><code>.dsh/task-*.json</code></td><td>当前任务的有效状态快照</td><td>确认、实施、验证、评审、切换阶段时更新</td></tr>
+              <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>同名时优先于项目级、内置</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="flows">
+        <h2>4. 三套流程预设</h2>
+        <p>阶段图、守卫、提交规则都随预设固化好，团队只选一套，不改流程图。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>预设</th><th>阶段顺序</th><th>适用</th><th>守卫强度</th></tr></thead>
+            <tbody>
+              <tr><td><code>standard</code> 标准研发</td><td>需求评审 → 设计 → 开发 → 交付 → 代码审核 → 完成</td><td>默认；流程最完整</td><td>含产物门 + 人工确认 + 评审门</td></tr>
+              <tr><td><code>agile</code> 敏捷轻量</td><td>需求 → 开发 → 交付 → 审查</td><td>快速迭代、少产物</td><td>四阶段，产物要求更轻</td></tr>
+              <tr><td><code>minimal</code> 纯代码</td><td>开发 → 交付</td><td>只有代码、无评审流程</td><td>只留提交门禁</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warn">
+          <p>预设之外，单个任务还有两个模型自动判断的字段：<code>work_size</code>（tiny / standard / complex，决定拆多细）和 <code>risk_level</code>（standard / high_risk，决定验证强度）。它们不是流程档位，是单个任务的规模与风险标签。</p>
+          <p><strong>高风险任务只能在 <code>standard</code> 流程建</strong>——引擎要求高风险任务具备「验证门 + 文件范围 + 评审门」，<code>agile</code>/<code>minimal</code> 没有验证门和评审门，建 <code>high_risk</code> 任务会被直接拒绝。要跑高风险就选标准研发，或把风险降到 standard。</p>
+          <p>任务创建时会把所选流程<b>固化成快照</b>——之后在途任务一直按创建时的门禁走，中途改 <code>.dsh/eng.json</code> 只影响新任务，不影响已建任务。</p>
+        </div>
+      </section>
+
+      <section id="skills">
+        <h2>5. Skills：这一步做什么</h2>
+        <p>每个内置 Skill 尺寸很小、只做一件事。挂到对应节点后，走到那一步才加载，不会一次性全塞给模型。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Skill</th><th>职责</th><th>不负责</th></tr></thead>
+            <tbody>
+              <tr><td><code>eng-delivery</code></td><td>读任务状态、按阶段推进、确保不越轨</td><td>代替各阶段 Skill 的专业工作</td></tr>
+              <tr><td><code>requirement-analysis</code></td><td>目标、验收、非目标，落需求说明，等人确认</td><td>编码</td></tr>
+              <tr><td><code>solution-design</code></td><td>最小方案、技术基线、改动点，落设计文档</td><td>实现</td></tr>
+              <tr><td><code>code-implement</code></td><td>实现、做「规格 + 质量」两阶段评审，都过才标完成</td><td>无关重构</td></tr>
+              <tr><td><code>code-verify</code></td><td>按验收与风险验证、记录证据（高风险必须带证据）</td><td>掩盖失败或自动修复</td></tr>
+              <tr><td><code>code-commit</code></td><td>校验阶段、范围、消息格式后提交</td><td>远程 push / 合并 / 发布</td></tr>
+              <tr><td><code>code-review</code></td><td>评审变更，落结论与问题清单</td><td>代替实现或验证</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="rules">
+        <h2>6. Rules：这一步守什么</h2>
+        <p>Rule 是纯正文的约束，只有挂在节点上、且走到那一步时才读。内置三条：</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Rule</th><th>约束内容</th><th>典型触发</th></tr></thead>
+            <tbody>
+              <tr><td><code>coding-conventions</code></td><td>编码规范：复用优先、禁空 catch、禁全表更新等</td><td>写代码</td></tr>
+              <tr><td><code>commit-conventions</code></td><td>提交消息格式、只提交任务内文件、禁止 push / 合并 / 发布</td><td>本地提交</td></tr>
+              <tr><td><code>security-redlines</code></td><td>敏感数据、危险动作和权限边界</td><td>所有写操作</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>最重要的轻量原则：团队想改「提交消息格式」「交付要自测」这类约定，直接覆盖对应 rule / skill 的正文，而不是改一堆参数。</p>
+      </section>
+
+      <section id="configure">
+        <h2>7. 配置流程与挂载</h2>
+        <p>侧边栏点「工程流程」打开工作台，五个标签页：<strong>项目初始化 / 流程配置 / 任务 / 技能 skill / 规则 rule</strong>，默认落在「项目初始化」（详见第 8 节）。日常配流程只需在「流程配置」页做两件事：</p>
+        <ol>
+          <li><strong>选流程预设</strong>：standard / agile / minimal 点一下即切。</li>
+          <li><strong>给节点挂 skill / rule</strong>：先选一个节点（如「开发」），再勾选它用什么 skill、守哪条 rule，保存。</li>
+        </ol>
+        <p>「技能」「规则」页支持新建 / 查看 / 编辑 / 删除：内置资源只读（正文以 markdown 富文本渲染）；项目级 / 用户级资源可编辑、可删除（两步确认）。</p>
+        <pre><code>// .dsh/eng.json 等价内容
+{
+  "flow": "standard",
+  "stage_bindings": {
+    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
+    "开发":     { "skills": ["code-implement"],        "rules": ["coding-conventions"] }
+  }
+}</code></pre>
+        <div class="callout warn"><p>页面实时校验：挂到不存在的阶段、空名等会红字提示并置灰保存；保存前主机再校验一遍。错误的配置存不进去。</p></div>
+        <p>三层来源与优先级：同名 skill / rule，<strong>项目级 &gt; 用户级 &gt; 内置</strong>。想改内置某条，新建同名项目级版本即可顶替，内置留着兜底。</p>
+      </section>
+
+      <section id="init">
+        <h2>8. 项目初始化（init）</h2>
+        <p>二开 / 遗留项目没有文档时，先给项目建一份「描述文件」——项目根的 <code>AGENTS.md</code>。DSH 平台会把它<b>自动注入到每个会话</b>，生成一次，之后每个任务开工 AI 都自带这份项目认知（项目是什么 → 怎么跑 → 结构 → 约定 → 坑）。</p>
+        <div class="callout"><p><strong>两种入口，推荐工作台：</strong>① 工作台「项目初始化」标签页（点按钮，可视化预览 + 保存，0.19.0 起，默认第一个标签页）；② 对话式 init（对 AI 说「帮我初始化这个项目」，AI 调 <code>dev_task</code> 走 inspect → propose → apply）。</p></div>
+
+        <h3>工作台初始化（推荐）</h3>
+        <ol>
+          <li>侧边栏点「工程流程」，工作台<b>默认落在「项目初始化」标签页</b>。</li>
+          <li><b>先看已有文档</b>：顶部显示「未初始化」或「已初始化 · N 行（上限 200）」。工作区根没有 <code>AGENTS.md</code> 时，会自动向下找唯一子项目、向上找父目录，并把实际定位路径标出来（如 <code>已定位到 D:\qdmai\qms\AGENTS.md</code>）。</li>
+          <li><b>让 AI 初始化</b>：点按钮，AI 扫描项目（目录结构、关键文件、技术栈、构建 / 运行命令、约定与红线）生成草稿——<b>只预览、不落盘</b>，硬校验<b>行数 ≤ 200 行</b>，超了精简到「项目是什么 → 怎么跑 → 结构 → 约定 → 坑」，只留骨架不塞长文。运行中实时显示「已耗时 X 秒」，最长 150 秒超时，超时提示重试即可。</li>
+          <li><b>保存 / 保存并覆盖</b>：预览满意点「保存」——首次创建直接写入；已有 <code>AGENTS.md</code> 会标「保存并覆盖」，必须人工点确认才覆盖，保护项目已有治理文件不被裸覆盖。</li>
+          <li>也可点「手动编辑」直接改正文后保存。</li>
+        </ol>
+
+        <h3>对话式 init</h3>
+        <ol>
+          <li><b>inspect</b>：对 AI 说「帮我初始化这个项目」；AI 读现有 <code>AGENTS.md</code>（若有）返回，没有则扫目录结构、技术栈、构建 / 运行命令、约定与红线。</li>
+          <li><b>propose</b>：AI 写成 <code>AGENTS.md</code> 草稿，此步<b>只预览、不落盘</b>，同样硬校验<b>行数 ≤ 200 行</b>。</li>
+          <li><b>apply</b>：落盘。首次创建直接写入；覆盖已有 <code>AGENTS.md</code> 必须带 <code>overwrite</code> 且<b>经人工批准</b>。</li>
+        </ol>
+        <pre><code>项目根/
+├─ AGENTS.md          ← init 生成，DSH 每会话自动注入
+└─ .dsh/
+   ├─ eng.json
+   ├─ skills/ · rules/
+   └─ task-*.json</code></pre>
+      </section>
+
+      <section id="start">
+        <h2>9. 如何开始一个任务</h2>
+        <ol>
+          <li>新建会话，预设选「工程化开发引擎」。</li>
+          <li>直接描述需求（加功能 / 修 bug）。</li>
+          <li>AI 建任务、判 <code>work_size</code> 与 <code>risk_level</code>，停在起始阶段（标准流程是「需求评审」）。</li>
+          <li>AI 落需求说明，需要拍板处发起审批，你点「允许」才进入下一步。</li>
+          <li>之后一个阶段一个阶段推进，直到「完成」。</li>
+        </ol>
+        <div class="flow">
+          <span>说需求</span><i>→</i><span>建任务</span><i>→</i><span>需求评审</span><i>→</i><span>设计</span><i>→</i><span>开发</span><i>→</i><span>交付</span><i>→</i><span>代码审核</span><i>→</i><span>完成</span>
+        </div>
+      </section>
+
+      <section id="run">
+        <h2>10. 流程如何逐阶段执行</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>阶段</th><th>AI 在这一站做什么</th><th>过关条件（不满足不让走）</th></tr></thead>
+            <tbody>
+              <tr><td>需求评审</td><td>拆需求、落「需求说明」</td><td>字段填全，且<b>人点「允许」确认需求</b></td></tr>
+              <tr><td>设计</td><td>出最小方案、落「设计文档」</td><td>字段填全，且<b>人点「允许」确认方案</b></td></tr>
+              <tr><td>开发</td><td>逐项实现，每项做规格 + 质量两阶段评审</td><td>实施项非空且全部 done（每项带两阶段评审）</td></tr>
+              <tr><td>交付</td><td>验证、记证据，按门禁提交</td><td>验证通过（高风险必须带证据）</td></tr>
+              <tr><td>代码审核</td><td>评审变更，落「评审记录」</td><td>结论通过且字段填全</td></tr>
+              <tr><td>完成</td><td>收尾</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>贯穿全程的硬规则</h3>
+        <ul>
+          <li>阶段是硬状态：status 说你在哪，就只做那一步，绝不倒带重走、绝不跳。</li>
+          <li>确认只能人来做：需求确认、方案确认由 AI 发起审批，你在页面点「允许」；AI 不能自己通过、不能绕过。</li>
+          <li>渐进披露：走到哪个阶段，才加载那一段的 skill / rule。</li>
+        </ul>
+      </section>
+
+      <section id="state">
+        <h2>11. 任务状态如何记录进度</h2>
+        <p>每个任务一份 <code>.dsh/task-*.json</code>，只保存当前有效状态，不保存聊天全文和流水日志。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td><code>id / title</code></td><td>任务标识与标题</td></tr>
+              <tr><td><code>branch</code></td><td>所属功能分支；恢复时以真实当前分支为准</td></tr>
+              <tr><td><code>stage</code></td><td>当前阶段（决定下一步做什么、能往哪走）</td></tr>
+              <tr><td><code>work_size</code></td><td>tiny / standard / complex，决定拆多细</td></tr>
+              <tr><td><code>risk_level</code></td><td>standard / high_risk，决定验证强度</td></tr>
+              <tr><td><code>requirement_confirmed</code></td><td>需求是否已由人确认</td></tr>
+              <tr><td><code>solution_confirmed</code></td><td>方案是否已由人确认</td></tr>
+              <tr><td><code>verification</code></td><td>验证是否通过 + 证据</td></tr>
+              <tr><td><code>review</code></td><td>评审结论（通过 / 未过 + 问题）</td></tr>
+              <tr><td><code>files</code></td><td>本任务允许修改的文件范围</td></tr>
+              <tr><td><code>commits</code></td><td>已创建的提交记录</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>会话断了没关系：重新开会话，AI 读 <code>stage</code>、确认态、验证与评审字段，就能从断点继续，不依赖上一轮聊天。</p>
+      </section>
+
+      <section id="verify">
+        <h2>12. 验证、评审与提交</h2>
+        <h3>验证为什么不该总那么慢</h3>
+        <ul>
+          <li>实施中优先受影响模块的编译、目标测试与静态检查。</li>
+          <li>差异没变时复用有效证据，不重复跑相同命令。</li>
+          <li>无法联调外部系统时必须如实写「未联调」，不能把编译成功说成功能通过。</li>
+          <li><code>high_risk</code> 任务过验证门必须附证据。</li>
+        </ul>
+        <h3>评审</h3>
+        <p>开发阶段每项做「规格 + 质量」两阶段评审，都 pass 才标 done；缺评审或任一阶段 fail 会挡住「开发 → 交付」。</p>
+        <h3>提交策略</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>策略</th><th>何时提交</th><th>标识</th></tr></thead>
+            <tbody>
+              <tr><td><code>task</code></td><td>整项验证、评审通过后一次提交</td><td><code>TASK</code></td></tr>
+              <tr><td><code>item</code></td><td>每个独立项验证后提交；整项完成再提最终状态</td><td><code>Tn</code>，最终 <code>TASK</code></td></tr>
+              <tr><td><code>manual</code></td><td>等用户明确要求才提交</td><td>用户指定</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>提交消息要求 <code>【模块】【TASK】做了什么</code>，且只提交任务 <code>files</code> 范围内的文件。要彻底封死模型绕过 <code>dev_task</code> 直接 <code>git commit</code>，给仓库装一道机械钩子：</p>
+        <pre><code>dev_task operation=install_hook   # 装入 .git/hooks/commit-msg，装上后任何 git commit 都被同一套规则校验</code></pre>
+      </section>
+
+      <section id="example">
+        <h2>13. 一个标准任务的完整走查</h2>
+        <p>假设需求是「给现有查询接口加一个权限校验」。标准流程下，关键决策点应接近下面这样：</p>
+        <pre><code>flow: standard          // 项目预设
+work_size: standard     // 数个文件 + 权限判断
+risk_level: high_risk   // 涉及鉴权，验证要加证据
+
+① 需求评审
+   - 目标：无权限返回 403；有权限正常返回。
+   - 验收、非目标写清 → 【人确认需求】
+
+② 设计
+   - 最小方案：Controller 加校验、Service 复用现有鉴权方法。
+   - 不新建接口 / DTO / 异常包装 → 【人确认方案】
+
+③ 开发
+   - T1：接口加校验 + 编写无权限 / 有权限用例。
+   - 规格 ✓ 质量 ✓ → done
+
+④ 交付
+   - 验证：跑鉴权用例，记录通过证据（high_risk 必须）。
+   - 提交：【模块】【TASK】查询接口增加权限校验（只含本任务文件）
+
+⑤ 代码审核
+   - 结论：通过 · 问题：无
+
+⑥ 完成</code></pre>
+        <p>这类任务不应因为「以后可能复用」扩展成多层架构，也不应把推荐项自动当成验收条件。</p>
+      </section>
+
+      <section id="boundaries">
+        <h2>14. 边界与常见问题</h2>
+        <div class="callout danger">
+          <p>引擎只允许：读取仓库事实、修改<b>已确认任务范围内</b>的文件、按策略创建<b>范围受控的本地提交</b>。远程 push / 合并 / 发布、数据库写入，需人单独决定。</p>
+        </div>
+        <details open><summary>切换预设就是开关吗？</summary><div>是。选「工程化开发引擎」才挂 <code>dev_task</code> 和内置技能；选 <code>standard</code> 等其它预设则完全不介入。</div></details>
+        <details><summary>想改内置 skill / rule 怎么办？</summary><div>不删内置（升级又回来）。新建一个<b>同名</b>的项目级 skill / rule，系统自动用你这份，内置留着兜底。</div></details>
+        <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
+        <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
+        <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
+        <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
+        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 最后更新：2026-09-12</p>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

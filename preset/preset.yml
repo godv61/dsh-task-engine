@@ -1,0 +1,2 @@
+name: 工程化开发引擎
+description: 通过 dev_task 工具硬性持有需求评审→设计→开发→交付→代码审核的状态机，按项目 .dsh/eng.json 配置流转与提交门禁。

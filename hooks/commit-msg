@@ -1,0 +1,275 @@
+#!/usr/bin/env node
+// dsh-task-engine commit-msg hook — mechanical commit gate.
+//
+// Installed into `.git/hooks/commit-msg` by `dev_task` (operation=install_hook).
+// Self-contained mirror of src/engine.ts (`commitCheckpoint` + `validateCommitMessage`
+// + `guardSatisfied`). KEEP IN SYNC with that source when the gate semantics change.
+//
+// Policy: refuse any `git commit` that is not backed by a dev_task record sitting
+// at a commit-allowed checkpoint whose message matches the configured pattern.
+'use strict'
+
+const fs = require('node:fs')
+const path = require('node:path')
+const { execSync } = require('node:child_process')
+
+const messageFile = process.argv[2]
+
+function refuse(reason) {
+  console.error('')
+  console.error('dsh-task-engine 提交门禁拒绝: ' + reason)
+  console.error('请先用 dev_task 走完前置阶段（或修正提交消息），再提交。')
+  console.error('')
+  process.exit(1)
+}
+
+function readJson(abs) {
+  try {
+    return JSON.parse(fs.readFileSync(abs, 'utf8'))
+  } catch {
+    return undefined
+  }
+}
+
+// Mirrors src/workflows.ts FLOW_CONFIGS — keep in sync.
+const FLOWS = {
+  standard: {
+    stages: ['需求评审', '设计', '开发', '交付', '代码审核', '完成'],
+    start_stage: '需求评审',
+    transitions: [
+      { from: '需求评审', to: '设计', requires: ['requirement_confirmation', 'artifacts_present'] },
+      { from: '设计', to: '开发', requires: ['solution_confirmation', 'artifacts_present'] },
+      { from: '开发', to: '交付', requires: ['todos_done'] },
+      { from: '交付', to: '代码审核', requires: ['verified'] },
+      { from: '代码审核', to: '完成', requires: ['review_passed', 'artifacts_present'] },
+    ],
+    artifacts: [
+      { stage: '需求评审', id: 'requirement', name: '需求说明', fields: ['scope', 'acceptance_criteria'] },
+      { stage: '设计', id: 'design', name: '设计文档', fields: ['approach', 'risks', 'impact'] },
+      { stage: '代码审核', id: 'review', name: '评审记录', fields: ['conclusion', 'issues'] },
+    ],
+    commit: {
+      policy: 'task',
+      message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
+      message_hint: '【<module>】【TASK/T1】说明',
+      checkpoints: ['交付'],
+      file_scope: true,
+    },
+    high_risk_requires_verification: true,
+  },
+  agile: {
+    stages: ['需求', '开发', '交付', '审查'],
+    start_stage: '需求',
+    transitions: [
+      { from: '需求', to: '开发', requires: ['requirement_confirmation'] },
+      { from: '开发', to: '交付', requires: ['todos_done'] },
+      { from: '交付', to: '审查', requires: [] },
+    ],
+    artifacts: [
+      { stage: '需求', id: 'requirement', name: '需求说明', fields: ['scope'] },
+    ],
+    commit: {
+      policy: 'item',
+      message_pattern: '^【(\\S+)】【T\\d+】.+',
+      message_hint: '【<module>】【T1】说明',
+      checkpoints: ['交付'],
+      file_scope: true,
+    },
+    high_risk_requires_verification: false,
+  },
+  minimal: {
+    stages: ['开发', '交付'],
+    start_stage: '开发',
+    transitions: [
+      { from: '开发', to: '交付', requires: ['todos_done'] },
+    ],
+    artifacts: [],
+    commit: {
+      policy: 'task',
+      message_pattern: '',
+      message_hint: '无格式要求',
+      checkpoints: ['交付'],
+      file_scope: false,
+    },
+    high_risk_requires_verification: false,
+  },
+}
+
+function loadWorkflow(parsed) {
+  const flow = parsed && typeof parsed.flow === 'string' ? parsed.flow : 'standard'
+  return FLOWS[flow] || FLOWS.standard
+}
+
+// Mirrors engine.guardSatisfied.
+function guardSatisfied(guard, state, config) {
+  switch (guard) {
+    case 'requirement_confirmation': return state.requirement_confirmed === true
+    case 'solution_confirmation': return state.solution_confirmed === true
+    case 'todos_done':
+      return Array.isArray(state.items) && state.items.length > 0 && state.items.every(item => item.status === 'done')
+    case 'verified':
+      if (!state.verification || state.verification.passed !== true) return false
+      return config.high_risk_requires_verification && state.risk_level === 'high_risk'
+        ? Array.isArray(state.verification.evidence) && state.verification.evidence.length > 0
+        : true
+    case 'review_passed': return state.review && state.review.outcome === 'pass'
+    case 'artifacts_present': {
+      const recorded = state.artifacts || {}
+      return (config.artifacts || []).filter(artifact => artifact.stage === state.stage).every(artifact => {
+        const fields = recorded[artifact.id]
+        if (!fields) return false
+        return (artifact.fields || []).every(field => typeof fields[field] === 'string' && fields[field].trim() !== '')
+      })
+    }
+    default: return false
+  }
+}
+
+// Mirrors engine.commitCheckpoint.
+function commitCheckpoint(state, config) {
+  const { policy, checkpoints } = config.commit
+  if (policy === 'manual') {
+    return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
+  }
+  if (checkpoints.includes(state.stage)) {
+    const ready = config.transitions
+      .filter(transition => transition.from === state.stage)
+      .every(transition => (transition.requires ?? []).every(guard => guardSatisfied(guard, state, config)))
+    if (!ready) return { allowed: false, reason: 'checkpoint stage reached but its outgoing guards are unmet' }
+    return { allowed: true, label: 'TASK' }
+  }
+  if (policy === 'item') {
+    const done = (state.items ?? []).filter(item => item.status === 'done').length
+    if (done > 0) return { allowed: true, label: 'T' + done }
+  }
+  return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
+}
+
+// Mirrors engine.validateCommitMessage.
+function validateCommitMessage(message, config) {
+  if (config.commit.message_pattern === '') return { ok: true }
+  try {
+    return new RegExp(config.commit.message_pattern).test(message)
+      ? { ok: true }
+      : { ok: false, reason: 'commit summary does not match ' + config.commit.message_hint }
+  } catch {
+    return { ok: false, reason: 'commit.message_pattern is not a valid regular expression' }
+  }
+}
+
+// Mirrors engine.checkFileScope.
+function checkFileScope(state, committing, config) {
+  if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
+  const files = Array.isArray(state.files) ? state.files : []
+  if (files.length === 0) return { ok: false, outside: [], noScope: true }
+  const outside = committing.filter(file => !files.includes(file))
+  return outside.length === 0
+    ? { ok: true, outside: [], noScope: false }
+    : { ok: false, outside, noScope: false }
+}
+
+function stagedFiles() {
+  try {
+    return execSync('git diff --cached --name-only --diff-filter=ACMR', { encoding: 'utf8' })
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+// --- gather project state ---
+const cwd = process.cwd()
+const configPath = path.join(cwd, '.dsh', 'eng.json')
+let config
+if (fs.existsSync(configPath)) {
+  let raw = ''
+  try {
+    raw = fs.readFileSync(configPath, 'utf8')
+  } catch {
+    raw = ''
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    refuse('invalid JSON in .dsh/eng.json: ' + (error && error.message ? error.message : String(error)))
+  }
+  config = loadWorkflow(parsed)
+} else {
+  config = loadWorkflow(undefined)
+}
+
+function loadTasks() {
+  const dir = path.join(cwd, '.dsh')
+  if (!fs.existsSync(dir)) return []
+  const out = []
+  const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
+  for (const name of names) {
+    const task = readJson(path.join(dir, name))
+    if (task && task.id) out.push({ file: path.join(dir, name), task })
+  }
+  return out
+}
+
+function currentBranch() {
+  try {
+    return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function fileMtime(file) {
+  try {
+    return fs.statSync(file).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+function pickTask(tasks, branch) {
+  if (tasks.length === 0) return undefined
+  const byBranch = tasks.find(({ task }) => task.branch === branch)
+  if (byBranch) return byBranch.task
+  if (tasks.length === 1) return tasks[0].task
+  const sorted = [...tasks].sort((a, b) => fileMtime(b.file) - fileMtime(a.file))
+  return sorted[0].task
+}
+
+// --- the gate ---
+if (!messageFile) {
+  process.exit(0)
+}
+
+const state = pickTask(loadTasks(), currentBranch())
+if (!state) {
+  refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
+}
+
+const checkpoint = commitCheckpoint(state, config)
+if (!checkpoint.allowed) {
+  refuse(checkpoint.reason + '（当前阶段: ' + state.stage + '）')
+}
+
+const scope = checkFileScope(state, stagedFiles(), config)
+if (!scope.ok) {
+  if (scope.noScope) {
+    refuse('任务没有声明文件范围（files 为空）——先用 dev_task operation=scope 声明本任务涉及的文件')
+  }
+  refuse('提交了任务范围之外的文件: ' + scope.outside.join(', '))
+}
+
+const message = fs.readFileSync(messageFile, 'utf8')
+  .split('\n')
+  .filter(line => !line.startsWith('#'))
+  .join('\n')
+  .trim()
+
+const verdict = validateCommitMessage(message, config)
+if (!verdict.ok) {
+  refuse(verdict.reason)
+}
+
+process.exit(0)

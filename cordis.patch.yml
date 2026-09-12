@@ -1,0 +1,11 @@
+# dsh-task-engine bundle: one host-plane row that mounts the `task-engine`
+# Remote namespace (what the browser workbench reads/writes) plus, via
+# `dsh.client`, the workbench UI. This host row registers NO model-facing tool
+# and NO skill — `dev_task` and the shipped skills live on the AGENT plane,
+# behind the `@godv61/dsh-task-engine/agent` entry. A preset's
+# `agent.cordis.yml` names that agent row to activate the flow for its
+# sessions; presets that never name it get neither the tool nor the skills
+# (the workbench stays available so a human can still configure the flow).
+- insert:
+    - id: task-engine
+      name: '@godv61/dsh-task-engine'

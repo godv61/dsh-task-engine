@@ -1,0 +1,43 @@
+/**
+ * Bundle the browser half into the closure factory the DSH client module loader
+ * expects: `window.__ModuleLoader__.load({ id, factory: (require) => { ... } })`.
+ * Only the baseline platform modules are external; `zod` and the shared host
+ * `engine` module are inlined, so `lib/client.js` is self-contained apart from
+ * React/Cordis/store/ui-slots/ui-primitives (provided by the shell at runtime).
+ */
+
+import { build } from 'esbuild'
+
+const id = '@godv61/dsh-task-engine'
+
+const BASELINE = [
+  'react',
+  'react/jsx-runtime',
+  'react-dom',
+  'react-dom/client',
+  '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
+  '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-primitives',
+]
+
+await build({
+  entryPoints: ['src/client/index.ts'],
+  outfile: 'lib/client.js',
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2020',
+  // JSX compiles to the `react/jsx-runtime` automatic runtime, which is already
+  // in BASELINE so it stays external. tsconfig.client.json matches (`react-jsx`).
+  jsx: 'automatic',
+  loader: { '.ts': 'tsx' },
+  external: BASELINE,
+  sourcemap: true,
+  banner: {
+    js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(id)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;\n`,
+  },
+  footer: {
+    js: '\nreturn module.exports; } });',
+  },
+})
