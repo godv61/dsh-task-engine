@@ -1,325 +1,428 @@
 #!/usr/bin/env node
-// dsh-task-engine commit-msg hook — mechanical commit gate.
-//
-// Installed into `.git/hooks/commit-msg` by `dev_task` (operation=install_hook).
-// Self-contained mirror of src/engine.ts (`commitCheckpoint` + `validateCommitMessage`
-// + `guardSatisfied`). KEEP IN SYNC with that source when the gate semantics change.
-//
-// Policy: refuse any `git commit` that is not backed by a dev_task record sitting
-// at a commit-allowed checkpoint whose message matches the configured pattern.
-'use strict'
 
-const fs = require('node:fs')
-const path = require('node:path')
-const { execSync } = require('node:child_process')
+"use strict";
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
 
-const messageFile = process.argv[2]
+// src/hook.ts
+var import_node_child_process = require("node:child_process");
+var import_node_fs = __toESM(require("node:fs"), 1);
+var import_node_path = __toESM(require("node:path"), 1);
 
-function refuse(reason) {
-  console.error('')
-  console.error('dsh-task-engine 提交门禁拒绝: ' + reason)
-  console.error('请先用 dev_task 走完前置阶段（或修正提交消息），再提交。')
-  console.error('')
-  process.exit(1)
+// src/engine.ts
+function artifactsForStage(stage, config2) {
+  return config2.artifacts.filter((artifact) => artifact.stage === stage);
+}
+function todosBlockers(state2) {
+  if (state2.items.length === 0) return ["no implementation items"];
+  const blockers = [];
+  for (const item of state2.items) {
+    if (item.status !== "done") {
+      blockers.push(`item "${item.id}" is ${item.status}`);
+      continue;
+    }
+    if (item.review === void 0) {
+      blockers.push(`item "${item.id}" is done but has no two-stage review`);
+      continue;
+    }
+    if (item.review.spec.outcome !== "pass") blockers.push(`item "${item.id}" spec review is not pass`);
+    if (item.review.quality.outcome !== "pass") blockers.push(`item "${item.id}" quality review is not pass`);
+  }
+  return blockers;
+}
+function guardSatisfied(guard, state2, config2) {
+  switch (guard) {
+    case "requirement_confirmation":
+      return state2.requirement_confirmed;
+    case "solution_confirmation":
+      return state2.solution_confirmed;
+    case "todos_done":
+      return todosBlockers(state2).length === 0;
+    case "verified": {
+      if (!state2.verification.passed) return false;
+      if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
+        const receipt = state2.verification.receipt;
+        return receipt !== void 0 && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted;
+      }
+      return true;
+    }
+    case "review_passed":
+      return state2.review.outcome === "pass";
+    case "artifacts_present": {
+      const required = artifactsForStage(state2.stage, config2);
+      return required.every((artifact) => {
+        const recorded = state2.artifacts[artifact.id];
+        if (recorded === void 0) return false;
+        return artifact.fields.every((field) => recorded[field] !== void 0 && recorded[field].trim() !== "");
+      });
+    }
+  }
+}
+function validateCommitMessage(message2, config2) {
+  if (config2.commit.message_pattern === "") return { ok: true };
+  const re = new RegExp(config2.commit.message_pattern);
+  if (re.test(message2)) return { ok: true };
+  return {
+    ok: false,
+    errors: [`commit summary "${message2}" does not match ${config2.commit.message_hint}`]
+  };
+}
+function commitCheckpoint(state2, config2) {
+  const { policy, checkpoints } = config2.commit;
+  if (policy === "manual") {
+    return { allowed: false, reason: "commit policy is manual \u2014 await an explicit user instruction" };
+  }
+  if (checkpoints.includes(state2.stage)) {
+    const ready = config2.transitions.filter((transition) => transition.from === state2.stage).every((transition) => (transition.requires ?? []).every((g) => guardSatisfied(g, state2, config2)));
+    if (!ready) {
+      return { allowed: false, reason: "checkpoint stage reached but its outgoing guards are unmet" };
+    }
+    return { allowed: true, label: "TASK" };
+  }
+  if (policy === "item") {
+    const done = state2.items.filter((item) => item.status === "done").length;
+    if (done > 0) {
+      return { allowed: true, label: `T${done}` };
+    }
+  }
+  return { allowed: false, reason: "no commit is due at this stage under the current policy" };
+}
+function isEngineMeta(file) {
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file);
+}
+function checkFileScope(state2, committing, config2) {
+  if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
+  if (state2.files.length === 0) return { ok: false, outside: [], noScope: true };
+  const outside = committing.filter((file) => !state2.files.includes(file) && !isEngineMeta(file));
+  return outside.length === 0 ? { ok: true, outside: [], noScope: false } : { ok: false, outside, noScope: false };
 }
 
+// src/workflows.ts
+var STANDARD = {
+  stages: ["\u9700\u6C42\u8BC4\u5BA1", "\u8BBE\u8BA1", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"],
+  start_stage: "\u9700\u6C42\u8BC4\u5BA1",
+  transitions: [
+    { from: "\u9700\u6C42\u8BC4\u5BA1", to: "\u8BBE\u8BA1", requires: ["requirement_confirmation", "artifacts_present"] },
+    { from: "\u8BBE\u8BA1", to: "\u5F00\u53D1", requires: ["solution_confirmation", "artifacts_present"] },
+    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
+    { from: "\u4EA4\u4ED8", to: "\u4EE3\u7801\u5BA1\u6838", requires: ["verified"] },
+    { from: "\u4EE3\u7801\u5BA1\u6838", to: "\u5B8C\u6210", requires: ["review_passed", "artifacts_present"] }
+  ],
+  artifacts: [
+    { stage: "\u9700\u6C42\u8BC4\u5BA1", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope", "acceptance_criteria"] },
+    { stage: "\u8BBE\u8BA1", id: "design", name: "\u8BBE\u8BA1\u6587\u6863", fields: ["approach", "risks", "impact"] },
+    { stage: "\u4EE3\u7801\u5BA1\u6838", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
+  ],
+  commit: {
+    policy: "task",
+    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
+    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF08\u5982 GREET-001\uFF09\uFF0C\u5199\u7ED3\u679C\u4E0D\u5199\u7A7A\u6CDB\u52A8\u4F5C",
+    checkpoints: ["\u4EA4\u4ED8"],
+    file_scope: true
+  },
+  high_risk_requires_verification: true,
+  stage_bindings: {
+    "\u9700\u6C42\u8BC4\u5BA1": { skills: ["requirement-analysis"], rules: ["security-redlines"] },
+    "\u8BBE\u8BA1": { skills: ["solution-design"] },
+    "\u5F00\u53D1": { skills: ["code-implement"], rules: ["coding-conventions"] },
+    "\u4EA4\u4ED8": { skills: ["code-verify", "code-commit"], rules: ["coding-conventions", "commit-conventions"] },
+    "\u4EE3\u7801\u5BA1\u6838": { skills: ["code-review"], rules: ["security-redlines"] }
+  }
+};
+var AGILE = {
+  stages: ["\u9700\u6C42", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u5BA1\u67E5"],
+  start_stage: "\u9700\u6C42",
+  transitions: [
+    { from: "\u9700\u6C42", to: "\u5F00\u53D1", requires: ["requirement_confirmation"] },
+    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
+    { from: "\u4EA4\u4ED8", to: "\u5BA1\u67E5", requires: [] }
+  ],
+  artifacts: [
+    { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] }
+  ],
+  commit: {
+    policy: "item",
+    message_pattern: "^\u3010(\\S+)\u3011\u3010T\\d+\u3011.+",
+    message_hint: "\u3010<task_id>\u3011\u3010T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id",
+    checkpoints: ["\u4EA4\u4ED8"],
+    file_scope: true
+  },
+  high_risk_requires_verification: false,
+  stage_bindings: {
+    "\u9700\u6C42": { skills: ["requirement-analysis"] },
+    "\u5F00\u53D1": { skills: ["code-implement"], rules: ["coding-conventions"] },
+    "\u4EA4\u4ED8": { skills: ["code-verify", "code-commit"], rules: ["commit-conventions"] },
+    "\u5BA1\u67E5": { skills: ["code-review"] }
+  }
+};
+var MINIMAL = {
+  stages: ["\u5F00\u53D1", "\u4EA4\u4ED8"],
+  start_stage: "\u5F00\u53D1",
+  transitions: [
+    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] }
+  ],
+  artifacts: [],
+  commit: {
+    policy: "task",
+    message_pattern: "",
+    message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42",
+    checkpoints: ["\u4EA4\u4ED8"],
+    file_scope: false
+  },
+  high_risk_requires_verification: false,
+  stage_bindings: {
+    "\u5F00\u53D1": { skills: ["code-implement"] },
+    "\u4EA4\u4ED8": { skills: ["code-commit"], rules: ["commit-conventions"] }
+  }
+};
+function deriveCapabilities(config2) {
+  const caps = [];
+  const guards = new Set(config2.transitions.flatMap((t) => t.requires ?? []));
+  if (guards.has("verified")) caps.push("verification_gate");
+  if (guards.has("review_passed")) caps.push("review_gate");
+  if (guards.has("artifacts_present")) caps.push("artifact_gate");
+  if (config2.commit.file_scope) caps.push("file_scope");
+  return caps;
+}
+function preset(id, version, label, description, config2) {
+  return { id, version, label, description, capabilities: deriveCapabilities(config2), config: config2 };
+}
+var FLOW_PRESETS = {
+  standard: preset("standard", 1, "\u6807\u51C6\u7814\u53D1", "\u9700\u6C42\u8BC4\u5BA1 \u2192 \u8BBE\u8BA1 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u4EE3\u7801\u5BA1\u6838\uFF0C\u542B\u4EA7\u7269\u95E8 + \u786E\u8BA4\u95E8", STANDARD),
+  agile: preset("agile", 1, "\u654F\u6377\u8F7B\u91CF", "\u9700\u6C42 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u5BA1\u67E5\uFF0C\u56DB\u9636\u6BB5\u3001\u5C11\u4EA7\u7269", AGILE),
+  minimal: preset("minimal", 1, "\u7EAF\u4EE3\u7801", "\u5F00\u53D1 \u2192 \u4EA4\u4ED8\uFF0C\u4E24\u9636\u6BB5\uFF0C\u53EA\u7559\u63D0\u4EA4\u95E8\u7981", MINIMAL)
+};
+function dedupe(names) {
+  return [...new Set(names)];
+}
+function mergeBindings(base, override) {
+  if (override === void 0) return base;
+  let changed = false;
+  const merged = { ...base.stage_bindings };
+  for (const [stage, addition] of Object.entries(override)) {
+    const existing = merged[stage];
+    const skills = dedupe([...existing?.skills ?? [], ...addition.skills ?? []]);
+    const rules = dedupe([...existing?.rules ?? [], ...addition.rules ?? []]);
+    const binding = {};
+    if (skills.length > 0) binding.skills = skills;
+    if (rules.length > 0) binding.rules = rules;
+    merged[stage] = binding;
+    changed = true;
+  }
+  if (!changed) return base;
+  return { ...base, stage_bindings: merged };
+}
+function resolveFlow(flow, override) {
+  const preset2 = FLOW_PRESETS[flow];
+  if (preset2 === void 0) {
+    return { ok: false, code: "UNKNOWN_FLOW", flow, knownFlows: Object.keys(FLOW_PRESETS) };
+  }
+  return { ok: true, config: mergeBindings(preset2.config, override?.stage_bindings), preset: preset2 };
+}
+
+// src/hook.ts
+var messageFile = process.argv[2];
+function refuse(reason) {
+  console.error("");
+  console.error("dsh-task-engine \u63D0\u4EA4\u95E8\u7981\u62D2\u7EDD: " + reason);
+  console.error("\u8BF7\u5148\u7528 dev_task \u8D70\u5B8C\u524D\u7F6E\u9636\u6BB5\uFF08\u6216\u4FEE\u6B63\u63D0\u4EA4\u6D88\u606F\uFF09\uFF0C\u518D\u63D0\u4EA4\u3002");
+  console.error("");
+  process.exit(1);
+}
 function readJson(abs) {
   try {
-    return JSON.parse(fs.readFileSync(abs, 'utf8'))
+    return JSON.parse(import_node_fs.default.readFileSync(abs, "utf8"));
   } catch {
-    return undefined
+    return void 0;
   }
 }
-
-// Mirrors src/workflows.ts FLOW_CONFIGS — keep in sync.
-const FLOWS = {
-  standard: {
-    stages: ['需求评审', '设计', '开发', '交付', '代码审核', '完成'],
-    start_stage: '需求评审',
-    transitions: [
-      { from: '需求评审', to: '设计', requires: ['requirement_confirmation', 'artifacts_present'] },
-      { from: '设计', to: '开发', requires: ['solution_confirmation', 'artifacts_present'] },
-      { from: '开发', to: '交付', requires: ['todos_done'] },
-      { from: '交付', to: '代码审核', requires: ['verified'] },
-      { from: '代码审核', to: '完成', requires: ['review_passed', 'artifacts_present'] },
-    ],
-    artifacts: [
-      { stage: '需求评审', id: 'requirement', name: '需求说明', fields: ['scope', 'acceptance_criteria'] },
-      { stage: '设计', id: 'design', name: '设计文档', fields: ['approach', 'risks', 'impact'] },
-      { stage: '代码审核', id: 'review', name: '评审记录', fields: ['conclusion', 'issues'] },
-    ],
-    commit: {
-      policy: 'task',
-      message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
-      message_hint: '【<task_id>】【TASK/T1】说明',
-      checkpoints: ['交付'],
-      file_scope: true,
-    },
-    high_risk_requires_verification: true,
-  },
-  agile: {
-    stages: ['需求', '开发', '交付', '审查'],
-    start_stage: '需求',
-    transitions: [
-      { from: '需求', to: '开发', requires: ['requirement_confirmation'] },
-      { from: '开发', to: '交付', requires: ['todos_done'] },
-      { from: '交付', to: '审查', requires: [] },
-    ],
-    artifacts: [
-      { stage: '需求', id: 'requirement', name: '需求说明', fields: ['scope'] },
-    ],
-    commit: {
-      policy: 'item',
-      message_pattern: '^【(\\S+)】【T\\d+】.+',
-      message_hint: '【<task_id>】【T1】说明',
-      checkpoints: ['交付'],
-      file_scope: true,
-    },
-    high_risk_requires_verification: false,
-  },
-  minimal: {
-    stages: ['开发', '交付'],
-    start_stage: '开发',
-    transitions: [
-      { from: '开发', to: '交付', requires: ['todos_done'] },
-    ],
-    artifacts: [],
-    commit: {
-      policy: 'task',
-      message_pattern: '',
-      message_hint: '无格式要求',
-      checkpoints: ['交付'],
-      file_scope: false,
-    },
-    high_risk_requires_verification: false,
-  },
+function normalizeTask(task) {
+  return {
+    schema: 1,
+    id: String(task.id ?? ""),
+    title: String(task.title ?? ""),
+    branch: String(task.branch ?? ""),
+    work_size: task.work_size ?? "standard",
+    risk_level: task.risk_level ?? "standard",
+    stage: String(task.stage ?? ""),
+    requirement_confirmed: task.requirement_confirmed === true,
+    solution_confirmed: task.solution_confirmed === true,
+    items: Array.isArray(task.items) ? task.items : [],
+    verification: task.verification ?? { passed: false, evidence: [] },
+    review: task.review ?? { outcome: "pending" },
+    artifacts: task.artifacts ?? {},
+    files: Array.isArray(task.files) ? task.files : [],
+    commits: Array.isArray(task.commits) ? task.commits : [],
+    ...task.flow !== void 0 ? { flow: task.flow } : {}
+  };
 }
-
-function loadWorkflow(parsed) {
-  const flow = parsed && typeof parsed.flow === 'string' ? parsed.flow : 'standard'
-  return FLOWS[flow] || FLOWS.standard
-}
-
-// Mirrors engine.guardSatisfied.
-function guardSatisfied(guard, state, config) {
-  switch (guard) {
-    case 'requirement_confirmation': return state.requirement_confirmed === true
-    case 'solution_confirmation': return state.solution_confirmed === true
-    case 'todos_done':
-      return Array.isArray(state.items) && state.items.length > 0 && state.items.every(item => item.status === 'done')
-    case 'verified': {
-      if (!state.verification || state.verification.passed !== true) return false
-      if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
-        // Mirrors engine.guardSatisfied: a high-risk task needs a real command
-        // receipt that exited 0 (not timed out, not aborted), never a model claim.
-        const receipt = state.verification.receipt
-        return receipt !== undefined && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted
-      }
-      return true
-    }
-    case 'review_passed': return state.review && state.review.outcome === 'pass'
-    case 'artifacts_present': {
-      const recorded = state.artifacts || {}
-      return (config.artifacts || []).filter(artifact => artifact.stage === state.stage).every(artifact => {
-        const fields = recorded[artifact.id]
-        if (!fields) return false
-        return (artifact.fields || []).every(field => typeof fields[field] === 'string' && fields[field].trim() !== '')
-      })
-    }
-    default: return false
-  }
-}
-
-// Mirrors engine.commitCheckpoint.
-function commitCheckpoint(state, config) {
-  const { policy, checkpoints } = config.commit
-  if (policy === 'manual') {
-    return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
-  }
-  if (checkpoints.includes(state.stage)) {
-    const ready = config.transitions
-      .filter(transition => transition.from === state.stage)
-      .every(transition => (transition.requires ?? []).every(guard => guardSatisfied(guard, state, config)))
-    if (!ready) return { allowed: false, reason: 'checkpoint stage reached but its outgoing guards are unmet' }
-    return { allowed: true, label: 'TASK' }
-  }
-  if (policy === 'item') {
-    const done = (state.items ?? []).filter(item => item.status === 'done').length
-    if (done > 0) return { allowed: true, label: 'T' + done }
-  }
-  return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
-}
-
-// Mirrors engine.validateCommitMessage.
-function validateCommitMessage(message, config) {
-  if (config.commit.message_pattern === '') return { ok: true }
-  try {
-    return new RegExp(config.commit.message_pattern).test(message)
-      ? { ok: true }
-      : { ok: false, reason: 'commit summary does not match ' + config.commit.message_hint }
-  } catch {
-    return { ok: false, reason: 'commit.message_pattern is not a valid regular expression' }
-  }
-}
-
-// Mirrors engine.checkFileScope + engine.isEngineMeta.
-function isEngineMeta(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
-}
-
-function checkFileScope(state, committing, config) {
-  if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
-  const files = Array.isArray(state.files) ? state.files : []
-  if (files.length === 0) return { ok: false, outside: [], noScope: true }
-  const outside = committing.filter(file => !files.includes(file) && !isEngineMeta(file))
-  return outside.length === 0
-    ? { ok: true, outside: [], noScope: false }
-    : { ok: false, outside, noScope: false }
-}
-
-function stagedFiles() {
-  try {
-    // `-z` emits raw bytes (no core.quotePath octal escaping) NUL-separated, so
-    // non-ASCII filenames survive the scope comparison verbatim; `quotePath=false`
-    // is a belt-and-braces fallback. `ACMRDT` includes deletions and type changes
-    // (e.g. file ↔ symlink) so every touched path — not just adds/renames/modifies —
-    // is held to the declared scope.
-    return execSync('git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRDT', { encoding: 'utf8' })
-      .split('\0')
-      .map(line => line.trim())
-      .filter(Boolean)
-  } catch {
-    return []
-  }
-}
-
-// --- gather project state ---
-const cwd = process.cwd()
-const configPath = path.join(cwd, '.dsh', 'eng.json')
-let config
-if (fs.existsSync(configPath)) {
-  let raw = ''
-  try {
-    raw = fs.readFileSync(configPath, 'utf8')
-  } catch {
-    raw = ''
-  }
-  let parsed
-  try {
-    parsed = JSON.parse(raw)
-  } catch (error) {
-    refuse('invalid JSON in .dsh/eng.json: ' + (error && error.message ? error.message : String(error)))
-  }
-  config = loadWorkflow(parsed)
-} else {
-  config = loadWorkflow(undefined)
-}
-
 function loadTasks() {
-  const dir = path.join(cwd, '.dsh')
-  if (!fs.existsSync(dir)) return []
-  const out = []
-  const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
+  const dir = import_node_path.default.join(process.cwd(), ".dsh");
+  if (!import_node_fs.default.existsSync(dir)) return [];
+  const out = [];
+  const names = import_node_fs.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
   for (const name of names) {
-    const task = readJson(path.join(dir, name))
-    if (task && task.id) out.push({ file: path.join(dir, name), task })
+    const json = readJson(import_node_path.default.join(dir, name));
+    if (json !== void 0 && json.id !== void 0) out.push({ file: import_node_path.default.join(dir, name), task: normalizeTask(json) });
   }
-  return out
+  return out;
 }
-
 function currentBranch() {
   try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim()
+    return (0, import_node_child_process.execSync)("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
   } catch {
-    return ''
+    return "";
   }
 }
-
+function stagedEntries() {
+  try {
+    const raw = (0, import_node_child_process.execSync)("git -c core.quotePath=false diff --cached --name-status -z --diff-filter=ACMRDT", { encoding: "utf8" });
+    const parts = raw.split("\0");
+    const entries2 = [];
+    let i = 0;
+    while (i < parts.length) {
+      const status = parts[i];
+      if (status === void 0 || status === "") {
+        i++;
+        continue;
+      }
+      if (status.startsWith("R") || status.startsWith("C")) {
+        const from = parts[i + 1];
+        const to = parts[i + 2];
+        if (from !== void 0 && from !== "") entries2.push({ status, path: from });
+        if (to !== void 0 && to !== "") entries2.push({ status, path: to });
+        i += 3;
+      } else {
+        const path2 = parts[i + 1];
+        if (path2 !== void 0 && path2 !== "") entries2.push({ status, path: path2 });
+        i += 2;
+      }
+    }
+    return entries2;
+  } catch {
+    return [];
+  }
+}
 function fileMtime(file) {
   try {
-    return fs.statSync(file).mtimeMs
+    return import_node_fs.default.statSync(file).mtimeMs;
   } catch {
-    return 0
+    return 0;
   }
 }
-
-// Fallback only for pattern-less flows (e.g. minimal), which carry no task id in
-// the summary. Pattern flows locate the exact task by id via parseTaskId below.
-function pickTask(tasks, branch) {
-  if (tasks.length === 0) return undefined
-  const byBranch = tasks.find(({ task }) => task.branch === branch)
-  if (byBranch) return byBranch.task
-  if (tasks.length === 1) return tasks[0].task
-  const sorted = [...tasks].sort((a, b) => fileMtime(b.file) - fileMtime(a.file))
-  return sorted[0].task
+function pickTask(tasks2, branch) {
+  if (tasks2.length === 0) return void 0;
+  const byBranch = tasks2.find(({ task }) => task.branch === branch);
+  if (byBranch) return byBranch.task;
+  if (tasks2.length === 1) return tasks2[0].task;
+  const sorted = [...tasks2].sort((a, b) => fileMtime(b.file) - fileMtime(a.file));
+  return sorted[0].task;
 }
-
-function readCommitMessage() {
-  return fs.readFileSync(messageFile, 'utf8')
-    .split('\n')
-    .filter(line => !line.startsWith('#'))
-    .join('\n')
-    .trim()
+function readCommitMessage(file) {
+  return import_node_fs.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
 }
-
-// Extract the task id from the summary's leading 【…】 field. Deliberately
-// config-independent (unlike engine.taskIdFromMessage): the hook must locate the
-// task BEFORE it knows that task's frozen config, so it cannot use the config's
-// pattern to parse the id. Pattern-less flows (minimal) simply carry no 【…】 here.
-function extractTaskId(message) {
-  const match = /^【([^【】\s]+)】/.exec(message)
-  return match ? match[1] : undefined
+function extractTaskId(message2) {
+  const match = /^【([^【】\s]+)】/.exec(message2);
+  return match ? match[1] : void 0;
 }
-
-// --- the gate ---
-if (!messageFile) {
-  process.exit(0)
+function defaultConfig() {
+  const resolved = resolveFlow("standard");
+  if (!resolved.ok) throw new Error('built-in "standard" preset is missing');
+  return resolved.config;
 }
-
-const message = readCommitMessage()
-const tasks = loadTasks()
-
-// Locate the task by id from the summary first; only then read its frozen config.
-// No branch/mtime guessing for pattern flows, so sibling tasks on one branch
-// cannot be cross-locked.
-const taskId = extractTaskId(message)
-let state
-if (taskId !== undefined) {
-  const found = tasks.find(({ task }) => task.id === taskId)
-  if (!found) {
-    refuse(`提交消息里的任务 id "${taskId}" 找不到对应的任务记录（.dsh/task-<id>.json）`)
+function loadWorkflow(parsed) {
+  if (parsed === void 0) return defaultConfig();
+  const flow = parsed.flow;
+  if (typeof flow !== "string" || flow.trim() === "") {
+    refuse('\u9879\u76EE .dsh/eng.json \u7F3A "flow" \u5B57\u6BB5\u2014\u2014\u8BBE\u4E3A standard|agile|minimal\uFF0C\u6216\u5220\u9664\u8BE5\u6587\u4EF6');
   }
-  state = found.task
+  const override = typeof parsed.stage_bindings === "object" && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings) ? { stage_bindings: parsed.stage_bindings } : void 0;
+  const resolved = resolveFlow(flow, override);
+  if (!resolved.ok) {
+    refuse(`\u672A\u77E5\u6D41\u7A0B "${resolved.flow}"\uFF08\u5DF2\u77E5\u6D41\u7A0B\uFF1A${resolved.knownFlows.join("\u3001")}\uFF09`);
+  }
+  return resolved.config;
+}
+var cwd = process.cwd();
+var configPath = import_node_path.default.join(cwd, ".dsh", "eng.json");
+var config;
+if (import_node_fs.default.existsSync(configPath)) {
+  let raw = "";
+  try {
+    raw = import_node_fs.default.readFileSync(configPath, "utf8");
+  } catch {
+    raw = "";
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
+  }
+  config = loadWorkflow(parsed);
 } else {
-  state = pickTask(tasks, currentBranch())
+  config = loadWorkflow(void 0);
+}
+if (!messageFile) {
+  process.exit(0);
+}
+var message = readCommitMessage(messageFile);
+var tasks = loadTasks();
+var taskId = extractTaskId(message);
+var state;
+if (taskId !== void 0) {
+  const found = tasks.find(({ task }) => task.id === taskId);
+  if (!found) {
+    refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-<id>.json\uFF09`);
+  }
+  state = found.task;
+} else {
+  state = pickTask(tasks, currentBranch());
 }
 if (!state) {
-  refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
+  refuse("\u6CA1\u6709\u627E\u5230 dev_task \u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-*.json\uFF09\u2014\u2014\u8BF7\u5148 dev_task operation=create \u5EFA\u7ACB\u4EFB\u52A1");
 }
-
-// 4.1 fix: check this task against its frozen flow snapshot, not the live
-// .dsh/eng.json (which may have drifted mid-task). Fall back to the live config
-// only for legacy records that predate the snapshot field.
-if (state.flow && state.flow.config) {
-  config = state.flow.config
+if (state.flow !== void 0 && state.flow.config !== void 0) {
+  config = state.flow.config;
 }
-
-const verdict = validateCommitMessage(message, config)
+var verdict = validateCommitMessage(message, config);
 if (!verdict.ok) {
-  refuse(verdict.reason)
+  refuse(verdict.errors?.[0] ?? "commit summary does not match the configured pattern");
 }
-
-const checkpoint = commitCheckpoint(state, config)
+var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
-  refuse(checkpoint.reason + '（当前阶段: ' + state.stage + '）')
+  refuse((checkpoint.reason ?? "commit checkpoint rejected") + "\uFF08\u5F53\u524D\u9636\u6BB5: " + state.stage + "\uFF09");
 }
-
-const scope = checkFileScope(state, stagedFiles(), config)
+var entries = stagedEntries();
+var scope = checkFileScope(state, entries.map((entry) => entry.path), config);
 if (!scope.ok) {
   if (scope.noScope) {
-    refuse('任务没有声明文件范围（files 为空）——先用 dev_task operation=scope 声明本任务涉及的文件')
+    refuse("\u4EFB\u52A1\u6CA1\u6709\u58F0\u660E\u6587\u4EF6\u8303\u56F4\uFF08files \u4E3A\u7A7A\uFF09\u2014\u2014\u5148\u7528 dev_task operation=scope \u58F0\u660E\u672C\u4EFB\u52A1\u6D89\u53CA\u7684\u6587\u4EF6");
   }
-  refuse('提交了任务范围之外的文件: ' + scope.outside.join(', '))
+  const described = scope.outside.map((outside) => {
+    const entry = entries.find((candidate) => candidate.path === outside);
+    return entry === void 0 ? outside : `${entry.status}	${outside}`;
+  });
+  refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
-
-process.exit(0)
+process.exit(0);

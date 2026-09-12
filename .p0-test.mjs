@@ -279,8 +279,9 @@ await assertThrows(
 // ── 20. 4.1/4.3: hook uses the frozen snapshot; writeInit guards overwrite ──
 {
   const hook = readFileSync('./hooks/commit-msg', 'utf8')
-  assert(hook.includes('state.flow && state.flow.config'), 'hook checks the task frozen flow snapshot')
+  assert(hook.includes('config = state.flow.config'), 'hook checks the task frozen flow snapshot')
   assert(hook.includes('function extractTaskId'), 'hook extracts the task id independent of the live config')
+  assert(!hook.includes('const FLOWS'), 'hook bundles the single source (workflows.ts), not a hand mirror')
 }
 {
   const controller = readFileSync('./lib/controller.js', 'utf8')
