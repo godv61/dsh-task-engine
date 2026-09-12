@@ -107,11 +107,16 @@ function guardSatisfied(guard, state, config) {
     case 'solution_confirmation': return state.solution_confirmed === true
     case 'todos_done':
       return Array.isArray(state.items) && state.items.length > 0 && state.items.every(item => item.status === 'done')
-    case 'verified':
+    case 'verified': {
       if (!state.verification || state.verification.passed !== true) return false
-      return config.high_risk_requires_verification && state.risk_level === 'high_risk'
-        ? Array.isArray(state.verification.evidence) && state.verification.evidence.some(evidence => evidence.trim() !== '')
-        : true
+      if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
+        // Mirrors engine.guardSatisfied: a high-risk task needs a real command
+        // receipt that exited 0 (not timed out, not aborted), never a model claim.
+        const receipt = state.verification.receipt
+        return receipt !== undefined && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted
+      }
+      return true
+    }
     case 'review_passed': return state.review && state.review.outcome === 'pass'
     case 'artifacts_present': {
       const recorded = state.artifacts || {}
@@ -176,9 +181,10 @@ function stagedFiles() {
   try {
     // `-z` emits raw bytes (no core.quotePath octal escaping) NUL-separated, so
     // non-ASCII filenames survive the scope comparison verbatim; `quotePath=false`
-    // is a belt-and-braces fallback. `D` is included so a deletion outside the
-    // declared scope is caught too, not just adds/renames/modifies.
-    return execSync('git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRD', { encoding: 'utf8' })
+    // is a belt-and-braces fallback. `ACMRDT` includes deletions and type changes
+    // (e.g. file ↔ symlink) so every touched path — not just adds/renames/modifies —
+    // is held to the declared scope.
+    return execSync('git -c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRDT', { encoding: 'utf8' })
       .split('\0')
       .map(line => line.trim())
       .filter(Boolean)

@@ -81,7 +81,7 @@
         </div>
         <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
         <div class="callout warn">
-          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定是<b>代码硬校验</b>（不匹配直接拒绝）；但「验证通过」「评审通过」「实施项完成」是模型通过工具上报的状态，代码只校验这些状态在流程里自洽，<b>不验证上报内容本身是否属实</b>——要硬保证请叠加外部 CI 或人工评审。只有「需求确认」「方案确认」两扇门由人工批准点亮。</p>
+          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮。</p>
         </div>
       </section>
 
@@ -167,7 +167,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
               <tr><td><code>requirement-analysis</code></td><td>目标、验收、非目标，落需求说明，等人确认</td><td>编码</td></tr>
               <tr><td><code>solution-design</code></td><td>最小方案、技术基线、改动点，落设计文档</td><td>实现</td></tr>
               <tr><td><code>code-implement</code></td><td>实现、做「规格 + 质量」两阶段评审，都过才标完成</td><td>无关重构</td></tr>
-              <tr><td><code>code-verify</code></td><td>按验收与风险验证、记录证据（高风险必须带证据）</td><td>掩盖失败或自动修复</td></tr>
+              <tr><td><code>code-verify</code></td><td>按验收与风险验证、记录结果（高风险必须跑真实命令回执）</td><td>掩盖失败或自动修复</td></tr>
               <tr><td><code>code-commit</code></td><td>校验阶段、范围、消息格式后提交</td><td>远程 push / 合并 / 发布</td></tr>
               <tr><td><code>code-review</code></td><td>评审变更，落结论与问题清单</td><td>代替实现或验证</td></tr>
             </tbody>
@@ -262,7 +262,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
               <tr><td>需求评审</td><td>拆需求、落「需求说明」</td><td>字段填全，且<b>人点「允许」确认需求</b></td></tr>
               <tr><td>设计</td><td>出最小方案、落「设计文档」</td><td>字段填全，且<b>人点「允许」确认方案</b></td></tr>
               <tr><td>开发</td><td>逐项实现，每项做规格 + 质量两阶段评审</td><td>实施项非空且全部 done（每项带两阶段评审）</td></tr>
-              <tr><td>交付</td><td>验证、记证据，按门禁提交</td><td>验证通过（高风险必须带证据）</td></tr>
+              <tr><td>交付</td><td>验证、记证据，按门禁提交</td><td>验证通过（高风险必须真实命令回执，退出码 0）</td></tr>
               <tr><td>代码审核</td><td>评审变更，落「评审记录」</td><td>结论通过且字段填全</td></tr>
               <tr><td>完成</td><td>收尾</td><td>—</td></tr>
             </tbody>
@@ -290,7 +290,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
               <tr><td><code>risk_level</code></td><td>standard / high_risk，决定验证强度</td></tr>
               <tr><td><code>requirement_confirmed</code></td><td>需求是否已由人确认</td></tr>
               <tr><td><code>solution_confirmed</code></td><td>方案是否已由人确认</td></tr>
-              <tr><td><code>verification</code></td><td>验证是否通过 + 证据</td></tr>
+              <tr><td><code>verification</code></td><td>验证是否通过 + 证据（高风险附真实命令回执）</td></tr>
               <tr><td><code>review</code></td><td>评审结论（通过 / 未过 + 问题）</td></tr>
               <tr><td><code>files</code></td><td>本任务允许修改的文件范围</td></tr>
               <tr><td><code>commits</code></td><td>已创建的提交记录</td></tr>
@@ -307,7 +307,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li>实施中优先受影响模块的编译、目标测试与静态检查。</li>
           <li>差异没变时复用有效证据，不重复跑相同命令。</li>
           <li>无法联调外部系统时必须如实写「未联调」，不能把编译成功说成功能通过。</li>
-          <li><code>high_risk</code> 任务过验证门必须附证据。</li>
+          <li><code>high_risk</code> 任务过验证门必须跑真实命令回执（引擎运行命令、取退出码，非自报通过）。</li>
         </ul>
         <h3>评审</h3>
         <p>开发阶段每项做「规格 + 质量」两阶段评审，都 pass 才标 done；缺评审或任一阶段 fail 会挡住「开发 → 交付」。</p>
@@ -346,7 +346,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
    - 规格 ✓ 质量 ✓ → done
 
 ④ 交付
-   - 验证：跑鉴权用例，记录通过证据（high_risk 必须）。
+   - 验证：跑鉴权用例，`verify` 传真实命令（high_risk 由引擎取退出码判定）。
    - 提交：【模块】【TASK】查询接口增加权限校验（只含本任务文件）
 
 ⑤ 代码审核

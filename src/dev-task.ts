@@ -36,6 +36,7 @@ import {
   type StageBinding,
   type TaskItem,
   type TaskState,
+  type VerificationReceipt,
   type WorkflowConfig,
 } from './engine.ts'
 import {
@@ -71,6 +72,64 @@ async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string |
 async function writeText(fs: Fs, relPath: string, content: string, cwd?: string): Promise<void> {
   const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
   await (fs as unknown as { writeText(target: unknown, content: string): Promise<unknown> }).writeText(target, content)
+}
+
+/** Hard cap on a verification command's run time; a timeout marks the receipt non-passing. */
+const VERIFY_TIMEOUT_MS = 10 * 60 * 1000
+
+/**
+ * Narrow runtime view of the shared `shell` executor (read optionally), mirroring
+ * the shape the host's `@deepseek-ai/dsh-shell` provider exposes. Narrowed like
+ * `ApprovalAsk` so this bundle stays free of the shell package's dependency tree
+ * (whose peer version line clashes with the dsh-llm line this bundle pins).
+ */
+interface ShellRunRequest {
+  command: string
+  workdir?: string
+  timeoutMs?: number
+}
+interface ShellRunSpec {
+  command: string
+  workdir: string
+  timeoutMs: number
+}
+interface ShellRunOutcome {
+  exitCode: number | null
+  timedOut: boolean
+  aborted: boolean
+  stdout?: { text?: string }
+  stderr?: { text?: string }
+}
+interface ShellRunner {
+  resolve(request: ShellRunRequest): ShellRunSpec
+  run(spec: ShellRunSpec): Promise<ShellRunOutcome>
+}
+
+/**
+ * Run a verification command through the host shell service and return an
+ * objective {@link VerificationReceipt}; `passed` derives from the exit code,
+ * never from the model's claim.
+ */
+async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined): Promise<VerificationReceipt> {
+  const shell = ctx.get('shell') as ShellRunner | undefined
+  if (shell === undefined) {
+    throw new Error('verify 带 command 需要 host 提供 shell 服务（用于跑真实验证命令），但当前未挂载')
+  }
+  const started_at = new Date().toISOString()
+  const spec = shell.resolve(cwd !== undefined
+    ? { command, workdir: cwd, timeoutMs: VERIFY_TIMEOUT_MS }
+    : { command, timeoutMs: VERIFY_TIMEOUT_MS })
+  const outcome = await shell.run(spec)
+  return {
+    command,
+    exit_code: outcome.exitCode ?? -1,
+    timed_out: outcome.timedOut,
+    aborted: outcome.aborted,
+    started_at,
+    finished_at: new Date().toISOString(),
+    stdout: outcome.stdout?.text ?? '',
+    stderr: outcome.stderr?.text ?? '',
+  }
 }
 
 function sanitize(id: string): string {
@@ -277,6 +336,7 @@ interface OpArgs {
   quality_outcome?: 'pass' | 'fail'
   notes?: string[]
   target_stage?: string
+  command?: string
   passed?: boolean
   evidence?: string[]
   outcome?: 'pass' | 'blocked'
@@ -412,8 +472,9 @@ export function registerDevTask(ctx: Context): void {
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
       target_stage: { type: 'string', description: 'Stage to advance to (advance).' },
-      passed: { type: 'boolean', description: 'Verification passed (verify).' },
-      evidence: { type: 'array', items: { type: 'string' }, description: 'Verification evidence (verify).' },
+      command: { type: 'string', description: 'Verification command to run for a real receipt (verify); when set, passed derives from its exit code instead of the model claim.' },
+      passed: { type: 'boolean', description: 'Verification passed (verify), used only when no command is given.' },
+      evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
       outcome: { type: 'string', enum: ['pass', 'blocked'], description: 'Review outcome (review).' },
       artifact: { type: 'string', description: 'Artifact id to record fields for (record).' },
       fields: {
@@ -665,9 +726,19 @@ export function registerDevTask(ctx: Context): void {
           note = disclosure === '' ? `advanced to ${state.stage}` : `advanced to ${state.stage}\n${disclosure}`
           break
         }
-        case 'verify':
-          state.verification = { passed: a.passed === true, evidence: a.evidence ?? [] }
+        case 'verify': {
+          if (a.command !== undefined && a.command.trim() !== '') {
+            const receipt = await runVerificationCommand(ctx, a.command, cwd)
+            state.verification = {
+              passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted,
+              evidence: a.evidence ?? [],
+              receipt,
+            }
+          } else {
+            state.verification = { passed: a.passed === true, evidence: a.evidence ?? [] }
+          }
           break
+        }
         case 'review':
           if (a.outcome !== 'pass' && a.outcome !== 'blocked') throw new Error('review requires outcome: pass|blocked')
           state.review.outcome = a.outcome

@@ -120,6 +120,26 @@ export interface TaskItem {
   review?: ItemReview
 }
 
+/** A verification receipt from a real command execution, never a model claim. */
+export interface VerificationReceipt {
+  /** The command that ran. */
+  command: string
+  /** Exit code; -1 encodes a signal-killed run (no usable exit code). */
+  exit_code: number
+  /** True when the executor's timeout was the first cause to cut the command short. */
+  timed_out: boolean
+  /** True when the caller's cancellation aborted the command. */
+  aborted: boolean
+  /** ISO timestamp when the run began. */
+  started_at: string
+  /** ISO timestamp when the run settled. */
+  finished_at: string
+  /** Captured stdout tail. */
+  stdout: string
+  /** Captured stderr tail. */
+  stderr: string
+}
+
 export interface TaskState {
   schema: 1
   id: string
@@ -133,7 +153,7 @@ export interface TaskState {
   requirement_confirmed: boolean
   solution_confirmed: boolean
   items: TaskItem[]
-  verification: { passed: boolean; evidence: string[] }
+  verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt }
   review: { outcome: 'pending' | 'pass' | 'blocked' }
   /** Recorded artifacts (artifact id -> field -> value). */
   artifacts: Record<string, Record<string, string>>
@@ -312,14 +332,17 @@ function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConf
       return state.solution_confirmed
     case 'todos_done':
       return todosBlockers(state).length === 0
-    case 'verified':
+    case 'verified': {
       if (!state.verification.passed) return false
-      // High-risk tasks must cite at least one non-blank evidence string; the
-      // blank-string trim matches the artifacts_present field check so a bare
-      // `[""]` or `["  "]` can never satisfy the gate.
-      return config.high_risk_requires_verification && state.risk_level === 'high_risk'
-        ? state.verification.evidence.some(evidence => evidence.trim() !== '')
-        : true
+      if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
+        // A high-risk task's `verified` gate demands a real command receipt, not
+        // a model-declared pass: the receipt must come from a run that exited 0
+        // and was neither timed out nor aborted.
+        const receipt = state.verification.receipt
+        return receipt !== undefined && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted
+      }
+      return true
+    }
     case 'review_passed':
       return state.review.outcome === 'pass'
     case 'artifacts_present': {

@@ -224,20 +224,29 @@ await assertThrows(
   )
 }
 
-// ── 16. L: high-risk verification requires non-blank evidence ───────────────
+// ── 16. L/4.2: high-risk verification requires a REAL command receipt ────────
 {
   const cfg = FLOW_PRESETS.standard.config
+  const receipt = overrides => ({
+    command: 'npm test', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z',
+    stdout: '', stderr: '', ...overrides,
+  })
   const mk = () => {
     const s = newTask({ id: 'L1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'high_risk', flow: snapshot })
     s.stage = '交付'
     return s
   }
-  let s = mk(); s.verification = { passed: true, evidence: [''] }
-  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with empty-string evidence is blocked at the verified gate')
-  s = mk(); s.verification = { passed: true, evidence: ['   '] }
-  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with whitespace-only evidence is blocked')
-  s = mk(); s.verification = { passed: true, evidence: ['单测通过'] }
-  assert(assertAdvance(s, '代码审核', cfg).ok, 'high_risk with non-blank evidence passes the verified gate')
+  let s = mk(); s.verification = { passed: true, evidence: ['单测通过'] }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with text-only evidence is blocked (no command receipt)')
+  s = mk(); s.verification = { passed: true, evidence: [], receipt: receipt({}) }
+  assert(assertAdvance(s, '代码审核', cfg).ok, 'high_risk with an exit-0 receipt passes the verified gate')
+  s = mk(); s.verification = { passed: true, evidence: [], receipt: receipt({ exit_code: 1 }) }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with a non-zero exit receipt is blocked')
+  s = mk(); s.verification = { passed: true, evidence: [], receipt: receipt({ timed_out: true }) }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with a timed-out receipt is blocked')
+  s = mk(); s.verification = { passed: true, evidence: [], receipt: receipt({ aborted: true }) }
+  assert(!assertAdvance(s, '代码审核', cfg).ok, 'high_risk with an aborted receipt is blocked')
 }
 
 // ── 17. J: task id extracted from the summary (the hook uses it, not a guess) ─
@@ -264,7 +273,7 @@ await assertThrows(
   const hook = readFileSync('./hooks/commit-msg', 'utf8')
   assert(hook.includes('-c core.quotePath=false'), 'hook disables git octal path quoting')
   assert(hook.includes('-z'), 'hook reads NUL-separated raw-byte paths')
-  assert(hook.includes('--diff-filter=ACMRD'), 'hook includes deletions in the scope check')
+  assert(hook.includes('--diff-filter=ACMRDT'), 'hook includes deletions and type changes in the scope check')
 }
 
 // ── 20. 4.1/4.3: hook uses the frozen snapshot; writeInit guards overwrite ──
