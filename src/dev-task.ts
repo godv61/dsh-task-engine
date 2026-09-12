@@ -432,6 +432,7 @@ interface OpArgs {
   hash?: string
   content?: string
   overwrite?: boolean
+  expected_hash?: string
   phase?: 'inspect' | 'propose' | 'apply'
 }
 
@@ -576,6 +577,7 @@ export function registerDevTask(ctx: Context): void {
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
+      expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; applying with a different hash is rejected (init apply).' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
     output: {
@@ -651,10 +653,13 @@ export function registerDevTask(ctx: Context): void {
 
         if (phase === 'propose') {
           const action = existing === undefined ? 'create' : 'overwrite'
-          return `proposed ${action} ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). No file was written — review the draft, then call init phase=apply${existing !== undefined ? ' (overwriting requires human approval)' : ''} with the same content:\n---\n${content}\n---`
+          return `proposed ${action} ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). No file was written — review the draft, then call init phase=apply${existing !== undefined ? ' (overwriting requires human approval)' : ''} with the same content:\n---\n${content}\n---\n(content hash: ${hashText(content)} — pass it back as expected_hash on apply to prove the content is unchanged)`
         }
 
         if (phase === 'apply') {
+          if (a.expected_hash !== undefined && a.expected_hash !== hashText(content)) {
+            throw new Error(`init content changed since propose (expected_hash mismatch) — resubmit the identical proposed content`)
+          }
           if (existing !== undefined && a.overwrite !== true) {
             throw new Error(`AGENTS.md already exists (${lineCount(existing)} lines) and is protected. Inspect via init phase=inspect, merge, then resubmit with phase=apply plus overwrite: true (human approval).`)
           }

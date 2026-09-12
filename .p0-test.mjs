@@ -511,4 +511,20 @@ function memProbe(files) {
   assert(a.files.length === 1 && b.files.length === 0, 'two tasks in one repo advance independently')
 }
 
+// ── 27. 9.4: init apply validates the expected hash ─────────────────────────
+{
+  const fs = makeFs({})
+  const exe = await registered(fs)
+  const propose = await exe({ operation: 'init', phase: 'propose', content: 'hello' }, EXEC)
+  const match = /content hash: ([0-9a-f]{64})/.exec(propose)
+  assert(match !== null, 'propose returns the content hash')
+  await assertThrows(
+    () => exe({ operation: 'init', phase: 'apply', content: 'hello', expected_hash: '0'.repeat(64) }, EXEC),
+    'expected_hash mismatch',
+    'apply with a mismatched hash is rejected',
+  )
+  assert((await exe({ operation: 'init', phase: 'apply', content: 'hello', expected_hash: match[1] }, EXEC)).includes('wrote'),
+    'apply with the matching hash writes the file')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)
