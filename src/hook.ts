@@ -23,6 +23,7 @@ import {
   type WorkflowConfig,
 } from './engine.ts'
 import { resolveFlow } from './workflows.ts'
+import { hashConfig } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY } from './project.ts'
 
 const messageFile = process.argv[2]
@@ -256,6 +257,10 @@ if (taskId !== undefined) {
 }
 if (!state) {
   refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
+}
+
+if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
+  refuse(`任务 ${state.id} 的流程快照 hash 不匹配——task 记录在创建后被改动过，修复或重建任务后再提交`)
 }
 
 // Check this task against its frozen snapshot, not the live .dsh/eng.json

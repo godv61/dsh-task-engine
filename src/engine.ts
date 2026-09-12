@@ -87,6 +87,8 @@ export interface FlowSnapshot {
   flow: string
   version: number
   config: WorkflowConfig
+  /** SHA-256 of the canonical JSON of `config`; a mismatch proves the snapshot was edited after creation. Absent on pre-0.22 records. */
+  hash?: string
 }
 
 /** One delegated implementation unit: a subagent fetch plus its two-stage review. */
@@ -136,6 +138,8 @@ export interface VerificationReceipt {
   started_at: string
   /** ISO timestamp when the run settled. */
   finished_at: string
+  /** Absolute project root the command ran in; binds the receipt to the task's workspace. */
+  root?: string
   /** Captured stdout tail. */
   stdout: string
   /** Captured stderr tail. */
@@ -166,6 +170,10 @@ export interface TaskState {
   root?: string
   /** Language stack detected at create time. Absent on pre-0.21 records. */
   project_type?: ProjectType
+  /** Audit trail of risk changes; a high_risk → standard downgrade only appears here after human approval. Absent on pre-0.22 records. */
+  risk_downgrades?: { from: string; to: string; at: string }[]
+  /** Fingerprint of the bundled rules at create time; a drift on disclosure means the shipped rules changed since this task froze. Absent on pre-0.22 records. */
+  bindings_fingerprint?: string
 }
 
 export interface Result {

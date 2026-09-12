@@ -44,6 +44,7 @@ import {
   flowSatisfies,
   resolveFlow,
 } from './workflows.ts'
+import { hashConfig, hashText } from './snapshot.ts'
 import {
   detectRoot,
   detectType,
@@ -189,6 +190,7 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
     aborted: outcome.aborted,
     started_at,
     finished_at: new Date().toISOString(),
+    ...(cwd !== undefined ? { root: cwd } : {}),
     stdout: outcome.stdout?.text ?? '',
     stderr: outcome.stderr?.text ?? '',
   }
@@ -294,6 +296,12 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
   // Tasks recorded before these features lack the fields; treat them as empty.
   state.artifacts = state.artifacts ?? {}
   state.files = state.files ?? []
+  if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
+    throw new Error(
+      `task "${id}" snapshot hash mismatch — the frozen workflow config was edited after creation. ` +
+      'Restore the original record or recreate the task; the gate refuses to run on a tampered snapshot.',
+    )
+  }
   return state
 }
 
@@ -327,6 +335,21 @@ function readAbsRule(file: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+/** The bundled rule files whose contents the frozen tasks' bindings reference. */
+const BUILTIN_RULE_FILES = ['commit-conventions', 'coding-conventions', 'security-redlines'] as const
+
+/**
+ * Fingerprint of the bundled rules this package ships. A task created now
+ * freezes this value; when a later package version ships changed rules, the
+ * disclosure reports the drift instead of silently applying new content.
+ */
+function builtinRulesFingerprint(): string {
+  const contents = BUILTIN_RULE_FILES
+    .map(name => readAbsRule(fileURLToPath(new URL(`../rules/${name}.md`, import.meta.url))) ?? '')
+    .join('\n')
+  return hashText(contents)
 }
 
 /**
@@ -485,7 +508,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'config', 'install_hook', 'init'] as const
+const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -583,6 +606,17 @@ export function registerDevTask(ctx: Context): void {
         return 'installed commit-msg hook at .git/hooks/commit-msg — git commit is now gated by the task state'
       }
 
+      if (a.operation === 'verify_hook') {
+        const installed = await readText(fs, '.git/hooks/commit-msg', cwd)
+        if (installed === undefined) {
+          return 'no .git/hooks/commit-msg installed — run install_hook first'
+        }
+        if (hashText(installed) === hashText(HOOK_TEMPLATE)) {
+          return 'hook integrity OK — installed commit-msg matches the bundled gate'
+        }
+        throw new Error('hook integrity FAILED — .git/hooks/commit-msg differs from the bundled gate; reinstall with install_hook')
+      }
+
       if (a.operation === 'init') {
         const phase = a.phase ?? 'inspect'
         const existing = await readText(fs, 'AGENTS.md', cwd)
@@ -664,7 +698,12 @@ export function registerDevTask(ctx: Context): void {
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
-        const flow: FlowSnapshot = { flow: resolved.flow, version: resolved.version, config: resolved.config }
+        const flow: FlowSnapshot = {
+          flow: resolved.flow,
+          version: resolved.version,
+          config: resolved.config,
+          hash: hashConfig(resolved.config),
+        }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
         const state = newTask({
           id: a.task_id,
@@ -678,6 +717,7 @@ export function registerDevTask(ctx: Context): void {
         })
         state.items = normalizeItems(a.items)
         state.files = a.files ?? []
+        state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd)
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}`
@@ -709,6 +749,10 @@ export function registerDevTask(ctx: Context): void {
             skills: binding?.skills ?? [],
             rules: rules.map(r => ({ name: r.name, content: r.content })),
           },
+          bindings_drift: state.bindings_fingerprint !== undefined && state.bindings_fingerprint !== builtinRulesFingerprint()
+            ? 'bundled rules changed since this task froze — the frozen fingerprint no longer matches the shipped rules'
+            : undefined,
+          risk_downgrades: state.risk_downgrades ?? [],
         }, null, 2)
       }
 
@@ -804,6 +848,39 @@ export function registerDevTask(ctx: Context): void {
           state.stage = target
           const disclosure = await renderBindings(state.stage, workflow, fs, cwd)
           note = disclosure === '' ? `advanced to ${state.stage}` : `advanced to ${state.stage}\n${disclosure}`
+          break
+        }
+        case 'set_risk': {
+          const target = a.risk_level
+          if (target !== 'high_risk' && target !== 'standard') {
+            throw new Error('set_risk requires risk_level: high_risk|standard')
+          }
+          if (target === state.risk_level) {
+            note = `risk already ${target}`
+            break
+          }
+          if (state.risk_level === 'high_risk' && target === 'standard') {
+            const approval = ctx.get('approval') as ApprovalAsk | undefined
+            if (approval === undefined) {
+              throw new Error('downgrading a high_risk task requires human approval, but the approval service is unavailable')
+            }
+            const outcome = await approval.request({
+              agent: exec.agent,
+              toolName: 'dev_task',
+              callId: exec.callId,
+              reason: `风险降级：请确认允许把任务 ${state.id} 的 risk_level 从 high_risk 降为 standard（降级后高风险验证回执门不再适用）`,
+              signal: exec.signal,
+            })
+            if (outcome !== 'allowed-once') {
+              throw new Error(`risk downgrade was not approved (${outcome}); risk_level unchanged`)
+            }
+          }
+          state.risk_downgrades = [
+            ...(state.risk_downgrades ?? []),
+            { from: state.risk_level, to: target, at: new Date().toISOString() },
+          ]
+          state.risk_level = target
+          note = `risk_level set to ${target} (recorded in risk_downgrades)`
           break
         }
         case 'verify': {

@@ -392,4 +392,84 @@ function memProbe(files) {
   assert(skills.length === 1 && skills.includes('java-dev'), 'project skills list only dirs carrying SKILL.md')
 }
 
+// ── 23. 0.22-A: snapshot hash integrity ────────────────────────────────────
+{
+  const { hashConfig } = await import('./lib/snapshot.js')
+  const config = FLOW_PRESETS.standard.config
+  const h1 = hashConfig(config)
+  const h2 = hashConfig(JSON.parse(JSON.stringify(config)))
+  assert(h1 === h2 && /^[0-9a-f]{64}$/.test(h1), 'hashConfig is a deterministic sha256')
+  const tampered = JSON.parse(JSON.stringify(config))
+  tampered.commit.file_scope = false
+  assert(hashConfig(tampered) !== h1, 'editing the frozen config changes the hash')
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'HASH-1', title: 'x', branch: 'main' }, EXEC)
+  const record = JSON.parse(fs._files.get('.dsh/task-HASH-1.json'))
+  record.flow.config.commit.file_scope = false
+  fs._files.set('.dsh/task-HASH-1.json', JSON.stringify(record))
+  await assertThrows(
+    () => exe({ operation: 'status', task_id: 'HASH-1' }, EXEC),
+    'hash mismatch',
+    'status on a tampered snapshot is rejected',
+  )
+}
+{
+  const hook = readFileSync('./hooks/commit-msg', 'utf8')
+  assert(hook.includes('hashConfig'), 'hook reuses the single hashConfig source')
+  assert(hook.includes('sha256') || hook.includes('createHash'), 'hook bundles the sha256 snapshot check')
+}
+
+// ── 24. 0.22-B: installed-hook integrity check ─────────────────────────────
+{
+  const fs = makeFs({})
+  const exe = await registered(fs)
+  assert((await exe({ operation: 'verify_hook' }, EXEC)).includes('run install_hook'), 'verify_hook reports an absent hook')
+  await exe({ operation: 'install_hook' }, EXEC)
+  assert((await exe({ operation: 'verify_hook' }, EXEC)).includes('integrity OK'), 'verify_hook passes on the bundled hook')
+  fs._files.set('.git/hooks/commit-msg', fs._files.get('.git/hooks/commit-msg') + '\n// tampered')
+  await assertThrows(
+    () => exe({ operation: 'verify_hook' }, EXEC),
+    'integrity FAILED',
+    'verify_hook rejects a tampered hook',
+  )
+}
+
+// ── 25. 0.22-B: risk downgrade approval + bindings fingerprint ─────────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'RISK-1', title: 'x', branch: 'main', risk_level: 'high_risk' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'set_risk', task_id: 'RISK-1', risk_level: 'standard' }, EXEC),
+    'approval',
+    'downgrade without an approval service is rejected',
+  )
+  assert((await exe({ operation: 'set_risk', task_id: 'RISK-1', risk_level: 'high_risk' }, EXEC)).includes('already'),
+    'same-risk set_risk is a no-op')
+}
+{
+  const approval = { async request() { return 'allowed-once' } }
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs, approval)
+  await exe({ operation: 'create', task_id: 'RISK-2', title: 'x', branch: 'main', risk_level: 'high_risk' }, EXEC)
+  assert((await exe({ operation: 'set_risk', task_id: 'RISK-2', risk_level: 'standard' }, EXEC)).includes('risk_level set to standard'),
+    'approved downgrade succeeds')
+  const status = JSON.parse(await exe({ operation: 'status', task_id: 'RISK-2' }, EXEC))
+  assert(status.risk_level === 'standard' && status.risk_downgrades.length === 1,
+    'downgrade is recorded in the audit trail')
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'FP-1', title: 'x', branch: 'main' }, EXEC)
+  const status = JSON.parse(await exe({ operation: 'status', task_id: 'FP-1' }, EXEC))
+  assert(status.bindings_drift === undefined, 'fresh task shows no bindings drift')
+  const record = JSON.parse(fs._files.get('.dsh/task-FP-1.json'))
+  assert(typeof record.bindings_fingerprint === 'string' && record.bindings_fingerprint.length === 64,
+    'create records the bundled-rules fingerprint')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

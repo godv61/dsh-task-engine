@@ -240,6 +240,15 @@ function resolveFlow(flow, override) {
   return { ok: true, config: mergeBindings(preset2.config, override?.stage_bindings), preset: preset2 };
 }
 
+// src/snapshot.ts
+var import_node_crypto = require("node:crypto");
+function hashText(text) {
+  return (0, import_node_crypto.createHash)("sha256").update(text).digest("hex");
+}
+function hashConfig(config2) {
+  return hashText(JSON.stringify(config2));
+}
+
 // src/project.ts
 var TYPE_MARKERS = {
   node: ["package.json"],
@@ -425,6 +434,9 @@ if (taskId !== void 0) {
 }
 if (!state) {
   refuse("\u6CA1\u6709\u627E\u5230 dev_task \u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-*.json\uFF09\u2014\u2014\u8BF7\u5148 dev_task operation=create \u5EFA\u7ACB\u4EFB\u52A1");
+}
+if (state.flow?.hash !== void 0 && hashConfig(state.flow.config) !== state.flow.hash) {
+  refuse(`\u4EFB\u52A1 ${state.id} \u7684\u6D41\u7A0B\u5FEB\u7167 hash \u4E0D\u5339\u914D\u2014\u2014task \u8BB0\u5F55\u5728\u521B\u5EFA\u540E\u88AB\u6539\u52A8\u8FC7\uFF0C\u4FEE\u590D\u6216\u91CD\u5EFA\u4EFB\u52A1\u540E\u518D\u63D0\u4EA4`);
 }
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
