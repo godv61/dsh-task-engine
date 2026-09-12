@@ -13,7 +13,7 @@
 
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -44,6 +44,15 @@ import {
   flowSatisfies,
   resolveFlow,
 } from './workflows.ts'
+import {
+  detectRoot,
+  detectType,
+  defaultVerifyCommand,
+  listProjectRules,
+  listProjectSkills,
+  presentGovernanceFiles,
+  type FileProbe,
+} from './project.ts'
 
 /** Bundled commit-msg hook, copied into `.git/hooks/` by the `install_hook` operation. */
 const HOOK_TEMPLATE = readFileSync(
@@ -72,6 +81,59 @@ async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string |
 async function writeText(fs: Fs, relPath: string, content: string, cwd?: string): Promise<void> {
   const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
   await (fs as unknown as { writeText(target: unknown, content: string): Promise<unknown> }).writeText(target, content)
+}
+
+/** Project-adapter probe over the sandboxed filesystem. */
+function projectProbe(fs: Fs): FileProbe {
+  return {
+    read: (dir, relPath) => readText(fs, relPath, dir),
+    list: async (dir, relPath) => {
+      try {
+        const target = await fs.resolve(relPath, { cwd: dir })
+        const entries = await fs.listDir(target)
+        return entries.map(entry => entry.name)
+      } catch {
+        return []
+      }
+    },
+  }
+}
+
+/**
+ * Reject a workspace-relative write whose resolved target escapes the project
+ * root. `cwd` is the session workspace (always inside `root`, since `root` is
+ * discovered from it upward); this guards the reverse case: a mis-resolved root
+ * or a `..`-carrying target must never write outside the project.
+ */
+export function assertInsideRoot(root: string, cwd: string, relPath: string): void {
+  const target = resolve(cwd, relPath)
+  const rootDir = resolve(root)
+  const inside = relative(rootDir, target)
+  if (inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`write target ${target} escapes the project root ${rootDir}`)
+  }
+}
+
+/**
+ * The verification command a bare `verify` should run: the project's
+ * `.dsh/eng.json` override wins, then the language default (node → `npm test`,
+ * java → `mvn -q test`, …). `undefined` means no default exists and the legacy
+ * self-reported `passed` path applies.
+ */
+async function resolveVerifyCommand(fs: Fs, cwd?: string): Promise<string | undefined> {
+  const raw = await readText(fs, '.dsh/eng.json', cwd)
+  if (raw !== undefined) {
+    try {
+      const parsed = JSON.parse(raw) as { verify_command?: unknown }
+      if (typeof parsed.verify_command === 'string' && parsed.verify_command.trim() !== '') {
+        return parsed.verify_command.trim()
+      }
+    } catch {
+      // Unparsable eng.json is already rejected by resolveWorkflow; keep the default here.
+    }
+  }
+  const root = await detectRoot(projectProbe(fs), cwd ?? '')
+  return defaultVerifyCommand(await detectType(projectProbe(fs), root))
 }
 
 /** Hard cap on a verification command's run time; a timeout marks the receipt non-passing. */
@@ -526,10 +588,22 @@ export function registerDevTask(ctx: Context): void {
         const existing = await readText(fs, 'AGENTS.md', cwd)
 
         if (phase === 'inspect') {
+          const root = await detectRoot(projectProbe(fs), cwd ?? '')
+          const type = await detectType(projectProbe(fs), root)
+          const verifyCommand = defaultVerifyCommand(type)
+          const others = (await presentGovernanceFiles(projectProbe(fs), root)).filter(name => name !== 'AGENTS.md')
+          const projectRules = await listProjectRules(projectProbe(fs), root)
+          const projectSkills = await listProjectSkills(projectProbe(fs), root)
+          const summary = [
+            `project root: ${root}`,
+            `language stack: ${type}${verifyCommand !== undefined ? ` — default verify command: ${verifyCommand}` : ''}`,
+            others.length > 0 ? `other governance files in effect: ${others.join(', ')} — read them and keep their conventions; init manages only AGENTS.md` : undefined,
+            `project-level bindings: rules [${projectRules.join(', ') || 'none'}] · skills [${projectSkills.join(', ') || 'none'}] (convention: .dsh/rules/*.md, .dsh/skills/<name>/SKILL.md)`,
+          ].filter(line => line !== undefined).join('\n')
           if (existing === undefined) {
-            return `no AGENTS.md yet — scan the project (structure, stack, build/run, conventions, redlines) and call init phase=propose with content: a Markdown body of at most ${INIT_MAX_LINES} lines.`
+            return `no AGENTS.md yet — scan the project (structure, stack, build/run, conventions, redlines) and call init phase=propose with content: a Markdown body of at most ${INIT_MAX_LINES} lines.\n${summary}`
           }
-          return `existing AGENTS.md (${lineCount(existing)} lines, cap ${INIT_MAX_LINES}) is already injected into every session in this workspace. Reuse it as-is, or rewrite it via init phase=propose then phase=apply (overwriting requires human approval):\n---\n${existing}\n---`
+          return `existing AGENTS.md (${lineCount(existing)} lines, cap ${INIT_MAX_LINES}) is already injected into every session in this workspace. Reuse it as-is, or rewrite it via init phase=propose then phase=apply (overwriting requires human approval):\n---\n${existing}\n---\n${summary}`
         }
 
         const content = a.content
@@ -566,6 +640,8 @@ export function registerDevTask(ctx: Context): void {
               throw new Error(`overwriting AGENTS.md was not approved (${outcome}); nothing was written`)
             }
           }
+          const initRoot = await detectRoot(projectProbe(fs), cwd ?? '')
+          assertInsideRoot(initRoot, cwd ?? '', 'AGENTS.md')
           await writeText(fs, 'AGENTS.md', content, cwd)
           return `wrote ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). DSH injects it into every session in this workspace from now on.`
         }
@@ -589,6 +665,7 @@ export function registerDevTask(ctx: Context): void {
           )
         }
         const flow: FlowSnapshot = { flow: resolved.flow, version: resolved.version, config: resolved.config }
+        const root = await detectRoot(projectProbe(fs), cwd ?? '')
         const state = newTask({
           id: a.task_id,
           title: a.title,
@@ -596,9 +673,12 @@ export function registerDevTask(ctx: Context): void {
           work_size: a.work_size ?? 'standard',
           risk_level: risk,
           flow,
+          root,
+          project_type: await detectType(projectProbe(fs), root),
         })
         state.items = normalizeItems(a.items)
         state.files = a.files ?? []
+        assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd)
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}`
       }
@@ -727,8 +807,10 @@ export function registerDevTask(ctx: Context): void {
           break
         }
         case 'verify': {
-          if (a.command !== undefined && a.command.trim() !== '') {
-            const receipt = await runVerificationCommand(ctx, a.command, cwd)
+          const explicit = a.command !== undefined && a.command.trim() !== ''
+          const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, cwd)
+          if (command !== undefined) {
+            const receipt = await runVerificationCommand(ctx, command, cwd)
             state.verification = {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted,
               evidence: a.evidence ?? [],

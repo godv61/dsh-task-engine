@@ -289,4 +289,107 @@ await assertThrows(
   assert(controller.includes('overwrite'), 'writeInit request carries an overwrite field')
 }
 
+// ── 21. 0.21-A: project adapter — type detection, root discovery, default verify commands ──
+const project = await import('./lib/project.js')
+
+function memProbe(files) {
+  return {
+    async read(dir, relPath) {
+      const key = `${dir.replace(/\\/g, '/')}/${relPath}`.replace(/\/+/g, '/')
+      return files[key]
+    },
+  }
+}
+
+{
+  const probe = memProbe({ '/repo/package.json': '{}' })
+  assert(await project.detectType(probe, '/repo') === 'node', 'node marker resolves to node')
+  assert(await project.detectRoot(probe, '/repo/src/nested') === '/repo', 'root discovery climbs to the package.json directory')
+}
+{
+  const probe = memProbe({ '/repo/pom.xml': '<project/>' })
+  assert(await project.detectType(probe, '/repo') === 'java', 'pom.xml resolves to java')
+}
+{
+  const probe = memProbe({ '/repo/go.mod': 'module x' })
+  assert(await project.detectType(probe, '/repo') === 'go', 'go.mod resolves to go')
+}
+{
+  const probe = memProbe({ '/repo/Cargo.toml': '[package]' })
+  assert(await project.detectType(probe, '/repo') === 'rust', 'Cargo.toml resolves to rust')
+}
+{
+  const probe = memProbe({ '/repo/requirements.txt': 'flask' })
+  assert(await project.detectType(probe, '/repo') === 'python', 'requirements.txt resolves to python')
+}
+{
+  const probe = memProbe({})
+  assert(await project.detectType(probe, '/empty') === 'unknown', 'empty tree reports unknown type')
+  assert(await project.detectRoot(probe, '/empty/deep/dir') === '/empty/deep/dir', 'root discovery falls back to the start directory')
+}
+{
+  const probe = memProbe({ '/repo/package.json': '{}', '/repo/pyproject.toml': '[tool]' })
+  assert(await project.detectType(probe, '/repo') === 'unknown', 'mixed tree reports unknown, never a silent single-language guess')
+}
+{
+  const probe = memProbe({ '/repo/.git/HEAD': 'ref: refs/heads/main' })
+  assert(await project.detectRoot(probe, '/repo/sub/module') === '/repo', 'root discovery stops at the git repository')
+}
+{
+  assert(project.defaultVerifyCommand('node') === 'npm test', 'node default verify command')
+  assert(project.defaultVerifyCommand('java') === 'mvn -q test', 'java default verify command')
+  assert(project.defaultVerifyCommand('go') === 'go test ./...', 'go default verify command')
+  assert(project.defaultVerifyCommand('unknown') === undefined, 'unknown type has no default command')
+}
+{
+  const probe = memProbe({ '/repo/AGENTS.md': '# a', '/repo/CLAUDE.md': '# c' })
+  const present = await project.presentGovernanceFiles(probe, '/repo')
+  assert(present.includes('AGENTS.md') && present.includes('CLAUDE.md'), 'governance files are recognized as present')
+  assert(!present.includes('.cursorrules'), 'absent governance files are not listed')
+}
+
+// ── 22. 0.21-C/D/E: out-of-root write guard, hook risk policy, project binding dirs ──
+{
+  const { assertInsideRoot } = await import('./lib/dev-task.js')
+  assertInsideRoot('/repo', '/repo/sub', 'AGENTS.md')
+  assertInsideRoot('/repo/sub', '/repo/sub', 'AGENTS.md')
+  await assertThrows(
+    () => assertInsideRoot('/repo', '/repo', '../outside.txt'),
+    'escapes the project root',
+    'init write escaping the root is rejected',
+  )
+  await assertThrows(
+    () => assertInsideRoot('/repo', '/repo', 'C:/elsewhere/x.txt'),
+    'escapes the project root',
+    'absolute target outside the root is rejected',
+  )
+}
+{
+  const hook = readFileSync('./hooks/commit-msg', 'utf8')
+  assert(hook.includes('sensitive_paths'), 'hook bundles the risk policy table (single source)')
+  assert(hook.includes('risk_level === "high_risk"') || hook.includes('risk_level === \'high_risk\''), 'hook requires high_risk before touching sensitive paths')
+}
+{
+  const probe = {
+    async read(dir, relPath) {
+      const key = `${dir}/${relPath}`.replace(/\/+/g, '/')
+      return files[key]
+    },
+    async list(dir, relPath) {
+      const prefix = `${dir}/${relPath}`.replace(/\/+/g, '/')
+      return Object.keys(files).filter(k => k.startsWith(prefix + '/')).map(k => k.slice(prefix.length + 1).split('/')[0])
+    },
+  }
+  const files = {
+    '/repo/.dsh/rules/api-conventions.md': '# r',
+    '/repo/.dsh/rules/README.md': '# meta',
+    '/repo/.dsh/skills/java-dev/SKILL.md': '# s',
+    '/repo/.dsh/skills/empty/': '# no skill file',
+  }
+  const rules = await project.listProjectRules(probe, '/repo')
+  assert(rules.length === 2 && rules.includes('api-conventions'), 'project rules list from .dsh/rules/*.md')
+  const skills = await project.listProjectSkills(probe, '/repo')
+  assert(skills.length === 1 && skills.includes('java-dev'), 'project skills list only dirs carrying SKILL.md')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

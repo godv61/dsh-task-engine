@@ -10,6 +10,8 @@
  * @module dsh-task-engine/engine
  */
 
+import type { ProjectType } from './project.ts'
+
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
 export type ItemStatus = 'todo' | 'doing' | 'done'
@@ -160,6 +162,10 @@ export interface TaskState {
   /** Repo-relative paths this task may touch (checked by the file-scope commit gate). */
   files: string[]
   commits: { label: string; hash?: string }[]
+  /** Absolute project root recorded at create time; receipts bind to it and writes may not escape it. Absent on pre-0.21 records. */
+  root?: string
+  /** Language stack detected at create time. Absent on pre-0.21 records. */
+  project_type?: ProjectType
 }
 
 export interface Result {
@@ -503,6 +509,8 @@ export function newTask(input: {
   work_size: WorkSize
   risk_level: RiskLevel
   flow: FlowSnapshot
+  root?: string
+  project_type?: ProjectType
 }): TaskState {
   return {
     schema: 1,
@@ -521,5 +529,7 @@ export function newTask(input: {
     artifacts: {},
     files: [],
     commits: [],
+    ...(input.root !== undefined ? { root: input.root } : {}),
+    ...(input.project_type !== undefined ? { project_type: input.project_type } : {}),
   }
 }

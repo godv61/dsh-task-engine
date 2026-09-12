@@ -23,6 +23,7 @@ import {
   type WorkflowConfig,
 } from './engine.ts'
 import { resolveFlow } from './workflows.ts'
+import { DEFAULT_RISK_POLICY } from './project.ts'
 
 const messageFile = process.argv[2]
 
@@ -159,6 +160,30 @@ function extractTaskId(message: string): string | undefined {
   return match ? match[1] : undefined
 }
 
+/** Engine-owned state files are exempt from scope and risk checks. */
+function isEngineMeta(file: string): boolean {
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
+}
+
+/** Staged paths that hit the risk policy's sensitive paths (engine files exempt). */
+function riskyPaths(entries: { status: string; path: string }[]): string[] {
+  return entries
+    .filter(entry => !isEngineMeta(entry.path))
+    .filter(entry => DEFAULT_RISK_POLICY.sensitive_paths.some(prefix =>
+      entry.path === prefix || entry.path.startsWith(`${prefix}/`)))
+    .map(entry => entry.path)
+}
+
+/** Only a high-risk task that passed a real command receipt may touch sensitive paths. */
+function riskVerified(state: TaskState): boolean {
+  const receipt = state.verification.receipt
+  return state.risk_level === 'high_risk'
+    && receipt !== undefined
+    && receipt.exit_code === 0
+    && !receipt.timed_out
+    && !receipt.aborted
+}
+
 /** The standard preset, applied when the project has no `.dsh/eng.json` at all. */
 function defaultConfig(): WorkflowConfig {
   const resolved = resolveFlow('standard')
@@ -261,6 +286,14 @@ if (!scope.ok) {
     return entry === undefined ? outside : `${entry.status}\t${outside}`
   })
   refuse('提交了任务范围之外的文件: ' + described.join(', '))
+}
+
+const sensitive = riskyPaths(entries)
+if (sensitive.length > 0 && !riskVerified(state)) {
+  refuse(
+    '提交触及敏感路径: ' + sensitive.join(', ') +
+    ' — 这类变更要求任务声明为 high_risk，且验证必须是真实命令回执（exit 0）',
+  )
 }
 
 process.exit(0)

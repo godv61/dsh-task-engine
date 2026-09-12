@@ -240,6 +240,20 @@ function resolveFlow(flow, override) {
   return { ok: true, config: mergeBindings(preset2.config, override?.stage_bindings), preset: preset2 };
 }
 
+// src/project.ts
+var TYPE_MARKERS = {
+  node: ["package.json"],
+  java: ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle"],
+  python: ["pyproject.toml", "requirements.txt", "setup.py"],
+  go: ["go.mod"],
+  rust: ["Cargo.toml"]
+};
+var DEFAULT_RISK_POLICY = {
+  sensitive_paths: [".git", ".dsh", ".env", ".credentials.yaml", "credentials", "secrets"],
+  risky_operations: ["D", "T"]
+};
+var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
+
 // src/hook.ts
 var messageFile = process.argv[2];
 function refuse(reason) {
@@ -345,6 +359,16 @@ function extractTaskId(message2) {
   const match = /^【([^【】\s]+)】/.exec(message2);
   return match ? match[1] : void 0;
 }
+function isEngineMeta2(file) {
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file);
+}
+function riskyPaths(entries2) {
+  return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => entry.path === prefix || entry.path.startsWith(`${prefix}/`))).map((entry) => entry.path);
+}
+function riskVerified(state2) {
+  const receipt = state2.verification.receipt;
+  return state2.risk_level === "high_risk" && receipt !== void 0 && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted;
+}
 function defaultConfig() {
   const resolved = resolveFlow("standard");
   if (!resolved.ok) throw new Error('built-in "standard" preset is missing');
@@ -424,5 +448,11 @@ if (!scope.ok) {
     return entry === void 0 ? outside : `${entry.status}	${outside}`;
   });
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
+}
+var sensitive = riskyPaths(entries);
+if (sensitive.length > 0 && !riskVerified(state)) {
+  refuse(
+    "\u63D0\u4EA4\u89E6\u53CA\u654F\u611F\u8DEF\u5F84: " + sensitive.join(", ") + " \u2014 \u8FD9\u7C7B\u53D8\u66F4\u8981\u6C42\u4EFB\u52A1\u58F0\u660E\u4E3A high_risk\uFF0C\u4E14\u9A8C\u8BC1\u5FC5\u987B\u662F\u771F\u5B9E\u547D\u4EE4\u56DE\u6267\uFF08exit 0\uFF09"
+  );
 }
 process.exit(0);
