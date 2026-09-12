@@ -472,4 +472,43 @@ function memProbe(files) {
     'create records the bundled-rules fingerprint')
 }
 
+// ── 26. 0.22-C: multi-language verify command chain + parallel tasks ────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard', verify_command: 'mvn test' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'V-1', title: 'x', branch: 'main' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'verify', task_id: 'V-1' }, EXEC),
+    'shell',
+    'verify falls back to the eng.json command and fails loud without a shell service',
+  )
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }), 'package.json': '{}' })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'V-2', title: 'x', branch: 'main' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'verify', task_id: 'V-2' }, EXEC),
+    'shell',
+    'verify falls back to the language default (node → npm test) and fails loud without a shell service',
+  )
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'V-3', title: 'x', branch: 'main' }, EXEC)
+  assert((await exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC)).includes('ok'),
+    'unknown-type verify keeps the legacy self-reported path')
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'A-1', title: 'x', branch: 'main' }, EXEC)
+  await exe({ operation: 'create', task_id: 'B-2', title: 'y', branch: 'main' }, EXEC)
+  await exe({ operation: 'scope', task_id: 'A-1', files: ['src/a.ts'] }, EXEC)
+  const a = JSON.parse(await exe({ operation: 'status', task_id: 'A-1' }, EXEC))
+  const b = JSON.parse(await exe({ operation: 'status', task_id: 'B-2' }, EXEC))
+  assert(a.files.length === 1 && b.files.length === 0, 'two tasks in one repo advance independently')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)
