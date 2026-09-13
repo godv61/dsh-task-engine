@@ -535,4 +535,24 @@ function memProbe(files) {
   assert(policy.sensitive_paths.includes('.env'), 'env files remain sensitive')
 }
 
+// ── 29. dev_task writes carry the per-call sandbox policy ───────────────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  let seenPolicy
+  const origWrite = fs.writeText
+  fs.writeText = async (target, content, expected, signal, sandboxPolicy) => {
+    seenPolicy = sandboxPolicy
+    return origWrite(target, content)
+  }
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'POL-1', title: 'x', branch: 'main' }, EXEC)
+  assert(seenPolicy !== undefined && seenPolicy.mode === 'workspace-write',
+    'dev_task writes carry the sandbox mode (default workspace-write)')
+  assert(seenPolicy.workspaceRoot === process.cwd(),
+    'dev_task writes carry the session workspace root so in-workspace paths are never misjudged as out-of-root')
+  await exe({ operation: 'create', task_id: 'POL-2', title: 'x', branch: 'main', sandbox_permissions: 'danger-full-access' }, EXEC)
+  assert(seenPolicy.mode === 'danger-full-access',
+    'sandbox_permissions upgrades the per-call write mode')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

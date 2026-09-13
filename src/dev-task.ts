@@ -79,9 +79,34 @@ async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string |
   }
 }
 
-async function writeText(fs: Fs, relPath: string, content: string, cwd?: string): Promise<void> {
+/**
+ * Per-call sandbox policy every dev_task write must carry. DSH's filesystem
+ * sandbox is resolved PER CALL (mode + workspace root), never fixed on the
+ * provider; a write that omits it runs under the backend's own default root,
+ * which is NOT the session workspace — so workspace-relative writes get
+ * misjudged as out-of-root and denied. Narrowed like `ApprovalAsk` so this
+ * bundle stays free of the dsh-sandbox package's dependency tree.
+ */
+interface WritePolicy {
+  mode: 'workspace-write' | 'danger-full-access'
+  workspaceRoot: string
+}
+
+type WriteFs = {
+  resolve(relPath: string, opts?: { cwd?: string }): Promise<unknown>
+  writeText(target: unknown, content: string, expected?: unknown, signal?: unknown, sandboxPolicy?: WritePolicy): Promise<unknown>
+}
+
+async function writeText(
+  fs: Fs,
+  relPath: string,
+  content: string,
+  cwd?: string,
+  mode: 'workspace-write' | 'danger-full-access' = 'workspace-write',
+): Promise<void> {
   const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
-  await (fs as unknown as { writeText(target: unknown, content: string): Promise<unknown> }).writeText(target, content)
+  const policy: WritePolicy = { mode, workspaceRoot: cwd !== undefined ? cwd : process.cwd() }
+  await (fs as unknown as WriteFs).writeText(target, content, undefined, undefined, policy)
 }
 
 /** Project-adapter probe over the sandboxed filesystem. */
@@ -284,9 +309,9 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
 }
 
 /** Write the bundled notch gate into `.git/hooks/` so `git commit` is mechanically gated. */
-async function installCommitHook(fs: Fs, cwd?: string): Promise<void> {
-  await writeText(fs, '.git/hooks/commit-msg', HOOK_TEMPLATE, cwd)
-  await writeText(fs, '.git/hooks/package.json', HOOK_PACKAGE_JSON, cwd)
+async function installCommitHook(fs: Fs, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  await writeText(fs, '.git/hooks/commit-msg', HOOK_TEMPLATE, cwd, mode)
+  await writeText(fs, '.git/hooks/package.json', HOOK_PACKAGE_JSON, cwd, mode)
 }
 
 async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
@@ -305,8 +330,13 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
   return state
 }
 
-async function writeTask(fs: Fs, state: TaskState, cwd?: string): Promise<void> {
-  await writeText(fs, taskPath(state.id), JSON.stringify(state, null, 2), cwd)
+async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  await writeText(fs, taskPath(state.id), JSON.stringify(state, null, 2), cwd, mode)
+}
+
+/** The sandbox mode this tool call's writes run under (default workspace-write). */
+function writeMode(args: { sandbox_permissions?: 'workspace-write' | 'danger-full-access' }): 'workspace-write' | 'danger-full-access' {
+  return args.sandbox_permissions ?? 'workspace-write'
 }
 
 /**
@@ -433,6 +463,7 @@ interface OpArgs {
   content?: string
   overwrite?: boolean
   expected_hash?: string
+  sandbox_permissions?: 'workspace-write' | 'danger-full-access'
   phase?: 'inspect' | 'propose' | 'apply'
 }
 
@@ -578,6 +609,7 @@ export function registerDevTask(ctx: Context): void {
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
       expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; applying with a different hash is rejected (init apply).' },
+      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Wider sandbox mode for this call\'s file writes; default is workspace-write. Use only as a retry after a sandbox denial of the same call.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
     output: {
@@ -604,7 +636,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'install_hook') {
-        await installCommitHook(fs, cwd)
+        await installCommitHook(fs, cwd, writeMode(a))
         return 'installed commit-msg hook at .git/hooks/commit-msg — git commit is now gated by the task state'
       }
 
@@ -681,7 +713,7 @@ export function registerDevTask(ctx: Context): void {
           }
           const initRoot = await detectRoot(projectProbe(fs), cwd ?? '')
           assertInsideRoot(initRoot, cwd ?? '', 'AGENTS.md')
-          await writeText(fs, 'AGENTS.md', content, cwd)
+          await writeText(fs, 'AGENTS.md', content, cwd, writeMode(a))
           return `wrote ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). DSH injects it into every session in this workspace from now on.`
         }
 
@@ -724,7 +756,7 @@ export function registerDevTask(ctx: Context): void {
         state.files = a.files ?? []
         state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
-        await writeTask(fs, state, cwd)
+        await writeTask(fs, state, cwd, writeMode(a))
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}`
       }
 
@@ -782,7 +814,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
         }
         if (a.hash) state.commits.push({ label: checkpoint.label!, hash: a.hash })
-        await writeTask(fs, state, cwd)
+        await writeTask(fs, state, cwd, writeMode(a))
         return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
       }
 
@@ -911,7 +943,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`unknown operation ${a.operation}`)
       }
 
-      await writeTask(fs, state, cwd)
+      await writeTask(fs, state, cwd, writeMode(a))
       return note ?? `ok (stage ${state.stage})`
     },
   }))
