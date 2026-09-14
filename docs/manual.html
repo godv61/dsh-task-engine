@@ -309,6 +309,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li>无法联调外部系统时必须如实写「未联调」，不能把编译成功说成功能通过。</li>
           <li><code>high_risk</code> 任务过验证门必须跑真实命令回执（引擎运行命令、取退出码，非自报通过）。</li>
           <li><code>verify</code> 不带 <code>command</code> 时引擎自动选命令：<code>.dsh/eng.json</code> 的 <code>verify_command</code> 优先，其次按项目语言用默认（node → <code>npm test</code>、java → <code>mvn -q test</code>、python → <code>python -m pytest</code>、go → <code>go test ./...</code>、rust → <code>cargo test</code>）；识别不出语言且未配置时保留自报路径。跑命令依赖宿主 shell 服务，未挂载会明确报错。</li>
+          <li><b>验证命令始终在任务记录的项目根运行</b>（任务创建时自动发现并固化 <code>root</code>），不是会话当前目录——monorepo 里会话停在子目录时，<code>npm test</code> 等也会在放清单文件的项目根执行；回执记录的 <code>root</code> 与任务根强校验，不一致直接拒绝。</li>
         </ul>
         <h3>评审</h3>
         <p>开发阶段每项做「规格 + 质量」两阶段评审，都 pass 才标 done；缺评审或任一阶段 fail 会挡住「开发 → 交付」。</p>
@@ -370,8 +371,11 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交——引擎已豁免 <code>.dsh/task-*.json</code> 与 <code>.dsh/eng.json</code>，不受文件范围门拦截；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
+        <details><summary>git 钩子能防住所有绕过吗？</summary><div>不能，这是它的定位：<code>.git/hooks/commit-msg</code> 是<b>本地即时反馈</b>，拦常规 <code>git commit</code>（校验任务、阶段、范围、消息、快照 hash、敏感路径），但挡不住 <code>git commit --no-verify</code>、<code>core.hooksPath</code> 替换或直接手改 task 记录。<b>最终可信门禁在 CI</b>：CI 里重新校验 task id、快照 hash、staged 范围、提交消息、真实验证退出码、高风险回执，并检测钩子是否被绕过。三层分工：钩子 = 本地反馈，host 工具流 = 正常路径强约束，CI = 最终验证。</div></details>
+        <details><summary>任务记录被手改会怎样？</summary><div>引擎会拒绝：任务创建时把流程配置固化成 SHA-256 快照，工具和钩子每次读任务记录都校验——<b>被改过的快照一律拒绝继续</b>（提示修复或重建任务）。另外每次写入带 <code>revision</code> 版本号做 compare-and-swap，多个会话同时改同一任务会报「changed concurrently」而不是静默互相覆盖。</div></details>
+        <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 通用项目适配（0.21.0）· 审计与发布质量（0.22.0）· 最后更新：2026-09-12</p>
+        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 通用项目适配（0.21.0）· 审计与发布质量（0.22.0）· 可信边界加固（0.22.3）· 并发与发布闭环（0.22.4）· 最后更新：2026-09-14</p>
       </section>
     </main>
   </div>
