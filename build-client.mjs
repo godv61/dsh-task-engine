@@ -6,9 +6,19 @@
  * React/Cordis/store/ui-slots/ui-primitives (provided by the shell at runtime).
  */
 
+import { writeFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 const id = '@godv61/dsh-task-engine'
+
+/** Declared surface for TypeScript consumers of `./client` (the bundle itself is a side-effectful loader registration). */
+const CLIENT_DTS = `/** dsh-task-engine browser half — declared surface for TypeScript consumers of "./client". */
+import type { Context } from '@deepseek-ai/cordis'
+
+export const inject: string[]
+
+export function apply(ctx: Context): Promise<() => Promise<void>>
+`
 
 const BASELINE = [
   'react',
@@ -41,3 +51,5 @@ await build({
     js: '\nreturn module.exports; } });',
   },
 })
+
+await writeFile('lib/client.d.ts', CLIENT_DTS)

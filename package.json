@@ -1,6 +1,6 @@
 {
   "name": "@godv61/dsh-task-engine",
-  "version": "0.22.3",
+  "version": "0.22.4",
   "description": "Preset-workflow engineering delivery engine for DeepSeek Harness: a `dev_task` tool that hard-gates stage transitions and commit scope/message, per-node skill/rule bindings with progressive disclosure, a workbench to pick a flow preset and mount skills/rules, and preset-scoped activation — the tool and skills activate only for sessions on a preset that names the agent row.",
   "type": "module",
   "main": "lib/index.js",
@@ -17,7 +17,10 @@
       "types": "./lib/agent.d.ts",
       "default": "./lib/agent.js"
     },
-    "./client": "./lib/client.js",
+    "./client": {
+      "types": "./lib/client.d.ts",
+      "default": "./lib/client.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./defaults/eng.json": "./defaults/eng.json",
     "./package.json": "./package.json"
@@ -54,6 +57,7 @@
     "build": "tsc -p tsconfig.json && node build-client.mjs && node build-hook.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "test": "node .p0-test.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
     "prepare": "npm run build"
   },
   "peerDependencies": {

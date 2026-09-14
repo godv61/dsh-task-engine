@@ -33,6 +33,7 @@ async function assertThrows(fn, fragment, msg) {
 
 function makeFs(initial = {}) {
   const files = new Map(Object.entries(initial))
+  const versions = new Map()
   return {
     async resolve(relPath, opts) {
       const base = opts && opts.cwd ? String(opts.cwd).replace(/\\/g, '/') : ''
@@ -42,8 +43,31 @@ function makeFs(initial = {}) {
     async readText(target) {
       return files.get(target.targetKey)
     },
-    async writeText(target, content) {
-      files.set(target.targetKey, content)
+    async lstat(path, opts) {
+      const base = opts && opts.cwd ? String(opts.cwd).replace(/\\/g, '/') : ''
+      const key = base ? `${base}/${path}` : path
+      if (!files.has(key)) return undefined
+      return { version: `v${versions.get(key) ?? 0}` }
+    },
+    async writeText(target, content, expected, signal, sandboxPolicy) {
+      const key = target.targetKey
+      if (expected !== undefined && expected !== null) {
+        if (expected.kind === 'createIfAbsent' && files.has(key)) {
+          const err = new Error('already exists')
+          err.code = 'FS_NOT_OBSERVED'
+          throw err
+        }
+        if (expected.kind === 'replaceIfVersion') {
+          const current = `v${versions.get(key) ?? 0}`
+          if (!files.has(key) || current !== expected.version) {
+            const err = new Error('stale version')
+            err.code = 'FS_STALE_VERSION'
+            throw err
+          }
+        }
+      }
+      files.set(key, content)
+      versions.set(key, (versions.get(key) ?? 0) + 1)
     },
     _files: files,
   }
@@ -152,13 +176,25 @@ await assertThrows(
   const exe = await registered(fs)
   const prop10 = await exe({ operation: 'init', phase: 'propose', content: '# new' }, EXEC)
   const hash10 = /content hash: ([0-9a-f]{64})/.exec(prop10)[1]
+  const existingHash10 = /existing hash: ([0-9a-f]{64})/.exec(prop10)[1]
+  assert(existingHash10 !== undefined, 'propose returns the existing-file hash when the file exists')
   await assertThrows(
     () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10 }, EXEC),
+    'requires existing_hash',
+    'apply without existing_hash on an existing file is rejected',
+  )
+  await assertThrows(
+    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10, existing_hash: '0'.repeat(64) }, EXEC),
+    'existing_hash mismatch',
+    'apply with a stale existing_hash is rejected (TOCTOU)',
+  )
+  await assertThrows(
+    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10, existing_hash: existingHash10 }, EXEC),
     'protected',
     'apply without overwrite on an existing file is rejected',
   )
   await assertThrows(
-    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10, overwrite: true }, EXEC),
+    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10, existing_hash: existingHash10, overwrite: true }, EXEC),
     'approval',
     'overwrite requires an approval service',
   )
@@ -667,6 +703,9 @@ function memProbe(files) {
   ctl.registerWorkspace('D:/proj/one')
   assert(ctl.checkedPath('D:/PROJ/one') === 'D:/PROJ/one', 'registered workspace passes under any case')
   await assertThrows(() => ctl.checkedPath('D:/other-project'), 'not registered', 'unregistered workspace is rejected once the registry is active')
+  ctl.enableStrictWorkspaces()
+  await assertThrows(() => ctl.checkedPath('D:/still-unregistered'), 'not registered', 'strict mode keeps rejecting unregistered workspaces')
+  assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'strict mode still admits registered workspaces')
 }
 
 console.log(`\nP0 acceptance: ${passed} checks passed`)

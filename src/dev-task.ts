@@ -95,6 +95,7 @@ interface WritePolicy {
 type WriteFs = {
   resolve(relPath: string, opts?: { cwd?: string }): Promise<unknown>
   writeText(target: unknown, content: string, expected?: unknown, signal?: unknown, sandboxPolicy?: WritePolicy): Promise<unknown>
+  lstat(path: string, opts?: { cwd?: string }, signal?: unknown): Promise<{ version: unknown } | undefined>
 }
 
 async function writeText(
@@ -103,10 +104,11 @@ async function writeText(
   content: string,
   cwd?: string,
   mode: 'workspace-write' | 'danger-full-access' = 'workspace-write',
+  expected?: unknown,
 ): Promise<void> {
   const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
   const policy: WritePolicy = { mode, workspaceRoot: cwd !== undefined ? cwd : process.cwd() }
-  await (fs as unknown as WriteFs).writeText(target, content, undefined, undefined, policy)
+  await (fs as unknown as WriteFs).writeText(target, content, expected, undefined, policy)
 }
 
 /** Project-adapter probe over the sandboxed filesystem. */
@@ -337,21 +339,38 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
 }
 
 async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
-  const expected = state.revision ?? 0
-  const onDiskRaw = await readText(fs, taskPath(state.id), cwd)
+  const path = taskPath(state.id)
+  // Friendly fast-fail first: the logical revision must still be the one loaded.
+  const onDiskRaw = await readText(fs, path, cwd)
   if (onDiskRaw === undefined) {
-    // First write of a fresh record: the factory revision is the first version.
-    state.revision = state.revision ?? 1
+    state.revision = state.revision ?? 1 // first write of a fresh record keeps the factory revision
   } else {
     const onDisk = JSON.parse(onDiskRaw) as TaskState
-    if ((onDisk.revision ?? 0) !== expected) {
+    if ((onDisk.revision ?? 0) !== (state.revision ?? 0)) {
       throw new Error(
-        `task "${state.id}" changed concurrently (record revision ${onDisk.revision ?? 0} vs the loaded revision ${expected}) — reload status and retry this operation`,
+        `task "${state.id}" changed concurrently (record revision ${onDisk.revision ?? 0} vs the loaded revision ${state.revision ?? 0}) — reload status and retry this operation`,
       )
     }
-    state.revision = expected + 1
+    state.revision = (state.revision ?? 0) + 1
   }
-  await writeText(fs, taskPath(state.id), JSON.stringify(state, null, 2), cwd, mode)
+  // Atomic guard: the write carries the file's current version as a
+  // replace-if-version intent, so a concurrent write between our read and our
+  // write fails with FS_STALE_VERSION instead of silently overwriting.
+  const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
+  const intent = info === undefined
+    ? { kind: 'createIfAbsent' }
+    : { kind: 'replaceIfVersion', version: info.version }
+  try {
+    await writeText(fs, path, JSON.stringify(state, null, 2), cwd, mode, intent)
+  } catch (error) {
+    const code = (error as { code?: unknown })?.code
+    if (code === 'FS_STALE_VERSION' || code === 'FS_NOT_OBSERVED') {
+      throw new Error(
+        `task "${state.id}" changed concurrently (file version moved) — reload status and retry this operation`,
+      )
+    }
+    throw error
+  }
 }
 
 /**
@@ -757,8 +776,13 @@ export function registerDevTask(ctx: Context): void {
           if (a.expected_hash !== hashText(content)) {
             throw new Error(`init content changed since propose (expected_hash mismatch) — resubmit the identical proposed content`)
           }
-          if (existing !== undefined && a.existing_hash !== undefined && a.existing_hash !== hashText(existing)) {
-            throw new Error('AGENTS.md changed since propose (existing_hash mismatch) — re-inspect and re-propose before overwriting')
+          if (existing !== undefined) {
+            if (a.existing_hash === undefined) {
+              throw new Error('init apply requires existing_hash returned by propose when AGENTS.md exists — re-propose to obtain it')
+            }
+            if (a.existing_hash !== hashText(existing)) {
+              throw new Error('AGENTS.md changed since propose (existing_hash mismatch) — re-inspect and re-propose before overwriting')
+            }
           }
           if (existing !== undefined && a.overwrite !== true) {
             throw new Error(`AGENTS.md already exists (${lineCount(existing)} lines) and is protected. Inspect via init phase=inspect, merge, then resubmit with phase=apply plus overwrite: true (human approval).`)

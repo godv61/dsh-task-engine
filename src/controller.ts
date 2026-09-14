@@ -855,7 +855,7 @@ class WorkspaceRegistry {
   }
 
   assertAllowed(path: string): void {
-    if (this.allowed.size === 0) return // not integrated yet — fall back to checkedPath
+    if (!strictWorkspaces && this.allowed.size === 0) return // legacy fallback — not integrated yet
     if (!this.allowed.has(normalizeKey(path))) {
       throw new RemoteError('gateway/internal', `task-engine: workspace not registered on this host: ${path}`, {})
     }
@@ -868,9 +868,17 @@ function normalizeKey(path: string): string {
 
 const workspaceRegistry = new WorkspaceRegistry()
 
+/** When true, an empty registry no longer falls back to checkedPath — Remote calls fail closed until a host registers workspaces. */
+let strictWorkspaces = false
+
 /** Host integration point: authorize one workspace for Remote access (call per mounted session workspace). */
 export function registerWorkspace(path: string): void {
   workspaceRegistry.register(path)
+}
+
+/** Host integration point: production hosts should call this — unregistered workspaces are then rejected instead of falling back to the legacy check. */
+export function enableStrictWorkspaces(): void {
+  strictWorkspaces = true
 }
 
 /**
