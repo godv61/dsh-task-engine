@@ -19,3 +19,10 @@ export function apply(ctx: Context): void {
   ctx.plugin(TaskEngineController)
   seedEngPreset()
 }
+
+/**
+ * Host integration surface (0.22.4): authorize a session workspace for the
+ * Remote, and opt into strict mode where unregistered paths are rejected
+ * instead of falling back to the defensive path check. See README「host 集成 API」.
+ */
+export { enableStrictWorkspaces, registerWorkspace } from './controller.ts'

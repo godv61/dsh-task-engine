@@ -56,6 +56,20 @@ dsh plugin --profile <name> add github:<你的org>/dsh-task-engine
 dsh plugin --profile <name> add .
 ```
 
+### host 集成 API（0.22.4，供 harness 层接入）
+
+`./agent`（工具面）无需额外集成；工作台 Remote 的 workspace 边界可由宿主收紧：
+
+```ts
+import { registerWorkspace, enableStrictWorkspaces } from '@godv61/dsh-task-engine'
+// 每个会话工作区挂载时注册（未注册的路径被 Remote 拒绝）：
+registerWorkspace('/absolute/workspace/path')
+// 生产模式：空 registry 不再回退放行（不调用则保持兼容的防误用校验）：
+enableStrictWorkspaces()
+```
+
+根治性的 Typert 调用上下文（Remote 携带 session/workspace）与任务状态的 host 侧 HMAC 签名仍在 harness 层，本包已预留接入点并在「门禁边界」说明三层分工。
+
 ## 启用（点选即用）
 
 装完 bundle、重启 web，预设列表里会**自动多出一个「工程化开发引擎」**——host 半在首次启动时把它对齐当前 `standard` 生成（换好工程人设 + 加好 agent 行），落在 `~/.dsh/.agent-presets/eng/`。
@@ -158,7 +172,7 @@ dsh plugin --profile <name> add .
 
 ## 状态与待办
 
-- **脚本级已验证**：strict `tsc` typecheck/build 零错误；`dsh plugin add` 装进独立实例、`--dump-config` 确认 `task-engine` 进组合树；`validateWorkflow`（配置校验）、`artifacts_present`（产物门）、`file_scope`（文件范围门）、`hooks/commit-msg`（机械门禁）单测/冒烟全过——非法配置逐条报错、产物没填全挡流转、范围外文件挡提交、钩子该放放该拦拦。
+- **当前验证基线（0.22.4）**：`npm test` 123 项验收全过（引擎状态机 / 守卫 / 快照 hash / 回执门 / 并发 CAS / Remote 路径 / 沙箱策略断言）；`npm run typecheck` host + client 双面零错误；`npm run verify:package` 发布包黑盒 16 项（pack → 白名单 → 真实安装 → 主入口 import → client 注册 → 包内测试 → CLI）；真实 git 临时仓库 e2e（合法放行 / 阶段·范围·快照篡改·敏感路径拦截）；headless Chrome 实测侧栏入口与设置按钮逐像素对齐。发布前必跑 `npm test` + `npm run verify:package`。
 - **真实模型端到端（0.4.1）**：headless + NewAPI DeepSeek 下让真模型走 `dev_task` 全流程，抓到并修掉一个真实 bug——`readText`/`writeText` 调 `fs.resolve()` 漏了 `await`，把 `Promise<FsTarget>` 当 `target` 传给了读写方法，导致 create/record/advance/commit 全部写不了任务文件、读永远返回 undefined。0.4.1 修复（`await fs.resolve(relPath)`），并把 `task_id` 在 create 也必填的说明补进工具 schema 与技能。修复后走真实 `ctx.fs` 路径冒烟全绿。
 - **网页图形化配置界面（0.5.0）**：新增 `src/client/` 设置页「工程流程配置」+ Host 端 `task-engine` Remote 控制器；`@godv61/dsh-task-engine` 升级为双端包（`dsh.client` manifest + `./client` 出品，`exports` 暴露）。已实机验证：`dsh web` 起服务后 boot 数据里 `@godv61/dsh-task-engine` 以 `inject:["@deepseek-ai/dsh-api-gateway"]` 进入 application batch、`/plugins/…/client.js` 正常服务；headless 冒烟确认 boot + `dev_task` 未被新控制器破坏。浏览器点击级 e2e 留到发布后用真浏览器收尾。
 - **skill/rule 挂载与渐进披露（0.6.0）**：`WorkflowConfig` 新增 `stage_bindings`（每阶段挂 skills/rules，可选字段），`dev_task` 的 `status`/`advance` 按当前阶段披露挂载的 skill 名 + rule 正文；内置 6 技能 + 3 规则库；Host 控制器新增 `listSkills`/`listRules`/`writeSkill`/`writeRule`；设置页新增「节点挂载」和「新建 skill / rule」两块，同时补上 `dev_task` 缺失的 `items` 操作（更新实施项状态）。引擎层 `stage_bindings` 校验（未知阶段/空名）与合并已单测通过。
@@ -187,4 +201,4 @@ dsh plugin --profile <name> add .
 - **沙箱写入修复（0.22.1）**：`dev_task` 的文件写入此前没有携带按调用传递的沙箱策略（`writeText` 的 `sandboxPolicy` 参数），在 DSH 文件沙箱下会把 workspace 内的任务记录写入误判为越界而拒绝（`file access denied under workspace-write mode`，且会话策略变化无法影响它）；现在每次写入显式携带 `{ mode, workspaceRoot: 会话目录 }`，并新增 `sandbox_permissions` 参数（`workspace-write` / `danger-full-access`）作为被拒后的一次性升级路径。
 - **质量修补（0.22.2，采纳 codex 评审五项）**：① client typecheck 修复——`project.ts` 不再依赖 `node:path`，浏览器面可完整类型检查；② sandbox 升级补审批——`sandbox_permissions` 必须与 `justification` 成对出现，`danger-full-access` 需人工一次批准，无审批服务即拒绝；③ Remote 任意路径设防——工作台 Remote 拒绝非绝对路径与系统级根目录；④ `set_risk` 升到 `high_risk` 时受流程能力门约束（`minimal`/`agile` 拒绝，不再绕过 `create` 的检查）；⑤ `loadTask` 补齐旧记录缺失字段（items / verification / review / commits），损坏记录 fail-closed 而非引擎裸崩。
 - **可信边界加固（0.22.3，采纳 GPT 评审）**：① 验证命令统一在任务记录的项目根运行（monorepo 子目录不再跑错目录），receipt.root 与任务根强校验；② 旧任务（无 frozen 快照）禁止升 `high_risk`——迁移或重建后才可；③ `init apply` 强制 `expected_hash`，新增 `existing_hash` 防审批期间文件被换（TOCTOU）；④ 任务记录新增 `revision`，每次写入 compare-and-swap，并发覆盖直接报错（`changed concurrently`）；⑤ 工作台 Remote 增加 host workspace registry（`registerWorkspace` 供 harness 集成，注册后未授权路径一律拒绝）；⑥ sandbox 升级审批展示 workspace；⑦ 文档明确 hook（本地反馈）/ host（工具流约束）/ CI（最终可信门禁）三层职责边界。
-- **并发与发布闭环（0.22.4，采纳 REVIEW-0.22.3）**：① `init apply` 在目标文件存在时**强制** `existing_hash`（不再可选），propose→apply 之间文件被篡改直接 fail-closed；② 任务写入升级为真正的原子 CAS——逻辑 `revision` 检查 + dsh-fs 的 `lstat` 版本号 `replaceIfVersion` write intent，并发写入报 `FS_STALE_VERSION` 而非静默覆盖；③ workspace registry 增加 `enableStrictWorkspaces()` 生产模式（空 registry 不再回退放行）；④ `exports["./client"]` 补 `types` 条件（`lib/client.d.ts` 随构建生成）；⑤ 新增 `npm run verify:package` 发布包黑盒验证（pack → 白名单一致性 → 真实安装 → 主入口 import → client 注册 → 包内 121 checks → CLI 语法）。REVIEW 指出的 Typert invocation context、host 可信状态签名、CI 最终门禁仍属 harness 层，集成点已在文档标注。
+- **并发与发布闭环（0.22.4，采纳 REVIEW-0.22.3）**：① `init apply` 在目标文件存在时**强制** `existing_hash`（不再可选），propose→apply 之间文件被篡改直接 fail-closed；② 任务写入升级为真正的原子 CAS——逻辑 `revision` 检查 + dsh-fs 的 `lstat` 版本号 `replaceIfVersion` write intent，并发写入报 `FS_STALE_VERSION` 而非静默覆盖；③ workspace registry 增加 `enableStrictWorkspaces()` 生产模式（空 registry 不再回退放行）；④ `exports["./client"]` 补 `types` 条件（`lib/client.d.ts` 随构建生成）；⑤ 新增 `npm run verify:package` 发布包黑盒验证（pack → 白名单一致性 → 真实安装 → 主入口 import → client 注册 → 包内 123 checks → CLI 语法）；⑥ 工作台 UI 优化——侧栏「工程流程」入口与设置按钮逐像素对齐（实测对齐 36 圆形 rail / 42 高 12 圆角展开行）、流程预设改卡片式选择器、工作台 header 品牌化、初始化预览容器化。REVIEW 指出的 Typert invocation context、host 可信状态签名、CI 最终门禁仍属 harness 层，集成点已在文档标注。
