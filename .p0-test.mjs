@@ -140,7 +140,8 @@ await assertThrows(
   const prop = await exe({ operation: 'init', phase: 'propose', content: '# 项目\n示例' }, EXEC)
   assert(prop.includes('proposed create'), 'propose previews without writing')
   assert(fs._files.get('AGENTS.md') === undefined, 'propose writes nothing')
-  const app = await exe({ operation: 'init', phase: 'apply', content: '# 项目\n示例' }, EXEC)
+  const hash9 = /content hash: ([0-9a-f]{64})/.exec(prop)[1]
+  const app = await exe({ operation: 'init', phase: 'apply', content: '# 项目\n示例', expected_hash: hash9 }, EXEC)
   assert(app.includes('wrote ./AGENTS.md'), 'apply writes the file')
   assert(fs._files.get('AGENTS.md') === '# 项目\n示例', 'apply persisted the draft')
 }
@@ -149,15 +150,22 @@ await assertThrows(
 {
   const fs = makeFs({ 'AGENTS.md': '# 已有治理文件\n' })
   const exe = await registered(fs)
+  const prop10 = await exe({ operation: 'init', phase: 'propose', content: '# new' }, EXEC)
+  const hash10 = /content hash: ([0-9a-f]{64})/.exec(prop10)[1]
   await assertThrows(
-    () => exe({ operation: 'init', phase: 'apply', content: '# new' }, EXEC),
+    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10 }, EXEC),
     'protected',
     'apply without overwrite on an existing file is rejected',
   )
   await assertThrows(
-    () => exe({ operation: 'init', phase: 'apply', content: '# new', overwrite: true }, EXEC),
+    () => exe({ operation: 'init', phase: 'apply', content: '# new', expected_hash: hash10, overwrite: true }, EXEC),
     'approval',
     'overwrite requires an approval service',
+  )
+  await assertThrows(
+    () => exe({ operation: 'init', phase: 'apply', content: '# new' }, EXEC),
+    'requires expected_hash',
+    'apply without expected_hash is rejected',
   )
 }
 
@@ -613,6 +621,52 @@ function memProbe(files) {
   const controller = readFileSync('./lib/controller.js', 'utf8')
   assert(controller.includes('workspace path must be absolute'), 'remote rejects non-absolute workspace paths')
   assert(controller.includes('not an allowed workspace'), 'remote rejects system-wide roots')
+}
+
+// ── 33. 0.23: verify runs in the task's recorded project root ──────────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }), 'package.json': '{}' })
+  const seenWorkdirs = []
+  const shell = {
+    resolve(request) { return { command: request.command, workdir: request.workdir ?? '', timeoutMs: request.timeoutMs } },
+    async run(spec) { seenWorkdirs.push(spec.workdir); return { exitCode: 0, timedOut: false, aborted: false, stdout: { text: 'ok' }, stderr: { text: '' } } },
+  }
+  const ctx = makeCtx(fs, undefined)
+  ctx.get = (service) => (service === 'shell' ? shell : service === 'approval' ? undefined : undefined)
+  registerDevTask(ctx)
+  const exe = ctx._tools[0].execute
+  await exe({ operation: 'create', task_id: 'VR-1', title: 'x', branch: 'main' }, EXEC)
+  await exe({ operation: 'verify', task_id: 'VR-1' }, EXEC)
+  const record = JSON.parse(fs._files.get('.dsh/task-VR-1.json'))
+  assert(seenWorkdirs.length === 1, 'bare verify ran the default command')
+  assert(seenWorkdirs[0] === (record.root ?? ''), 'verify ran in the recorded project root, not the session cwd')
+  assert(record.verification.receipt.root === record.root, 'receipt binds the recorded project root')
+}
+
+// ── 34. 0.23: revision increments on every write (CAS foundation) ───────────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'CAS-1', title: 'x', branch: 'main' }, EXEC)
+  const r1 = JSON.parse(fs._files.get('.dsh/task-CAS-1.json')).revision
+  await exe({ operation: 'scope', task_id: 'CAS-1', files: ['a'] }, EXEC)
+  const r2 = JSON.parse(fs._files.get('.dsh/task-CAS-1.json')).revision
+  assert(r1 === 1 && r2 === 2, 'revision increments on every write')
+  const devtask = readFileSync('./lib/dev-task.js', 'utf8')
+  assert(devtask.includes('changed concurrently'), 'concurrent-write CAS guard is present')
+}
+
+// ── 35. 0.23: Remote path guard + workspace registry ────────────────────────
+{
+  const ctl = await import('./lib/controller.js')
+  assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'absolute workspace passes')
+  assert(ctl.checkedPath('D:/proj/one/') === 'D:/proj/one', 'trailing slash is normalized')
+  await assertThrows(() => ctl.checkedPath('relative/path'), 'must be absolute', 'relative path is rejected')
+  await assertThrows(() => ctl.checkedPath('C:/Windows/system32'), 'not an allowed workspace', 'system root is rejected')
+  await assertThrows(() => ctl.checkedPath('c:/windows'), 'not an allowed workspace', 'case variant of a system root is rejected')
+  ctl.registerWorkspace('D:/proj/one')
+  assert(ctl.checkedPath('D:/PROJ/one') === 'D:/PROJ/one', 'registered workspace passes under any case')
+  await assertThrows(() => ctl.checkedPath('D:/other-project'), 'not registered', 'unregistered workspace is rejected once the registry is active')
 }
 
 console.log(`\nP0 acceptance: ${passed} checks passed`)

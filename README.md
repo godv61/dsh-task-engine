@@ -137,13 +137,19 @@ dsh plugin --profile <name> add .
 
 > 钩子读 `.dsh/eng.json` + `.dsh/task-*.json`，跨仓库零依赖、自包含。
 
+### 门禁边界：hook / host / CI 各自负责什么（0.22.3 起明确）
+
+- **git hook = 本地即时反馈**：拦常规 `git commit`（校验任务存在、阶段、范围、消息、快照 hash、敏感路径）。它挡不住 `git commit --no-verify`、`core.hooksPath` 替换或手改 task 记录——这是定位，不是漏洞。
+- **host 工具流 = 正常路径的强约束**：`dev_task` 的阶段/范围/回执/审批门禁在工具调用时生效；Remote 路径校验 + workspace registry（host 集成 `registerWorkspace` 后生效）挡住越界访问；文件沙箱是最终文件边界。
+- **CI = 最终可信门禁**：CI 里重新验证 task id、快照 hash、staged 范围、提交消息、真实验证退出码、高风险回执、hook 是否被绕过——这是唯一不依赖"模型配合"的可信验证点。
+
 ## 项目初始化（init）
 
 二开 / 遗留项目常常没有文档，AI 接手前需要先「认识」这个项目。`dev_task`（operation=init）走 **inspect → propose → apply** 三阶段管理项目根的 `AGENTS.md`，绝不直接覆盖已有治理文件：
 
 1. `inspect`——读取现有 `AGENTS.md`（若有）返回给模型；没有则提示扫描项目。
-2. `propose`——模型扫描（目录结构、技术栈、构建/运行命令、约定、红线）后给出全文草稿，此步**只预览不落盘**。
-3. `apply`——落盘。首次创建直接写入；覆盖已有 `AGENTS.md` 必须 `overwrite: true` 且**经人工批准**，否则拒绝。
+2. `propose`——模型扫描（目录结构、技术栈、构建/运行命令、约定、红线）后给出全文草稿，此步**只预览不落盘**，并返回草稿内容 hash（已有文件时另附现有文件 hash）。
+3. `apply`——落盘。**必须传回 propose 返回的 `expected_hash`**（防预览与落盘之间内容被换）；覆盖已有 `AGENTS.md` 必须 `overwrite: true` 且**经人工批准**，传回 `existing_hash` 可防审批期间文件被他人改动（TOCTOU），否则拒绝。
 
 - **为什么是 `AGENTS.md`**：DSH 平台会把项目根的 `AGENTS.md` **自动注入到每个会话**——生成一次，之后每个任务开工 AI 都自带这份项目认知，引擎无需额外的注入逻辑。
 - **行数上限**：`AGENTS.md` 每次都进上下文，200 行（约 4–6K token）是硬约束，逼着只写「项目是什么 → 怎么跑 → 结构 → 约定 → 坑」，而不是塞长篇文档。
@@ -180,3 +186,4 @@ dsh plugin --profile <name> add .
 - **审计和发布质量（0.22.0）**：① 流程快照 hash——任务创建时固化 `config` 的 SHA-256，工具与提交钩子读任务记录时校验，被手改的快照一律拒绝继续；② 提交钩子完整性检测——新增 `dev_task verify_hook`，比对 `.git/hooks/commit-msg` 与内置门禁的 hash，被替换/篡改立即报错；③ 风险降级审批——新增 `set_risk`，`high_risk → standard` 必须人工批准并落 `risk_downgrades` 审计记录；④ 验证回执绑定项目根——receipt 记录 `root`，与任务 workspace 绑定；⑤ 内置规则指纹锁定——创建时固化内置规则内容指纹，包升级后 `status` 报 `bindings_drift` 而非静默换规则；⑥ 多项目 / 多语言 / 多任务测试矩阵补强。
 - **沙箱写入修复（0.22.1）**：`dev_task` 的文件写入此前没有携带按调用传递的沙箱策略（`writeText` 的 `sandboxPolicy` 参数），在 DSH 文件沙箱下会把 workspace 内的任务记录写入误判为越界而拒绝（`file access denied under workspace-write mode`，且会话策略变化无法影响它）；现在每次写入显式携带 `{ mode, workspaceRoot: 会话目录 }`，并新增 `sandbox_permissions` 参数（`workspace-write` / `danger-full-access`）作为被拒后的一次性升级路径。
 - **质量修补（0.22.2，采纳 codex 评审五项）**：① client typecheck 修复——`project.ts` 不再依赖 `node:path`，浏览器面可完整类型检查；② sandbox 升级补审批——`sandbox_permissions` 必须与 `justification` 成对出现，`danger-full-access` 需人工一次批准，无审批服务即拒绝；③ Remote 任意路径设防——工作台 Remote 拒绝非绝对路径与系统级根目录；④ `set_risk` 升到 `high_risk` 时受流程能力门约束（`minimal`/`agile` 拒绝，不再绕过 `create` 的检查）；⑤ `loadTask` 补齐旧记录缺失字段（items / verification / review / commits），损坏记录 fail-closed 而非引擎裸崩。
+- **可信边界加固（0.22.3，采纳 GPT 评审）**：① 验证命令统一在任务记录的项目根运行（monorepo 子目录不再跑错目录），receipt.root 与任务根强校验；② 旧任务（无 frozen 快照）禁止升 `high_risk`——迁移或重建后才可；③ `init apply` 强制 `expected_hash`，新增 `existing_hash` 防审批期间文件被换（TOCTOU）；④ 任务记录新增 `revision`，每次写入 compare-and-swap，并发覆盖直接报错（`changed concurrently`）；⑤ 工作台 Remote 增加 host workspace registry（`registerWorkspace` 供 harness 集成，注册后未授权路径一律拒绝）；⑥ sandbox 升级审批展示 workspace；⑦ 文档明确 hook（本地反馈）/ host（工具流约束）/ CI（最终可信门禁）三层职责边界。

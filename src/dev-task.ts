@@ -326,6 +326,7 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
   state.commits = state.commits ?? []
   state.verification = state.verification ?? { passed: false, evidence: [] }
   state.review = state.review ?? { outcome: 'pending' }
+  state.revision = state.revision ?? 0 // pre-0.23 records carry no revision; CAS treats them as 0
   if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
     throw new Error(
       `task "${id}" snapshot hash mismatch — the frozen workflow config was edited after creation. ` +
@@ -336,6 +337,20 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
 }
 
 async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  const expected = state.revision ?? 0
+  const onDiskRaw = await readText(fs, taskPath(state.id), cwd)
+  if (onDiskRaw === undefined) {
+    // First write of a fresh record: the factory revision is the first version.
+    state.revision = state.revision ?? 1
+  } else {
+    const onDisk = JSON.parse(onDiskRaw) as TaskState
+    if ((onDisk.revision ?? 0) !== expected) {
+      throw new Error(
+        `task "${state.id}" changed concurrently (record revision ${onDisk.revision ?? 0} vs the loaded revision ${expected}) — reload status and retry this operation`,
+      )
+    }
+    state.revision = expected + 1
+  }
   await writeText(fs, taskPath(state.id), JSON.stringify(state, null, 2), cwd, mode)
 }
 
@@ -367,11 +382,12 @@ async function resolveWriteMode(
   if (approval === undefined) {
     throw new Error(`sandbox escalation to ${mode} requires human approval, but the approval service is unavailable`)
   }
+  const workspace = exec.agent?.session.header.cwd ?? '(unknown workspace)'
   const outcome = await approval.request({
     agent: exec.agent,
     toolName: 'dev_task',
     callId: exec.callId,
-    reason: `沙箱升级：请确认允许 dev_task 以 ${mode} 模式执行本次写文件操作。理由：${args.justification}`,
+    reason: `沙箱升级：请确认允许 dev_task 以 ${mode} 模式写任务文件（workspace: ${workspace}）。理由：${args.justification}`,
     signal: exec.signal,
   })
   if (outcome !== 'allowed-once') {
@@ -504,6 +520,7 @@ interface OpArgs {
   content?: string
   overwrite?: boolean
   expected_hash?: string
+  existing_hash?: string
   sandbox_permissions?: 'workspace-write' | 'danger-full-access'
   justification?: string
   phase?: 'inspect' | 'propose' | 'apply'
@@ -650,7 +667,8 @@ export function registerDevTask(ctx: Context): void {
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
-      expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; applying with a different hash is rejected (init apply).' },
+      expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; apply is rejected without it, or with a different hash (init apply).' },
+      existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
       sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Wider sandbox mode for this call\'s file writes; default is workspace-write. Use only as a retry after a sandbox denial of the same call; requires justification and human approval.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
@@ -728,12 +746,19 @@ export function registerDevTask(ctx: Context): void {
 
         if (phase === 'propose') {
           const action = existing === undefined ? 'create' : 'overwrite'
-          return `proposed ${action} ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). No file was written — review the draft, then call init phase=apply${existing !== undefined ? ' (overwriting requires human approval)' : ''} with the same content:\n---\n${content}\n---\n(content hash: ${hashText(content)} — pass it back as expected_hash on apply to prove the content is unchanged)`
+          const existingHash = existing === undefined ? undefined : hashText(existing)
+          return `proposed ${action} ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). No file was written — review the draft, then call init phase=apply${existing !== undefined ? ' (overwriting requires human approval)' : ''} with the same content:\n---\n${content}\n---\n(content hash: ${hashText(content)} — pass it back as expected_hash on apply to prove the content is unchanged${existingHash !== undefined ? `; existing hash: ${existingHash} — pass it back as existing_hash on apply to prove the file has not changed during review` : ''})`
         }
 
         if (phase === 'apply') {
-          if (a.expected_hash !== undefined && a.expected_hash !== hashText(content)) {
+          if (a.expected_hash === undefined) {
+            throw new Error('init apply requires expected_hash returned by propose — re-propose to obtain it')
+          }
+          if (a.expected_hash !== hashText(content)) {
             throw new Error(`init content changed since propose (expected_hash mismatch) — resubmit the identical proposed content`)
+          }
+          if (existing !== undefined && a.existing_hash !== undefined && a.existing_hash !== hashText(existing)) {
+            throw new Error('AGENTS.md changed since propose (existing_hash mismatch) — re-inspect and re-propose before overwriting')
           }
           if (existing !== undefined && a.overwrite !== true) {
             throw new Error(`AGENTS.md already exists (${lineCount(existing)} lines) and is protected. Inspect via init phase=inspect, merge, then resubmit with phase=apply plus overwrite: true (human approval).`)
@@ -940,10 +965,15 @@ export function registerDevTask(ctx: Context): void {
             break
           }
           if (target === 'high_risk') {
-            const flowId = state.flow?.flow
-            if (flowId !== undefined && !flowSatisfies(flowId, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+            if (state.flow === undefined) {
               throw new Error(
-                `cannot raise risk to high_risk on flow "${flowId}" — it lacks the required capabilities ` +
+                'legacy task has no frozen workflow snapshot — recreate (or migrate) the task before raising risk to high_risk; ' +
+                'a task without a frozen snapshot cannot prove its flow carries the high-risk capabilities',
+              )
+            }
+            if (!flowSatisfies(state.flow.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+              throw new Error(
+                `cannot raise risk to high_risk on flow "${state.flow.flow}" — it lacks the required capabilities ` +
                 `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
               )
             }
@@ -974,9 +1004,16 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'verify': {
           const explicit = a.command !== undefined && a.command.trim() !== ''
-          const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, cwd)
+          // Verification always runs in the task's recorded project root, not
+          // the session cwd: in a monorepo the session may sit in a subdirectory
+          // while `npm test`/`mvn test` must run where the manifest lives.
+          const verifyRoot = state.root ?? cwd
+          const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, verifyRoot)
           if (command !== undefined) {
-            const receipt = await runVerificationCommand(ctx, command, cwd)
+            const receipt = await runVerificationCommand(ctx, command, verifyRoot)
+            if (receipt.root !== undefined && receipt.root !== verifyRoot) {
+              throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
+            }
             state.verification = {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted,
               evidence: a.evidence ?? [],

@@ -174,6 +174,8 @@ export interface TaskState {
   risk_downgrades?: { from: string; to: string; at: string }[]
   /** Fingerprint of the bundled rules at create time; a drift on disclosure means the shipped rules changed since this task froze. Absent on pre-0.22 records. */
   bindings_fingerprint?: string
+  /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
+  revision?: number
 }
 
 export interface Result {
@@ -537,6 +539,7 @@ export function newTask(input: {
     artifacts: {},
     files: [],
     commits: [],
+    revision: 1,
     ...(input.root !== undefined ? { root: input.root } : {}),
     ...(input.project_type !== undefined ? { project_type: input.project_type } : {}),
   }

@@ -842,12 +842,47 @@ async function readEngText(fs: NonNullable<Context['fs']>, path: string): Promis
 }
 
 /**
- * Reject a client-supplied workspace path that is not absolute or points at a
- * system/home-wide root. The real containment stays with the host's filesystem
- * sandbox (writes carry a per-call `workspace-write` policy); this check fails
- * closed on the obvious mis-targets a stray client call could name.
+ * Host-side allow-list of workspaces the Remote may touch. Empty means the
+ * registry is not integrated (only {@link checkedPath} guards); once a host
+ * integration registers real session workspaces, unregistered paths fail
+ * closed. The final file boundary always stays with the filesystem sandbox.
  */
-function checkedPath(raw: string): string {
+class WorkspaceRegistry {
+  private readonly allowed = new Set<string>()
+
+  register(path: string): void {
+    this.allowed.add(normalizeKey(path))
+  }
+
+  assertAllowed(path: string): void {
+    if (this.allowed.size === 0) return // not integrated yet — fall back to checkedPath
+    if (!this.allowed.has(normalizeKey(path))) {
+      throw new RemoteError('gateway/internal', `task-engine: workspace not registered on this host: ${path}`, {})
+    }
+  }
+}
+
+function normalizeKey(path: string): string {
+  return path.replace(/[\\/]+$/u, '').toLowerCase()
+}
+
+const workspaceRegistry = new WorkspaceRegistry()
+
+/** Host integration point: authorize one workspace for Remote access (call per mounted session workspace). */
+export function registerWorkspace(path: string): void {
+  workspaceRegistry.register(path)
+}
+
+/**
+ * Reject a client-supplied workspace path that is not absolute or points at a
+ * system/home-wide root, then require the path on the host's workspace
+ * allow-list when one is registered. The real containment stays with the
+ * host's filesystem sandbox (writes carry a per-call `workspace-write`
+ * policy); this check fails closed on the obvious mis-targets a stray client
+ * call could name.
+ */
+/** Exported for tests and host integrations: the Remote path guard itself. */
+export function checkedPath(raw: string): string {
   if (raw.trim() === '') return raw // empty means the host default, preserved for compatibility
   if (!isAbsolute(raw)) {
     throw new RemoteError('gateway/internal', `task-engine: workspace path must be absolute: ${raw}`, {})
@@ -860,6 +895,7 @@ function checkedPath(raw: string): string {
       throw new RemoteError('gateway/internal', `task-engine: path is not an allowed workspace: ${raw}`, {})
     }
   }
+  workspaceRegistry.assertAllowed(normalized)
   return normalized
 }
 
