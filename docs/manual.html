@@ -229,7 +229,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
         <ol>
           <li><b>inspect</b>：对 AI 说「帮我初始化这个项目」；AI 读现有 <code>AGENTS.md</code>（若有）返回，没有则扫目录结构、技术栈、构建 / 运行命令、约定与红线。同时报告：项目根（自动从 workspace 向上发现）、语言栈（Node / Java / Python / Go / Rust）与默认验证命令、其它治理文件（<code>CLAUDE.md</code>、<code>.cursorrules</code>——init 只管理 AGENTS.md，不覆盖它们）、项目级 skill/rule 目录（<code>.dsh/rules/*.md</code>、<code>.dsh/skills/&lt;name&gt;/SKILL.md</code>）。</li>
           <li><b>propose</b>：AI 写成 <code>AGENTS.md</code> 草稿，此步<b>只预览、不落盘</b>，同样硬校验<b>行数 ≤ 200 行</b>，并返回内容 hash。</li>
-          <li><b>apply</b>：落盘。首次创建直接写入；覆盖已有 <code>AGENTS.md</code> 必须带 <code>overwrite</code> 且<b>经人工批准</b>；传回 <code>expected_hash</code> 与 propose 的内容 hash 不一致会被拒绝（防止预览与落盘之间内容被换）。写入目标必须在项目根内。</li>
+          <li><b>apply</b>：落盘。<b>必须传回 propose 返回的 <code>expected_hash</code></b>（缺失或与内容不一致一律拒绝，防止预览与落盘之间内容被换）；覆盖已有 <code>AGENTS.md</code> 时<b>还必须传回 <code>existing_hash</code></b>（证明审批期间现有文件未被他人改动）并带 <code>overwrite</code> 且<b>经人工批准</b>。写入目标必须在项目根内。</li>
         </ol>
         <pre><code>项目根/
 ├─ AGENTS.md          ← init 生成，DSH 每会话自动注入
