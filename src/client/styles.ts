@@ -83,7 +83,39 @@ export const styles: Record<string, CSSProperties> = {
   okText: { color: success, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 },
   status: { color: textTertiary, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 },
 
-  actions: { display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 },
+  actions: {
+    display: 'flex', alignItems: 'center', gap: 12, marginTop: 4,
+    paddingTop: 14, borderTop: `1px solid ${border}`,
+  },
+
+  // ── flow preset picker ────────────────────────────────────────────────────
+  flowGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 },
+  flowOption: {
+    display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch',
+    border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px',
+    background: surface, cursor: 'pointer', color: text, fontSize: 13,
+    textAlign: 'left' as const, fontFamily: 'inherit',
+    transition: 'border-color 120ms ease, box-shadow 120ms ease',
+  },
+  flowOptionActive: {
+    borderColor: brand,
+    boxShadow: `0 0 0 1px ${brand}`,
+  },
+  flowOptionTitle: {
+    display: 'flex', alignItems: 'center', gap: 7,
+    fontSize: 13, fontWeight: 600, color: text,
+  },
+  flowOptionDesc: { color: textTertiary, fontSize: 12, lineHeight: 1.45, margin: 0 },
+
+  // ── init preview ──────────────────────────────────────────────────────────
+  mdPreview: {
+    border: `1px solid ${border}`,
+    borderRadius: 8,
+    background: 'var(--dsw-alias-bg-layer-1)',
+    padding: '12px 14px',
+    maxHeight: 420,
+    overflowY: 'auto',
+  },
 }
 
 export { text, textSecondary, textTertiary, border, surface, danger, success, warn, brand }

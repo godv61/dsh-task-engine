@@ -9,7 +9,7 @@
  */
 
 import { createElement, useState, type CSSProperties, type ChangeEvent } from 'react'
-import { IconCloseOutline16, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCloseOutline16, IconSettingsOutline16, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
 import type { TaskEngineRemote } from './TaskEngineSection.ts'
@@ -36,6 +36,11 @@ const header: CSSProperties = {
   padding: '12px 20px',
   borderBottom: '1px solid var(--dsw-alias-border-l2)',
 }
+
+const headerBrand: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }
+const headerText: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }
+const headerTitle: CSSProperties = { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const headerSub: CSSProperties = { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', margin: 0 }
 
 const tabbar: CSSProperties = {
   display: 'flex',
@@ -73,7 +78,6 @@ const closeStyle: CSSProperties = {
   borderRadius: 6,
   color: 'var(--dsw-alias-label-secondary)',
 }
-
 const TABS = [
   { id: 'init', label: '项目初始化' },
   { id: 'flow', label: '流程配置' },
@@ -101,8 +105,21 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
 
   return createElement('div', { style: overlay },
     createElement('div', { style: header },
-      createElement('span', { style: { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, '工程流程'),
-      createElement('button', { type: 'button', title: '关闭', onClick: () => { actions.close() }, style: closeStyle },
+      createElement('div', { style: headerBrand },
+        createElement(IconSettingsOutline16, { size: 18 }),
+        createElement('div', { style: headerText },
+          createElement('span', { style: headerTitle }, '工程流程'),
+          createElement('p', { style: headerSub }, '工程化交付工作台 · 需求评审 → 设计 → 开发 → 交付 → 代码审核'),
+        ),
+      ),
+      createElement('button', {
+        type: 'button',
+        title: '关闭',
+        onClick: () => { actions.close() },
+        style: closeStyle,
+        onMouseEnter: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'var(--dsw-alias-bg-layer-2)' },
+        onMouseLeave: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'transparent' },
+      },
         createElement(IconCloseOutline16, { size: 16 })),
     ),
     createElement('div', { style: tabbar },

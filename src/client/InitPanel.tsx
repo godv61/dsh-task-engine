@@ -117,13 +117,18 @@ export function InitPanel({ workspace, remote }: {
         '项目根 AGENTS.md 会被 DSH 自动注入到每个会话。初始化一次，之后每次任务开工 AI 都自带这份项目认知（项目是什么 → 怎么跑 → 结构 → 约定 → 坑）。'),
 
       exists && !editing && draft === null
-        ? createElement(MarkdownText, { text: view!.content, labels: MD_LABELS })
+        ? createElement('div', { style: styles.mdPreview },
+          createElement(MarkdownText, { text: view!.content, labels: MD_LABELS }))
         : null,
 
       draft !== null
         ? createElement('div', { style: styles.section },
-          createElement('span', { style: styles.sourceBadge }, `AI 草稿 · ${draft.lines} 行 · 尚未写入`),
-          createElement(MarkdownText, { text: draft.content, labels: MD_LABELS }),
+          createElement('div', { style: styles.sourceRow },
+            createElement(StateDot, { state: 'ongoing', size: 8 }),
+            createElement('span', { style: styles.sourceBadge }, `AI 草稿 · ${draft.lines} 行 · 尚未写入`),
+          ),
+          createElement('div', { style: styles.mdPreview },
+            createElement(MarkdownText, { text: draft.content, labels: MD_LABELS })),
         )
         : null,
 

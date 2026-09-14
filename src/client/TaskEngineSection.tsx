@@ -241,12 +241,25 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
 
       <div style={styles.field}>
         <span style={styles.fieldLabel}>流程预设</span>
-        <div style={styles.chips}>
-          {FLOW_OPTIONS.map(option => (
-            <Pill key={option.id} active={flow === option.id} onClick={() => { selectFlow(option.id) }} title={option.description}>
-              {option.label}
-            </Pill>
-          ))}
+        <div style={styles.flowGrid}>
+          {FLOW_OPTIONS.map(option => {
+            const active = flow === option.id
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => { selectFlow(option.id) }}
+                style={{ ...styles.flowOption, ...(active ? styles.flowOptionActive : {}) }}
+              >
+                <span style={styles.flowOptionTitle}>
+                  <StateDot state={active ? 'done' : 'ongoing'} size={8} />
+                  {option.label}
+                </span>
+                <p style={styles.flowOptionDesc}>{option.description}</p>
+              </button>
+            )
+          })}
         </div>
         <p style={styles.hint}>{FLOW_OPTIONS.find(option => option.id === flow)?.description}</p>
       </div>
