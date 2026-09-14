@@ -5,11 +5,12 @@
  *
  * Everything here is a pure function over a narrow {@link FileProbe}, so it
  * unit-tests without a harness and the commit hook can reuse the same tables.
+ * No node builtins are imported: the browser client typechecks this module
+ * transitively (through `engine`'s `ProjectType` import) and must stay free
+ * of `node:` modules.
  *
  * @module dsh-task-engine/project
  */
-
-import { dirname } from 'node:path'
 
 /**
  * Read one file relative to a directory. `undefined` means missing or unreadable;
@@ -20,6 +21,13 @@ export interface FileProbe {
   read(dir: string, relPath: string): Promise<string | undefined>
   /** Basenames of a directory's children; implementations without listing return `[]`. */
   list?(dir: string, relPath: string): Promise<string[]>
+}
+
+/** Directory part of a path without importing `node:path` (keeps the module browser-safe). */
+function parentDir(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/u, '')
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return idx <= 0 ? trimmed : trimmed.slice(0, idx)
 }
 
 export type ProjectType = 'node' | 'java' | 'python' | 'go' | 'rust' | 'unknown'
@@ -123,7 +131,7 @@ export async function detectRoot(probe: FileProbe, startDir: string): Promise<st
     for (const marker of ALL_MARKERS) {
       if (await probe.read(current, marker) !== undefined) return current
     }
-    const parent = dirname(current)
+    const parent = parentDir(current)
     if (parent === current) break
     current = parent
   }

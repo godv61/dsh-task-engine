@@ -550,9 +550,69 @@ function memProbe(files) {
     'dev_task writes carry the sandbox mode (default workspace-write)')
   assert(seenPolicy.workspaceRoot === process.cwd(),
     'dev_task writes carry the session workspace root so in-workspace paths are never misjudged as out-of-root')
-  await exe({ operation: 'create', task_id: 'POL-2', title: 'x', branch: 'main', sandbox_permissions: 'danger-full-access' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'create', task_id: 'POL-2', title: 'x', branch: 'main', sandbox_permissions: 'danger-full-access' }, EXEC),
+    'requires a justification',
+    'escalation without a justification is rejected',
+  )
+}
+
+// ── 30. 0.22.x: sandbox escalation requires a human one-shot approval ───────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  let seenPolicy
+  const origWrite = fs.writeText
+  fs.writeText = async (target, content, expected, signal, sandboxPolicy) => {
+    seenPolicy = sandboxPolicy
+    return origWrite(target, content)
+  }
+  const approval = { async request() { return 'allowed-once' } }
+  const exe = await registered(fs, approval)
+  await exe({
+    operation: 'create', task_id: 'POL-3', title: 'x', branch: 'main',
+    sandbox_permissions: 'danger-full-access', justification: 'the task record must land despite the sandbox denial',
+  }, EXEC)
   assert(seenPolicy.mode === 'danger-full-access',
-    'sandbox_permissions upgrades the per-call write mode')
+    'approved escalation upgrades the per-call write mode')
+}
+
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs) // no approval service
+  await assertThrows(
+    () => exe({
+      operation: 'create', task_id: 'POL-4', title: 'x', branch: 'main',
+      sandbox_permissions: 'danger-full-access', justification: 'why',
+    }, EXEC),
+    'approval service is unavailable',
+    'escalation without an approval service fails closed',
+  )
+}
+
+// ── 31. 0.22.x: set_risk cannot raise risk past the flow's capabilities ─────
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'minimal' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'SR-1', title: 'x', branch: 'main' }, EXEC)
+  await assertThrows(
+    () => exe({ operation: 'set_risk', task_id: 'SR-1', risk_level: 'high_risk' }, EXEC),
+    'lacks the required capabilities',
+    'raising risk on a minimal flow is rejected (same gate as create)',
+  )
+}
+{
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'SR-2', title: 'x', branch: 'main' }, EXEC)
+  assert((await exe({ operation: 'set_risk', task_id: 'SR-2', risk_level: 'high_risk' }, EXEC)).includes('high_risk'),
+    'raising risk on the standard flow succeeds')
+}
+
+// ── 32. 0.22.x: remote rejects non-absolute / system-root workspace paths ───
+{
+  const controller = readFileSync('./lib/controller.js', 'utf8')
+  assert(controller.includes('workspace path must be absolute'), 'remote rejects non-absolute workspace paths')
+  assert(controller.includes('not an allowed workspace'), 'remote rejects system-wide roots')
 }
 
 console.log(`\nP0 acceptance: ${passed} checks passed`)

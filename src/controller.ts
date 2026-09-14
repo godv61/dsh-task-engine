@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -370,6 +370,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async read(path: string): Promise<EngConfigView> {
+    path = checkedPath(path)
     const fs = this.fs()
     const raw = await readEngText(fs, path)
     if (raw === undefined) {
@@ -427,6 +428,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async write(request: EngWriteRequest): Promise<EngConfigView> {
+    request.path = checkedPath(request.path)
     const resolved = resolveFlow(
       request.flow,
       request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : undefined,
@@ -468,6 +470,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async listSkills(path: string): Promise<SkillCatalog> {
+    path = checkedPath(path)
     const project = path === '' ? [] : listSkillsFromDir(join(path, '.dsh/skills'), 'project')
     const user = listSkillsFromDir(join(dshHome(), 'skills'), 'user')
     const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled')
@@ -487,6 +490,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async listRules(path: string): Promise<RuleCatalog> {
+    path = checkedPath(path)
     const project = path === '' ? [] : scanRuleDir(join(path, '.dsh/rules'), 'project')
     const user = scanRuleDir(join(dshHome(), 'rules'), 'user')
     const bundled = scanRuleDir(BUNDLED_RULES_DIR, 'bundled')
@@ -511,6 +515,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readTasks(path: string): Promise<TaskLedgerView> {
+    path = checkedPath(path)
     const fs = this.fs()
     const tasks: TaskLedgerEntry[] = []
     try {
@@ -553,6 +558,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readInit(path: string): Promise<InitView> {
+    path = checkedPath(path)
     const { root } = locateInitRoot(path)
     const raw = await readTextAt(this.fs(), root, INITFILE)
     if (raw === undefined) return { exists: false, content: '', lines: 0 }
@@ -571,6 +577,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeInit(request: InitWriteRequest): Promise<InitWriteResult> {
+    request.path = checkedPath(request.path)
     const lines = lineCount(request.content)
     if (lines > INIT_MAX_LINES) {
       return { ok: false, lines, error: `AGENTS.md 为 ${lines} 行，超过上限 ${INIT_MAX_LINES} 行；请精简到项目骨架后重试。` }
@@ -604,6 +611,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async generateInit(request: InitGenerateRequest): Promise<InitDraft> {
+    request.path = checkedPath(request.path)
     const { root } = locateInitRoot(request.path)
     const snapshot = scanProject(root)
     const llm = this.ctx.get('llm')
@@ -653,6 +661,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeSkill(request: WriteSkillRequest): Promise<WriteResourceResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '' || request.description.trim() === '') {
       return { ok: false, name, path: '', error: 'skill name and description must not be empty' }
@@ -674,6 +683,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeRule(request: WriteRuleRequest): Promise<WriteResourceResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '' || request.content.trim() === '') {
       return { ok: false, name, path: '', error: 'rule name and content must not be empty' }
@@ -696,6 +706,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readSkill(request: ReadSkillRequest): Promise<ReadSkillResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     const base = request.level === 'bundled'
       ? BUNDLED_SKILLS_DIR
@@ -721,6 +732,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readRule(request: ReadRuleRequest): Promise<ReadRuleResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     const base = request.level === 'bundled'
       ? BUNDLED_RULES_DIR
@@ -743,6 +755,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async deleteSkill(request: DeleteSkillRequest): Promise<WriteResourceResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '') return { ok: false, name, path: '', error: 'skill name must not be empty' }
     const base = request.level === 'project'
@@ -759,6 +772,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async deleteRule(request: DeleteRuleRequest): Promise<WriteResourceResult> {
+    if (request.path !== undefined) request.path = checkedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '') return { ok: false, name, path: '', error: 'rule name must not be empty' }
     const base = request.level === 'project'
@@ -825,6 +839,28 @@ async function readEngText(fs: NonNullable<Context['fs']>, path: string): Promis
   } catch {
     return undefined
   }
+}
+
+/**
+ * Reject a client-supplied workspace path that is not absolute or points at a
+ * system/home-wide root. The real containment stays with the host's filesystem
+ * sandbox (writes carry a per-call `workspace-write` policy); this check fails
+ * closed on the obvious mis-targets a stray client call could name.
+ */
+function checkedPath(raw: string): string {
+  if (raw.trim() === '') return raw // empty means the host default, preserved for compatibility
+  if (!isAbsolute(raw)) {
+    throw new RemoteError('gateway/internal', `task-engine: workspace path must be absolute: ${raw}`, {})
+  }
+  const normalized = raw.replace(/[\\/]+$/u, '')
+  const lower = normalized.toLowerCase()
+  const forbidden = ['c:/windows', 'c:/program files', 'c:/program files (x86)', 'c:/users']
+  for (const prefix of forbidden) {
+    if (lower === prefix || lower.startsWith(`${prefix}/`)) {
+      throw new RemoteError('gateway/internal', `task-engine: path is not an allowed workspace: ${raw}`, {})
+    }
+  }
+  return normalized
 }
 
 /** Directories the scan tree never descends into. */

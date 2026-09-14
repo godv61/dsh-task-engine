@@ -318,9 +318,14 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
   const raw = await readText(fs, taskPath(id), cwd)
   if (raw === undefined) throw new Error(`no task "${id}" under ${taskPath(id)}`)
   const state = JSON.parse(raw) as TaskState
-  // Tasks recorded before these features lack the fields; treat them as empty.
+  // Tasks recorded before these features lack the fields; treat them as empty
+  // so every engine gate reads complete state instead of crashing on absence.
   state.artifacts = state.artifacts ?? {}
   state.files = state.files ?? []
+  state.items = state.items ?? []
+  state.commits = state.commits ?? []
+  state.verification = state.verification ?? { passed: false, evidence: [] }
+  state.review = state.review ?? { outcome: 'pending' }
   if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
     throw new Error(
       `task "${id}" snapshot hash mismatch — the frozen workflow config was edited after creation. ` +
@@ -334,9 +339,45 @@ async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode
   await writeText(fs, taskPath(state.id), JSON.stringify(state, null, 2), cwd, mode)
 }
 
-/** The sandbox mode this tool call's writes run under (default workspace-write). */
-function writeMode(args: { sandbox_permissions?: 'workspace-write' | 'danger-full-access' }): 'workspace-write' | 'danger-full-access' {
-  return args.sandbox_permissions ?? 'workspace-write'
+/**
+ * Resolve the sandbox mode this call's writes run under. No escalation args:
+ * workspace-write. Escalation args must travel as the `sandbox_permissions` ⇔
+ * `justification` pair (mirroring the harness escalation contract), and a
+ * `danger-full-access` request must earn a one-shot human approval; without an
+ * approval service it fails closed.
+ */
+async function resolveWriteMode(
+  ctx: Context,
+  args: { sandbox_permissions?: 'workspace-write' | 'danger-full-access'; justification?: string },
+  exec: ToolRunContext,
+): Promise<'workspace-write' | 'danger-full-access'> {
+  const mode = args.sandbox_permissions
+  const hasJustification = args.justification !== undefined && args.justification.trim() !== ''
+  if (mode === undefined) {
+    if (hasJustification) {
+      throw new Error('invalid escalation: justification is only valid together with sandbox_permissions')
+    }
+    return 'workspace-write'
+  }
+  if (!hasJustification) {
+    throw new Error('invalid escalation: sandbox_permissions requires a justification')
+  }
+  if (mode === 'workspace-write') return 'workspace-write'
+  const approval = ctx.get('approval') as ApprovalAsk | undefined
+  if (approval === undefined) {
+    throw new Error(`sandbox escalation to ${mode} requires human approval, but the approval service is unavailable`)
+  }
+  const outcome = await approval.request({
+    agent: exec.agent,
+    toolName: 'dev_task',
+    callId: exec.callId,
+    reason: `沙箱升级：请确认允许 dev_task 以 ${mode} 模式执行本次写文件操作。理由：${args.justification}`,
+    signal: exec.signal,
+  })
+  if (outcome !== 'allowed-once') {
+    throw new Error(`sandbox escalation was not approved (${outcome})`)
+  }
+  return mode
 }
 
 /**
@@ -464,6 +505,7 @@ interface OpArgs {
   overwrite?: boolean
   expected_hash?: string
   sandbox_permissions?: 'workspace-write' | 'danger-full-access'
+  justification?: string
   phase?: 'inspect' | 'propose' | 'apply'
 }
 
@@ -609,7 +651,8 @@ export function registerDevTask(ctx: Context): void {
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
       expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; applying with a different hash is rejected (init apply).' },
-      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Wider sandbox mode for this call\'s file writes; default is workspace-write. Use only as a retry after a sandbox denial of the same call.' },
+      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Wider sandbox mode for this call\'s file writes; default is workspace-write. Use only as a retry after a sandbox denial of the same call; requires justification and human approval.' },
+      justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
     output: {
@@ -636,7 +679,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'install_hook') {
-        await installCommitHook(fs, cwd, writeMode(a))
+        await installCommitHook(fs, cwd, await resolveWriteMode(ctx, a, exec))
         return 'installed commit-msg hook at .git/hooks/commit-msg — git commit is now gated by the task state'
       }
 
@@ -713,7 +756,7 @@ export function registerDevTask(ctx: Context): void {
           }
           const initRoot = await detectRoot(projectProbe(fs), cwd ?? '')
           assertInsideRoot(initRoot, cwd ?? '', 'AGENTS.md')
-          await writeText(fs, 'AGENTS.md', content, cwd, writeMode(a))
+          await writeText(fs, 'AGENTS.md', content, cwd, await resolveWriteMode(ctx, a, exec))
           return `wrote ./AGENTS.md (${lines} lines, cap ${INIT_MAX_LINES}). DSH injects it into every session in this workspace from now on.`
         }
 
@@ -756,7 +799,7 @@ export function registerDevTask(ctx: Context): void {
         state.files = a.files ?? []
         state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
-        await writeTask(fs, state, cwd, writeMode(a))
+        await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}`
       }
 
@@ -814,7 +857,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
         }
         if (a.hash) state.commits.push({ label: checkpoint.label!, hash: a.hash })
-        await writeTask(fs, state, cwd, writeMode(a))
+        await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
       }
 
@@ -896,6 +939,15 @@ export function registerDevTask(ctx: Context): void {
             note = `risk already ${target}`
             break
           }
+          if (target === 'high_risk') {
+            const flowId = state.flow?.flow
+            if (flowId !== undefined && !flowSatisfies(flowId, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+              throw new Error(
+                `cannot raise risk to high_risk on flow "${flowId}" — it lacks the required capabilities ` +
+                `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
+              )
+            }
+          }
           if (state.risk_level === 'high_risk' && target === 'standard') {
             const approval = ctx.get('approval') as ApprovalAsk | undefined
             if (approval === undefined) {
@@ -943,7 +995,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`unknown operation ${a.operation}`)
       }
 
-      await writeTask(fs, state, cwd, writeMode(a))
+      await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
       return note ?? `ok (stage ${state.stage})`
     },
   }))
