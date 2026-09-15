@@ -271,7 +271,7 @@ export function SkillManager({ workspace, remote }: {
       ),
       createElement('input', {
         style: control,
-        placeholder: '源目录绝对路径（如 D:\\yourong\\software-testing）',
+        placeholder: '源目录绝对路径（本机 skill 目录，需含 SKILL.md）',
         value: installDir,
         onChange: (ev: ChangeEvent<HTMLInputElement>) => { setInstallDir(ev.target.value) },
       }),
