@@ -176,6 +176,11 @@ export function SkillManager({ workspace, remote }: {
   }
 
   const openBrowse = (): void => {
+    // The shell's own `uiWorkspace.pickDirectory()` is the desktop (host-native)
+    // picker; a web host mounts no native provider, so the call never settles
+    // there. The workbench therefore opens its own Miller dialog — the same
+    // interaction the shell's add-workspace flow presents — and the host lists
+    // each level through the `listDirs` Remote.
     setBrowsing(true)
     setBrowseError('')
     loadLevel('')
