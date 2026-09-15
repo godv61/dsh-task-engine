@@ -91,6 +91,31 @@ export interface InstallSkillRequest {
   path?: string
 }
 
+/** One child directory entry shown by the install directory picker. */
+export interface ListDirsEntry {
+  name: string
+  /** True when this directory carries a SKILL.md of its own. */
+  hasSkill: boolean
+}
+
+/** `listDirs` request: the absolute path to list (empty = the host home directory). */
+export interface ListDirsRequest {
+  path: string
+}
+
+/** `listDirs` result: the subdirectories of one absolute path for the install picker. */
+export interface ListDirsView {
+  ok: boolean
+  /** The absolute directory that was listed (normalized input). */
+  path: string
+  entries: ListDirsEntry[]
+  /** Filesystem roots offered as jump targets (Windows drive letters, `/` on POSIX). */
+  roots: string[]
+  /** True when the listed directory itself carries a SKILL.md (installable as-is). */
+  currentHasSkill: boolean
+  error?: string
+}
+
 /** Create a project- or user-level rule. */
 export interface WriteRuleRequest {
   name: string
@@ -296,10 +321,24 @@ function renderSkillFile(name: string, description: string, whenToUse: string | 
 }
 
 /** Directory names never copied when installing a skill directory. */
-const SKILL_SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.cache'])
-/** Install bounds: refuse oversized bundles instead of copying junk. */
-const SKILL_MAX_FILES = 200
-const SKILL_MAX_BYTES = 20 * 1024 * 1024
+const SKILL_SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.cache', 'dist', 'build'])
+/** Dirs hidden from the install directory picker (plain dependency/ignore caches). */
+const SKILL_DIR_FILTER = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv'])
+
+/** Filesystem roots the picker offers as jump targets (drive letters on Windows, `/` elsewhere). */
+function filesystemRoots(): string[] {
+  if (process.platform !== 'win32') return ['/']
+  const roots: string[] = []
+  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ') {
+    if (existsSync(`${letter}:\\`)) roots.push(`${letter}:\\`)
+  }
+  return roots
+}
+/** Install bounds: a skill may be a full package (scripts, references, assets), so allow a generous ceiling. */
+const SKILL_MAX_FILES = 1000
+const SKILL_MAX_BYTES = 100 * 1024 * 1024
+/** Per-file cap — a skill ships assets, not a vendored artifact. */
+const SKILL_MAX_FILE_BYTES = 20 * 1024 * 1024
 
 /**
  * Recursively copy a validated skill directory, skipping dependency caches and
@@ -316,7 +355,11 @@ function copySkillDir(source: string, dest: string): void {
         walk(join(src, entry.name), join(dst, entry.name))
       } else if (entry.isFile()) {
         const srcPath = join(src, entry.name)
-        bytes += statSync(srcPath).size
+        const size = statSync(srcPath).size
+        if (size > SKILL_MAX_FILE_BYTES) {
+          throw new Error(`文件过大：${srcPath}（${Math.round(size / 1024 / 1024)} MB，上限 ${Math.round(SKILL_MAX_FILE_BYTES / 1024 / 1024)} MB）`)
+        }
+        bytes += size
         files += 1
         if (files > SKILL_MAX_FILES || bytes > SKILL_MAX_BYTES) {
           throw new Error(`skill 目录过大（上限 ${SKILL_MAX_FILES} 个文件 / ${Math.round(SKILL_MAX_BYTES / 1024 / 1024)} MB），已排除 node_modules/.git 等缓存目录`)
@@ -785,6 +828,34 @@ export default class TaskEngineController extends TypertRemoteService {
       return { ok: false, name, path: dest, error: error instanceof Error ? error.message : String(error) }
     }
     return { ok: true, name, path: dest }
+  }
+
+  /**
+   * List the direct subdirectories of an absolute path for the install
+   * directory picker. Each child is flagged when it carries its own SKILL.md,
+   * so the dialog can tell a skill root apart from a plain container or folder.
+   * @param request - absolute directory to list (empty = the host home directory).
+   * @returns subdirectory names, each with its hasSkill flag.
+   */
+  @Remote
+  async listDirs(request: ListDirsRequest): Promise<ListDirsView> {
+    const raw = request.path.trim()
+    const dir = raw === '' ? homedir() : raw
+    const roots = filesystemRoots()
+    if (!isAbsolute(dir)) {
+      return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '路径必须是绝对路径' }
+    }
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch (error) {
+      return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: error instanceof Error ? error.message : String(error) }
+    }
+    const list = entries
+      .filter(entry => entry.isDirectory() && !SKILL_DIR_FILTER.has(entry.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(entry => ({ name: entry.name, hasSkill: existsSync(join(dir, entry.name, 'SKILL.md')) }))
+    return { ok: true, path: dir, entries: list, roots, currentHasSkill: existsSync(join(dir, 'SKILL.md')) }
   }
 
   /**

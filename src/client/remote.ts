@@ -104,6 +104,17 @@ const installSkillRequestSchema = z.object({
   path: z.string().optional(),
 })
 
+/** `listDirs` request/result for the install directory picker. */
+const listDirsRequestSchema = z.object({ path: z.string() })
+const listDirsViewSchema = z.object({
+  ok: z.boolean(),
+  path: z.string(),
+  entries: z.array(z.object({ name: z.string(), hasSkill: z.boolean() })),
+  roots: z.array(z.string()),
+  currentHasSkill: z.boolean(),
+  error: z.string().optional(),
+})
+
 /** `writeRule` request: rule content plus target level. */
 const writeRuleRequestSchema = z.object({
   name: z.string(),
@@ -324,6 +335,22 @@ export const TYPERT_REMOTE = {
         },
       ],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/listDirs`,
+      service: 'taskEngineController',
+      namespace: 'task-engine',
+      method: 'listDirs',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'request',
+          wire: 'request',
+          source: 'json',
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsRequest`, schema: listDirsRequestSchema },
+        },
+      ],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsView`, schema: listDirsViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/writeRule`,

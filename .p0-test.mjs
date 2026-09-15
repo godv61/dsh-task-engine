@@ -732,4 +732,17 @@ function memProbe(files) {
     'installSkill auto-locates the single nested skill root')
 }
 
+// ── 38. 0.22.7: install directory picker (listDirs) + package-skill bounds ──
+{
+  const controller = readFileSync('./lib/controller.js', 'utf8')
+  assert(controller.includes('async listDirs'), 'listDirs Remote serves the install directory picker')
+  assert(controller.includes('SKILL_DIR_FILTER'), 'picker filters dependency caches from the listing')
+  assert(controller.includes('SKILL_MAX_FILES = 1000'), 'package-skill file bound is generous')
+  assert(controller.includes('SKILL_MAX_BYTES = 100'), 'package-skill byte bound is generous')
+}
+{
+  const client = readFileSync('./lib/client.js', 'utf8')
+  assert(client.includes('listDirs'), 'client declares the listDirs Remote contract')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

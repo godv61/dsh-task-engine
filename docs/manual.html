@@ -198,7 +198,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li><strong>选流程预设</strong>：standard / agile / minimal 点一下即切。</li>
           <li><strong>给节点挂 skill / rule</strong>：先选一个节点（如「开发」），再勾选它用什么 skill、守哪条 rule，保存。</li>
         </ol>
-        <p>「技能」页支持新建 / <b>安装</b> / 查看 / 编辑 / 删除：内置资源只读（正文以 markdown 富文本渲染）；项目级 / 用户级资源可编辑、可删除（两步确认）。「安装 skill」把本机已有的<b>目录型 skill</b>（含 <code>SKILL.md</code>，可带 references / scripts 等文件）一键装到项目级（工作区 <code>.dsh/skills</code>，团队共享）或用户级（<code>$DSH_HOME/skills</code>，个人所有项目可用）；自动排除 node_modules / <code>.git</code> / <code>__pycache__</code> 等缓存，同名内置或已装技能拒绝覆盖。</p>
+        <p>「技能」页支持新建 / <b>安装</b> / 查看 / 编辑 / 删除：内置资源只读（正文以 markdown 富文本渲染）；项目级 / 用户级资源可编辑、可删除（两步确认）。「安装 skill」把本机已有的<b>目录型 skill 包</b>（含 <code>SKILL.md</code>，可带 references / scripts / 模板 / 资源）一键装到项目级（工作区 <code>.dsh/skills</code>，团队共享）或用户级（<code>$DSH_HOME/skills</code>，个人所有项目可用）：点「浏览…」逐级选目录（支持盘符快捷与路径跳转，含 <code>SKILL.md</code> 的目录会标记出来），也可直接填路径；装外层容器目录时会自动定位到内含 <code>SKILL.md</code> 的子目录。安装自动排除 node_modules / <code>.git</code> / <code>__pycache__</code> 等缓存（上限 1000 文件 / 100 MB），同名内置或已装技能拒绝覆盖。</p>
         <pre><code>// .dsh/eng.json 等价内容
 {
   "flow": "standard",
