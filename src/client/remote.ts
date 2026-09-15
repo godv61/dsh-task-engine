@@ -192,6 +192,8 @@ const taskLedgerItemSchema = z.object({
 /** `readTasks` result: every task record under the workspace's `.dsh/`. */
 const taskLedgerViewSchema = z.object({
   tasks: z.array(z.object({
+    risk_level: z.string().optional(), updated_at: z.string().optional(),
+    verification_passed: z.boolean().optional(), review_outcome: z.string().optional(),
     task_id: z.string(),
     title: z.string(),
     stage: z.string(),
@@ -235,11 +237,29 @@ const initDraftSchema = z.object({
   error: z.string().optional(),
 })
 
+const resourceRequestSchema = z.object({
+  kind: z.enum(['skill', 'rule']), level: z.enum(['project', 'user']), path: z.string(),
+  files: z.array(z.object({ path: z.string(), base64: z.string() })).max(1000),
+  sourceDir: z.string().optional(), expectedHash: z.string().optional(),
+})
+const resourcePreviewSchema = z.object({ ok: z.boolean(), name: z.string(), description: z.string(), content: z.string(), target: z.string(), files: z.number(), bytes: z.number(), hash: z.string(), conflict: z.boolean(), error: z.string().optional() })
 const PACKAGE = '@godv61/dsh-task-engine'
 
 export const TYPERT_REMOTE = {
   package: PACKAGE,
   descriptors: [
+    ...(['previewResource', 'importResource'] as const).map(method => ({
+      id: `${PACKAGE}#task-engine/${method}`, service: 'taskEngineController', namespace: 'task-engine', method,
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceImportRequest`, schema: resourceRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourcePreview`, schema: resourcePreviewSchema },
+    })),
+    {
+      id: `${PACKAGE}#task-engine/resourceRoots`, service: 'taskEngineController', namespace: 'task-engine', method: 'resourceRoots',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRootsRequest`, schema: z.object({ kind: z.enum(['skill', 'rule']), path: z.string() }) } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRoots`, schema: z.object({ project: z.string(), user: z.string() }) },
+    },
     {
       id: `${PACKAGE}#task-engine/read`,
       service: 'taskEngineController',

@@ -91,37 +91,54 @@ export function TaskLedger({ workspace, remote }: {
 }): ReturnType<typeof createElement> {
   const [tasks, setTasks] = useState<TaskLedgerEntry[]>([])
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [query, setQuery] = useState('')
+  const [risk, setRisk] = useState('all')
+  const [stage, setStage] = useState('all')
 
   const refresh = useCallback(() => {
     if (workspace === '') return
     setError('')
+    setLoading(true)
     void remote.readTasks(workspace).then((result) => {
+      setLoading(false)
       if (result.ok) setTasks(result.value.tasks)
       else setError('读取台账失败：' + describeError(result.error))
     }, (reason: unknown) => {
+      setLoading(false)
       setError('读取台账失败：' + describeError(reason))
     })
   }, [remote, workspace])
 
   useEffect(() => { refresh() }, [refresh])
 
+  const visible = tasks.filter(task => `${task.task_id} ${task.title} ${task.branch}`.toLowerCase().includes(query.toLowerCase()) && (risk === 'all' || task.risk_level === risk) && (stage === 'all' || task.stage === stage))
   return createElement('div', { style: styles.section },
+    createElement('div', { className: 'te-toolbar' },
+      createElement('input', { className: 'te-input', placeholder: '搜索任务、标题或分支', value: query, onChange: (e: { target: HTMLInputElement }) => setQuery(e.target.value) }),
+      createElement('select', { className: 'te-input', 'aria-label': '风险筛选', value: risk, onChange: (e: { target: HTMLSelectElement }) => setRisk(e.target.value) }, createElement('option', { value: 'all' }, '全部风险'), createElement('option', { value: 'standard' }, '标准'), createElement('option', { value: 'high_risk' }, '高风险')),
+      createElement('select', { className: 'te-input', 'aria-label': '阶段筛选', value: stage, onChange: (e: { target: HTMLSelectElement }) => setStage(e.target.value) }, createElement('option', { value: 'all' }, '全部阶段'), ...Array.from(new Set(tasks.map(t => t.stage))).map(value => createElement('option', { key: value, value }, value))),
+    ),
     createElement('div', { style: headerRow },
       createElement('span', { style: styles.bindingLabel }, '任务台账'),
       createElement('span', { style: styles.sourceBadge }, '只读 · 来自 .dsh/task-*.json'),
-      createElement(Button, { variant: 'outline', size: 'sm', onClick: refresh }, '刷新'),
+      createElement(Button, { variant: 'outline', size: 'sm', disabled: loading, onClick: refresh }, loading ? '读取中…' : '刷新'),
     ),
-    error !== ''
+    loading ? createElement('p', { role: 'status' }, '正在读取任务…') : error !== ''
       ? createElement('p', { style: styles.status }, error)
       : tasks.length === 0
         ? createElement('p', { style: styles.muted }, '当前工作区还没有任务：开工后（dev_task create）会在这里列出派发与审查留痕。')
-        : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
-          ...tasks.map(task => createElement('div', { key: task.task_id, style: card },
+        : visible.length === 0 ? createElement('div', { className: 'te-empty' }, '没有匹配的任务，请调整筛选。') : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
+          ...visible.map(task => createElement('div', { key: task.task_id, style: card },
             createElement('div', { style: headerRow },
               createElement('span', { style: { fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, task.task_id),
               createElement('span', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, task.title),
               createElement('span', { style: badge }, task.stage),
               createElement('span', { style: badge }, task.branch),
+              createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
+              createElement('span', { className: 'te-badge' }, task.verification_passed ? '验证通过' : '待验证'),
+              createElement('span', { className: 'te-badge' }, `审核：${task.review_outcome ?? 'pending'}`),
+              task.updated_at ? createElement('span', { style: metaLine }, '更新于 ' + timeText(task.updated_at)) : null,
             ),
             createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
               ...task.items.map(item => createElement('div', { key: item.id, style: itemRow },

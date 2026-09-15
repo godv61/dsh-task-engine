@@ -6,7 +6,7 @@
  * @module dsh-task-engine/ResourceModal
  */
 
-import { createElement, useEffect } from 'react'
+import { createElement, useEffect, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { IconCloseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -78,16 +78,30 @@ export function ResourceModal({ title, description, onClose, footer, children }:
   footer?: ReactNode
   children?: ReactNode
 }): ReactNode {
+  const dialog = useRef<HTMLDivElement>(null)
+  const closer = useRef(onClose)
+  closer.current = onClose
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const previous = document.activeElement as HTMLElement | null
+    dialog.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (!dialog.current?.contains(document.activeElement)) return
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closer.current(); return }
+      if (e.key !== 'Tab') return
+      const nodes = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled):not([hidden]),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')).filter(el => el.getClientRects().length)
+      const first = nodes[0], last = nodes[nodes.length - 1]
+      if (!first || !last) { e.preventDefault(); return }
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { e.preventDefault(); first.focus() }
+    }
     document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('keydown', onKey) }
-  }, [onClose])
+    return () => { document.removeEventListener('keydown', onKey); if (previous?.isConnected) previous.focus() }
+  }, [])
 
   return createPortal(
-    createElement('div', { style: rootStyle, role: 'presentation' },
+    createElement('div', { style: rootStyle, className: 'te-modal', role: 'presentation' },
       createElement('div', { style: maskStyle, 'aria-hidden': true, onClick: onClose }),
-      createElement('div', { style: dialogStyle, role: 'dialog', 'aria-modal': true, 'aria-label': title },
+      createElement('div', { style: dialogStyle, ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': true, 'aria-label': title },
         createElement('div', { style: headerStyle },
           createElement('h2', { style: titleStyle }, title),
           createElement('button', { type: 'button', style: closeBtnStyle, 'aria-label': '关闭', onClick: onClose },

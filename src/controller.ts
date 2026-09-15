@@ -9,7 +9,10 @@
  * @module dsh-task-engine/controller
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
+import { authorizedWorkspace } from './workspace-access.ts'
+import { prepareImport, commitImport } from './resource-import.ts'
+import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -207,6 +210,10 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and the per-item audit trail. */
 export interface TaskLedgerEntry {
+  risk_level?: string
+  updated_at?: string
+  verification_passed?: boolean
+  review_outcome?: string
   task_id: string
   title: string
   stage: string
@@ -320,8 +327,6 @@ function renderSkillFile(name: string, description: string, whenToUse: string | 
   return `---\n${head.join('\n')}\n---\n\n${content.trimEnd()}\n`
 }
 
-/** Directory names never copied when installing a skill directory. */
-const SKILL_SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.cache', 'dist', 'build'])
 /** Dirs hidden from the install directory picker (plain dependency/ignore caches). */
 const SKILL_DIR_FILTER = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv'])
 
@@ -334,43 +339,6 @@ function filesystemRoots(): string[] {
   }
   return roots
 }
-/** Install bounds: a skill may be a full package (scripts, references, assets), so allow a generous ceiling. */
-const SKILL_MAX_FILES = 1000
-const SKILL_MAX_BYTES = 100 * 1024 * 1024
-/** Per-file cap — a skill ships assets, not a vendored artifact. */
-const SKILL_MAX_FILE_BYTES = 20 * 1024 * 1024
-
-/**
- * Recursively copy a validated skill directory, skipping dependency caches and
- * enforcing file-count / byte caps. Throws with a clear message on oversize.
- */
-function copySkillDir(source: string, dest: string): void {
-  let files = 0
-  let bytes = 0
-  const walk = (src: string, dst: string): void => {
-    mkdirSync(dst, { recursive: true })
-    for (const entry of readdirSync(src, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (SKILL_SKIP_DIRS.has(entry.name)) continue
-        walk(join(src, entry.name), join(dst, entry.name))
-      } else if (entry.isFile()) {
-        const srcPath = join(src, entry.name)
-        const size = statSync(srcPath).size
-        if (size > SKILL_MAX_FILE_BYTES) {
-          throw new Error(`文件过大：${srcPath}（${Math.round(size / 1024 / 1024)} MB，上限 ${Math.round(SKILL_MAX_FILE_BYTES / 1024 / 1024)} MB）`)
-        }
-        bytes += size
-        files += 1
-        if (files > SKILL_MAX_FILES || bytes > SKILL_MAX_BYTES) {
-          throw new Error(`skill 目录过大（上限 ${SKILL_MAX_FILES} 个文件 / ${Math.round(SKILL_MAX_BYTES / 1024 / 1024)} MB），已排除 node_modules/.git 等缓存目录`)
-        }
-        copyFileSync(srcPath, join(dst, entry.name))
-      }
-    }
-  }
-  walk(source, dest)
-}
-
 /** Scan a markdown directory, returning `{ name }` per `.md` file. */
 function scanRuleDir(dir: string, source: string): RuleCatalogEntry[] {
   let entries: string[]
@@ -448,6 +416,41 @@ export default class TaskEngineController extends TypertRemoteService {
     super(ctx, 'taskEngineController', { namespace: 'task-engine' })
   }
 
+  private async authorizedPath(path: string): Promise<string> {
+    return authorizedWorkspace(this.ctx as unknown as { get(name: string): unknown }, path, checkedPath)
+  }
+
+  /** Absolute installation roots for a selected workspace. */
+  @Remote
+  async resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<{ project: string; user: string }> {
+    if (!request.path.trim()) throw new Error('请选择工作区')
+    const workspace = await this.authorizedPath(request.path)
+    return { project: join(workspace, '.dsh', request.kind + 's'), user: join(dshHome(), request.kind + 's') }
+  }
+
+  /** Inspect uploaded bytes or a host directory without writing. */
+  @Remote
+  async previewResource(request: ResourceImportRequest): Promise<ResourcePreview> {
+    return this.resourceImport(request, false)
+  }
+
+  /** Install exactly the reviewed bytes and target, without overwriting. */
+  @Remote
+  async importResource(request: ResourceImportRequest): Promise<ResourcePreview> {
+    return this.resourceImport(request, true)
+  }
+
+  private async resourceImport(request: ResourceImportRequest, commit: boolean): Promise<ResourcePreview> {
+    try {
+      const roots = await this.resourceRoots(request)
+      const base = roots[request.level]
+      const bundled = request.kind === 'skill' ? bundledSkillExists : bundledRuleExists
+      return commit ? commitImport(request, base, bundled) : prepareImport(request, base, bundled).preview
+    } catch (error) {
+      return { ok: false, name: '', description: '', content: '', target: '', files: 0, bytes: 0, hash: '', conflict: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   /**
    * Resolve one workspace's effective workflow: a preset flow plus the project's
    * stage-binding override.
@@ -456,7 +459,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async read(path: string): Promise<EngConfigView> {
-    path = checkedPath(path)
+    path = await this.authorizedPath(path)
     const fs = this.fs()
     const raw = await readEngText(fs, path)
     if (raw === undefined) {
@@ -514,7 +517,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async write(request: EngWriteRequest): Promise<EngConfigView> {
-    request.path = checkedPath(request.path)
+    request.path = await this.authorizedPath(request.path)
     const resolved = resolveFlow(
       request.flow,
       request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : undefined,
@@ -556,7 +559,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async listSkills(path: string): Promise<SkillCatalog> {
-    path = checkedPath(path)
+    path = await this.authorizedPath(path)
     const project = path === '' ? [] : listSkillsFromDir(join(path, '.dsh/skills'), 'project')
     const user = listSkillsFromDir(join(dshHome(), 'skills'), 'user')
     const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled')
@@ -576,7 +579,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async listRules(path: string): Promise<RuleCatalog> {
-    path = checkedPath(path)
+    path = await this.authorizedPath(path)
     const project = path === '' ? [] : scanRuleDir(join(path, '.dsh/rules'), 'project')
     const user = scanRuleDir(join(dshHome(), 'rules'), 'user')
     const bundled = scanRuleDir(BUNDLED_RULES_DIR, 'bundled')
@@ -601,7 +604,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readTasks(path: string): Promise<TaskLedgerView> {
-    path = checkedPath(path)
+    path = await this.authorizedPath(path)
     const fs = this.fs()
     const tasks: TaskLedgerEntry[] = []
     try {
@@ -615,14 +618,19 @@ export default class TaskEngineController extends TypertRemoteService {
         try {
           state = JSON.parse(raw) as TaskState
         } catch {
-          continue // A sibling `.dsh` file that happens to match the prefix but is not a task record.
+          throw new Error('任务记录无法解析：' + entry.name)
         }
+        if (!state || ['id', 'title', 'stage', 'branch'].some(key => typeof (state as unknown as Record<string, unknown>)[key] !== 'string') || (state.items !== undefined && !Array.isArray(state.items))) throw new Error('任务记录格式无效：' + entry.name)
         tasks.push({
+          ...(state.risk_level ? { risk_level: state.risk_level } : {}),
+          ...(state.updated_at ? { updated_at: state.updated_at } : {}),
+          verification_passed: state.verification?.passed ?? false,
+          review_outcome: state.review?.outcome ?? 'pending',
           task_id: state.id,
           title: state.title,
           stage: state.stage,
           branch: state.branch,
-          items: state.items.map(item => ({
+          items: (state.items ?? []).map(item => ({
             id: item.id,
             title: item.title,
             status: item.status,
@@ -631,8 +639,9 @@ export default class TaskEngineController extends TypertRemoteService {
           })),
         })
       }
-    } catch {
-      // No listable `.dsh/` directory means there are no task records yet.
+    } catch (error) {
+      // Only an absent directory is an empty ledger; denied access and corruption remain visible.
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
     }
     return { tasks }
   }
@@ -644,7 +653,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readInit(path: string): Promise<InitView> {
-    path = checkedPath(path)
+    path = await this.authorizedPath(path)
     const { root } = locateInitRoot(path)
     const raw = await readTextAt(this.fs(), root, INITFILE)
     if (raw === undefined) return { exists: false, content: '', lines: 0 }
@@ -663,7 +672,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeInit(request: InitWriteRequest): Promise<InitWriteResult> {
-    request.path = checkedPath(request.path)
+    request.path = await this.authorizedPath(request.path)
     const lines = lineCount(request.content)
     if (lines > INIT_MAX_LINES) {
       return { ok: false, lines, error: `AGENTS.md 为 ${lines} 行，超过上限 ${INIT_MAX_LINES} 行；请精简到项目骨架后重试。` }
@@ -697,7 +706,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async generateInit(request: InitGenerateRequest): Promise<InitDraft> {
-    request.path = checkedPath(request.path)
+    request.path = await this.authorizedPath(request.path)
     const { root } = locateInitRoot(request.path)
     const snapshot = scanProject(root)
     const llm = this.ctx.get('llm')
@@ -747,7 +756,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeSkill(request: WriteSkillRequest): Promise<WriteResourceResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '' || request.description.trim() === '') {
       return { ok: false, name, path: '', error: 'skill name and description must not be empty' }
@@ -772,62 +781,11 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async installSkill(request: InstallSkillRequest): Promise<WriteResourceResult> {
-    let sourceDir = request.sourceDir.trim()
-    if (sourceDir === '' || !isAbsolute(sourceDir)) {
-      return { ok: false, name: '', path: '', error: '源目录必须是绝对路径' }
-    }
-    let skillFile = join(sourceDir, 'SKILL.md')
-    if (!existsSync(skillFile)) {
-      // Container-directory convenience: when the given path holds exactly one
-      // direct child that itself carries a SKILL.md, treat that child as the
-      // skill root (users often point at the outer folder).
-      const candidates: string[] = []
-      for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-        if (entry.isDirectory() && existsSync(join(sourceDir, entry.name, 'SKILL.md'))) {
-          candidates.push(join(sourceDir, entry.name))
-        }
-      }
-      if (candidates.length === 1) {
-        sourceDir = candidates[0]!
-        skillFile = join(sourceDir, 'SKILL.md')
-      } else if (candidates.length > 1) {
-        return { ok: false, name: '', path: '', error: `所选目录没有 SKILL.md，且含多个带 SKILL.md 的子目录——请直接填 skill 根目录` }
-      } else {
-        return { ok: false, name: '', path: '', error: `所选目录不是 skill：缺少 ${skillFile}` }
-      }
-    }
-    if (!existsSync(skillFile)) {
-      return { ok: false, name: '', path: '', error: `所选目录不是 skill：缺少 ${skillFile}` }
-    }
-    let parsed: { name: string; description: string; whenToUse: string; content: string } | undefined
-    try {
-      parsed = parseSkillFile(readFileSync(skillFile, 'utf8'))
-    } catch {
-      parsed = undefined
-    }
-    if (parsed === undefined) {
-      return { ok: false, name: '', path: '', error: 'SKILL.md frontmatter 不可读（需要 name + description）' }
-    }
-    const name = sanitizeName(parsed.name)
-    if (name === '') {
-      return { ok: false, name, path: '', error: 'skill name 无效（只含小写字母数字和 -）' }
-    }
-    if (bundledSkillExists(name)) {
-      return { ok: false, name, path: '', error: `"${name}" 是内置技能，不可覆盖；给 SKILL.md 换个名字` }
-    }
-    const base = request.level === 'project'
-      ? join(request.path !== undefined ? checkedPath(request.path) : '', '.dsh/skills')
-      : join(dshHome(), 'skills')
-    const dest = join(base, name)
-    if (existsSync(dest)) {
-      return { ok: false, name, path: dest, error: `目标位置已存在同名技能（${dest}）——先删除或换名再装` }
-    }
-    try {
-      copySkillDir(sourceDir, dest)
-    } catch (error) {
-      return { ok: false, name, path: dest, error: error instanceof Error ? error.message : String(error) }
-    }
-    return { ok: true, name, path: dest }
+    const input: ResourceImportRequest = { kind: 'skill', level: request.level, path: request.path ?? process.cwd(), files: [], sourceDir: request.sourceDir }
+    const preview = await this.previewResource(input)
+    if (!preview.ok) return { ok: false, name: preview.name, path: preview.target, error: preview.error ?? '安装校验失败' }
+    const result = await this.importResource({ ...input, expectedHash: preview.hash })
+    return result.ok ? { ok: true, name: result.name, path: result.target } : { ok: false, name: result.name, path: result.target, error: result.error ?? '安装失败' }
   }
 
   /**
@@ -865,7 +823,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async writeRule(request: WriteRuleRequest): Promise<WriteResourceResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '' || request.content.trim() === '') {
       return { ok: false, name, path: '', error: 'rule name and content must not be empty' }
@@ -888,7 +846,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readSkill(request: ReadSkillRequest): Promise<ReadSkillResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     const base = request.level === 'bundled'
       ? BUNDLED_SKILLS_DIR
@@ -914,7 +872,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async readRule(request: ReadRuleRequest): Promise<ReadRuleResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     const base = request.level === 'bundled'
       ? BUNDLED_RULES_DIR
@@ -937,7 +895,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async deleteSkill(request: DeleteSkillRequest): Promise<WriteResourceResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '') return { ok: false, name, path: '', error: 'skill name must not be empty' }
     const base = request.level === 'project'
@@ -954,7 +912,7 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async deleteRule(request: DeleteRuleRequest): Promise<WriteResourceResult> {
-    if (request.path !== undefined) request.path = checkedPath(request.path)
+    if (request.path !== undefined) request.path = await this.authorizedPath(request.path)
     const name = sanitizeName(request.name)
     if (name === '') return { ok: false, name, path: '', error: 'rule name must not be empty' }
     const base = request.level === 'project'
@@ -1045,7 +1003,8 @@ class WorkspaceRegistry {
 }
 
 function normalizeKey(path: string): string {
-  return path.replace(/[\\/]+$/u, '').toLowerCase()
+  const key = path.replace(/\\/gu, '/').replace(/\/+$/u, '')
+  return process.platform === 'win32' ? key.toLowerCase() : key
 }
 
 const workspaceRegistry = new WorkspaceRegistry()
@@ -1073,12 +1032,12 @@ export function enableStrictWorkspaces(): void {
  */
 /** Exported for tests and host integrations: the Remote path guard itself. */
 export function checkedPath(raw: string): string {
-  if (raw.trim() === '') return raw // empty means the host default, preserved for compatibility
+  if (raw.trim() === '') { if (strictWorkspaces) throw new Error('workspace path must be absolute'); return raw } // empty means the host default, preserved for compatibility
   if (!isAbsolute(raw)) {
     throw new RemoteError('gateway/internal', `task-engine: workspace path must be absolute: ${raw}`, {})
   }
   const normalized = raw.replace(/[\\/]+$/u, '')
-  const lower = normalized.toLowerCase()
+  const lower = normalized.replace(/\\/gu, '/').toLowerCase()
   const forbidden = ['c:/windows', 'c:/program files', 'c:/program files (x86)', 'c:/users']
   for (const prefix of forbidden) {
     if (lower === prefix || lower.startsWith(`${prefix}/`)) {

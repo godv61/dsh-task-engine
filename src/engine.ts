@@ -176,6 +176,8 @@ export interface TaskState {
   bindings_fingerprint?: string
   /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
   revision?: number
+  /** Time of the latest successful tool write, absent on older records. */
+  updated_at?: string
 }
 
 export interface Result {

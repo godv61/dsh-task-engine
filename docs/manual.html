@@ -198,7 +198,9 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li><strong>选流程预设</strong>：standard / agile / minimal 点一下即切。</li>
           <li><strong>给节点挂 skill / rule</strong>：先选一个节点（如「开发」），再勾选它用什么 skill、守哪条 rule，保存。</li>
         </ol>
-        <p>「技能」页支持新建 / <b>安装</b> / 查看 / 编辑 / 删除：内置资源只读（正文以 markdown 富文本渲染）；项目级 / 用户级资源可编辑、可删除（两步确认）。「安装 skill」把本机已有的<b>目录型 skill 包</b>（含 <code>SKILL.md</code>，可带 references / scripts / 模板 / 资源）一键装到项目级（工作区 <code>.dsh/skills</code>，团队共享）或用户级（<code>$DSH_HOME/skills</code>，个人所有项目可用）：点「浏览…」逐级选目录（支持盘符快捷与路径跳转，含 <code>SKILL.md</code> 的目录会标记出来），也可直接填路径；装外层容器目录时会自动定位到内含 <code>SKILL.md</code> 的子目录。安装自动排除 node_modules / <code>.git</code> / <code>__pycache__</code> 等缓存（上限 1000 文件 / 100 MB），同名内置或已装技能拒绝覆盖。</p>
+        <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源只读。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
+        <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
+        <p>资源删除前会显示名称与实际目标路径，确认后永久删除；可点击「保留」取消。任务台账支持搜索、风险与阶段筛选，并显示验证、审核和更新时间。流程配置读取与保存失败时显示错误，损坏任务记录不会被静默视为没有任务。</p>
         <pre><code>// .dsh/eng.json 等价内容
 {
   "flow": "standard",
@@ -372,10 +374,11 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
         <details><summary>git 钩子能防住所有绕过吗？</summary><div>不能，这是它的定位：<code>.git/hooks/commit-msg</code> 是<b>本地即时反馈</b>，拦常规 <code>git commit</code>（校验任务、阶段、范围、消息、快照 hash、敏感路径），但挡不住 <code>git commit --no-verify</code>、<code>core.hooksPath</code> 替换或直接手改 task 记录。<b>最终可信门禁在 CI</b>：CI 里重新校验 task id、快照 hash、staged 范围、提交消息、真实验证退出码、高风险回执，并检测钩子是否被绕过。三层分工：钩子 = 本地反馈，host 工具流 = 正常路径强约束，CI = 最终验证。</div></details>
-        <details><summary>任务记录被手改会怎样？</summary><div>引擎会拒绝：任务创建时把流程配置固化成 SHA-256 快照，工具和钩子每次读任务记录都校验——<b>被改过的快照一律拒绝继续</b>（提示修复或重建任务）。另外每次写入带 <code>revision</code> 版本号做 compare-and-swap，多个会话同时改同一任务会报「changed concurrently」而不是静默互相覆盖。</div></details>
+        <details><summary>任务记录被手改会怎样？</summary><div>流程快照内容与保存的 SHA-256 不一致时会被拒绝；任务记录本身没有签名，能同时修改内容与 hash 的本地用户仍可伪造。文件版本与 <code>revision</code> 检查用于阻止并发覆盖，不提供身份认证。0.23.0 在读取内容前取得文件版本，使读取期间发生的并发写入也被拒绝。多用户隔离和可信状态签名需要 Harness 支持。</div></details>
+        <details><summary>Remote 如何限制工作区？</summary><div>有 <code>workspaceRegistry.resolveByPath</code> 的 Harness 使用主机注册目录；未注册路径拒绝。旧主机保留绝对路径和系统目录检查，并提供严格注册 API。工作区注册不等于当前会话授权；共享多用户部署仍需要调用上下文和主机权限边界。</div></details>
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">当前结构基线：三套流程预设 · 工作台项目初始化（0.19.0）· 通用项目适配（0.21.0）· 审计与发布质量（0.22.0）· 可信边界加固（0.22.3）· 并发与发布闭环（0.22.4）· 最后更新：2026-09-14</p>
+        <p class="stamp">版本 0.23.0 · 系统文件选择与安装预览 · 工作台交互改进 · 最后更新：2026-09-15</p>
       </section>
     </main>
   </div>

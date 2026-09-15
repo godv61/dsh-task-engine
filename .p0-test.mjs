@@ -19,6 +19,7 @@ function assert(cond, msg) {
     throw new Error(msg)
   }
   passed++
+  if (process.env.DSH_TEST_DETAILS === '1') console.log(`PASS ${passed}: ${msg}`)
 }
 async function assertThrows(fn, fragment, msg) {
   try {
@@ -708,41 +709,26 @@ function memProbe(files) {
   assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'strict mode still admits registered workspaces')
 }
 
-// ── 36. 0.22.5: directory-bundle skill install Remote ──────────────────────
-{
-  const controller = readFileSync('./lib/controller.js', 'utf8')
-  assert(controller.includes('installSkill'), 'installSkill Remote is registered')
-  assert(controller.includes('源目录必须是绝对路径'), 'install rejects a non-absolute source directory')
-  assert(controller.includes('SKILL.md'), 'install requires SKILL.md in the source directory')
-  assert(controller.includes('node_modules'), 'install skips dependency caches')
-  assert(controller.includes('内置技能，不可覆盖'), 'install refuses to shadow a bundled skill')
-}
-{
-  const client = readFileSync('./lib/client.js', 'utf8')
-  assert(client.includes('installSkill'), 'client declares the installSkill Remote contract')
-  assert(client.includes('sourceDir'), 'client schema carries the source directory')
-}
 
-// ── 37. 0.22.7: installSkill auto-locates a single nested skill root ───────
+// A second writer between content read and write must not be silently overwritten.
 {
-  const controller = readFileSync('./lib/controller.js', 'utf8')
-  assert(controller.includes('多个带 SKILL.md 的子目录') || controller.includes("candidates.length > 1"),
-    'installSkill rejects an ambiguous container directory')
-  assert(controller.includes('缺少') && controller.includes('candidates[0]'),
-    'installSkill auto-locates the single nested skill root')
-}
-
-// ── 38. 0.22.7: install directory picker (listDirs) + package-skill bounds ──
-{
-  const controller = readFileSync('./lib/controller.js', 'utf8')
-  assert(controller.includes('async listDirs'), 'listDirs Remote serves the install directory picker')
-  assert(controller.includes('SKILL_DIR_FILTER'), 'picker filters dependency caches from the listing')
-  assert(controller.includes('SKILL_MAX_FILES = 1000'), 'package-skill file bound is generous')
-  assert(controller.includes('SKILL_MAX_BYTES = 100'), 'package-skill byte bound is generous')
-}
-{
-  const client = readFileSync('./lib/client.js', 'utf8')
-  assert(client.includes('listDirs'), 'client declares the listDirs Remote contract')
+  const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
+  const exe = await registered(fs)
+  await exe({ operation: 'create', task_id: 'CAS-RACE', title: 'race', branch: 'main' }, EXEC)
+  const originalRead = fs.readText.bind(fs)
+  let taskReads = 0
+  fs.readText = async target => {
+    const value = await originalRead(target)
+    if (target.targetKey === '.dsh/task-CAS-RACE.json' && ++taskReads === 2) {
+      const other = JSON.parse(value)
+      other.title = 'concurrent writer'
+      other.revision++
+      await fs.writeText(target, JSON.stringify(other))
+    }
+    return value
+  }
+  await assertThrows(() => exe({ operation: 'scope', task_id: 'CAS-RACE', files: ['a'] }, EXEC), 'changed concurrently', 'CAS rejects writes when version changes after the content read')
+  assert(JSON.parse(fs._files.get('.dsh/task-CAS-RACE.json')).title === 'concurrent writer', 'CAS preserves the concurrent writer record')
 }
 
 console.log(`\nP0 acceptance: ${passed} checks passed`)

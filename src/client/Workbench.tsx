@@ -10,6 +10,7 @@
 
 import { createElement, useState, type CSSProperties, type ChangeEvent } from 'react'
 import { IconCloseOutline16, IconSettingsOutline16, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import { workbenchTheme } from './workbench-theme.ts'
 import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
 import type { TaskEngineRemote } from './TaskEngineSection.ts'
@@ -33,27 +34,27 @@ const header: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  padding: '12px 20px',
+  padding: '20px 28px',
   borderBottom: '1px solid var(--dsw-alias-border-l2)',
 }
 
 const headerBrand: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }
 const headerText: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0 }
-const headerTitle: CSSProperties = { fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const headerTitle: CSSProperties = { fontSize: 20, fontWeight: 650, color: 'var(--dsw-alias-label-primary)' }
 const headerSub: CSSProperties = { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)', margin: 0 }
 
 const tabbar: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '10px 20px',
+  padding: '12px 28px', flexWrap: 'wrap',
   borderBottom: '1px solid var(--dsw-alias-border-l2)',
 }
 
 const body: CSSProperties = {
   flex: 1,
   overflowY: 'auto',
-  padding: 20,
+  padding: '24px clamp(12px, 3vw, 32px)',
 }
 
 const selectStyle: CSSProperties = {
@@ -82,8 +83,8 @@ const TABS = [
   { id: 'init', label: '项目初始化' },
   { id: 'flow', label: '流程配置' },
   { id: 'tasks', label: '任务台账' },
-  { id: 'skills', label: '技能 skill' },
-  { id: 'rules', label: '规则 rule' },
+  { id: 'skills', label: '技能' },
+  { id: 'rules', label: '规则' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -103,7 +104,8 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
 
   const current = workspaces.some(w => w.path === workspace) ? workspace : (workspaces[0]?.path ?? '')
 
-  return createElement('div', { style: overlay },
+  return createElement('div', { style: overlay, className: 'te-workbench' },
+    createElement('style', null, workbenchTheme),
     createElement('div', { style: header },
       createElement('div', { style: headerBrand },
         createElement(IconSettingsOutline16, { size: 18 }),
@@ -126,13 +128,15 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
       ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => { setTab(t.id) } }, t.label)),
       workspaces.length > 0
         ? createElement('select', {
-          style: selectStyle,
+          style: selectStyle, 'aria-label': '当前工作区',
           value: current,
           onChange: (ev: ChangeEvent<HTMLSelectElement>) => { setWorkspace(ev.target.value) },
         }, ...workspaces.map(w => createElement('option', { key: w.path, value: w.path }, w.title || w.path)))
         : null,
     ),
     createElement('div', { style: body },
+      createElement('div', { className: 'te-content', key: current },
+      createElement('p', { style: { ...styles.hint, marginBottom: 20 }, title: current }, '工作区 · ' + current),
       current === ''
         ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区，再回来配置流程。')
         : tab === 'init'
@@ -143,7 +147,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
               ? createElement(TaskLedger, { workspace: current, remote })
               : tab === 'skills'
                 ? createElement(SkillManager, { workspace: current, remote })
-                : createElement(RuleManager, { workspace: current, remote }),
+                : createElement(RuleManager, { workspace: current, remote })),
     ),
   )
 }

@@ -1,5 +1,12 @@
 # dsh-task-engine
 
+当前版本：**0.23.0**。面向 DeepSeek Harness 的工作流约束与交付留痕插件，适合希望统一开发流程的个人或小团队。它依赖 Harness 的模型、工具与文件服务；任务 JSON 和本地 hook 不提供独立防篡改认证。
+
+- [安装技能和规则](docs/resource-install.md)：系统文件选择器、安装预览、项目/个人范围。
+- [完整修改清单](docs/release-0.23.0.md)：实现内容、删减、限制和后续建议。
+- [测试报告](docs/testing/0.23.0/测试报告.md) · [使用手册](docs/manual.html)。
+
+
 一个**可安装、项目无关、硬约束**的工程化交付引擎，把「需求评审 → 设计 → 开发 → 交付 → 代码审核」这套流程做成 DeepSeek Harness 的一个 bundle。**按预设激活**：装 bundle 后在目标预设的 `agent.cordis.yml` 加一行，该预设的会话才挂上 `dev_task` 工具、内置技能和人设；换到别的预设（不加那行）就完全不激活——不需要每个项目手写 `.agents` / `.claude` / `.harness`。
 
 核心是一个 `dev_task` 工具 + 内置技能。工具的硬约束在代码里执行，不是"提醒模型"：
@@ -172,7 +179,7 @@ enableStrictWorkspaces()
 
 ## 状态与待办
 
-- **当前验证基线（0.22.4）**：`npm test` 123 项验收全过（引擎状态机 / 守卫 / 快照 hash / 回执门 / 并发 CAS / Remote 路径 / 沙箱策略断言）；`npm run typecheck` host + client 双面零错误；`npm run verify:package` 发布包黑盒 16 项（pack → 白名单 → 真实安装 → 主入口 import → client 注册 → 包内测试 → CLI）；真实 git 临时仓库 e2e（合法放行 / 阶段·范围·快照篡改·敏感路径拦截）；headless Chrome 实测侧栏入口与设置按钮逐像素对齐。发布前必跑 `npm test` + `npm run verify:package`。
+- **当前验证基线（0.23.0）**：构建和 host/client 类型检查通过；125 条 P0 验收断言及 18 个资源导入、工作区权限与台账行为用例通过。P0 集合仍含部分静态源码断言，不能等同于 125 项端到端测试。发布包验证与实机结果见[测试报告](docs/testing/0.23.0/测试报告.md)。
 - **真实模型端到端（0.4.1）**：headless + NewAPI DeepSeek 下让真模型走 `dev_task` 全流程，抓到并修掉一个真实 bug——`readText`/`writeText` 调 `fs.resolve()` 漏了 `await`，把 `Promise<FsTarget>` 当 `target` 传给了读写方法，导致 create/record/advance/commit 全部写不了任务文件、读永远返回 undefined。0.4.1 修复（`await fs.resolve(relPath)`），并把 `task_id` 在 create 也必填的说明补进工具 schema 与技能。修复后走真实 `ctx.fs` 路径冒烟全绿。
 - **网页图形化配置界面（0.5.0）**：新增 `src/client/` 设置页「工程流程配置」+ Host 端 `task-engine` Remote 控制器；`@godv61/dsh-task-engine` 升级为双端包（`dsh.client` manifest + `./client` 出品，`exports` 暴露）。已实机验证：`dsh web` 起服务后 boot 数据里 `@godv61/dsh-task-engine` 以 `inject:["@deepseek-ai/dsh-api-gateway"]` 进入 application batch、`/plugins/…/client.js` 正常服务；headless 冒烟确认 boot + `dev_task` 未被新控制器破坏。浏览器点击级 e2e 留到发布后用真浏览器收尾。
 - **skill/rule 挂载与渐进披露（0.6.0）**：`WorkflowConfig` 新增 `stage_bindings`（每阶段挂 skills/rules，可选字段），`dev_task` 的 `status`/`advance` 按当前阶段披露挂载的 skill 名 + rule 正文；内置 6 技能 + 3 规则库；Host 控制器新增 `listSkills`/`listRules`/`writeSkill`/`writeRule`；设置页新增「节点挂载」和「新建 skill / rule」两块，同时补上 `dev_task` 缺失的 `items` 操作（更新实施项状态）。引擎层 `stage_bindings` 校验（未知阶段/空名）与合并已单测通过。
@@ -201,7 +208,9 @@ enableStrictWorkspaces()
 - **沙箱写入修复（0.22.1）**：`dev_task` 的文件写入此前没有携带按调用传递的沙箱策略（`writeText` 的 `sandboxPolicy` 参数），在 DSH 文件沙箱下会把 workspace 内的任务记录写入误判为越界而拒绝（`file access denied under workspace-write mode`，且会话策略变化无法影响它）；现在每次写入显式携带 `{ mode, workspaceRoot: 会话目录 }`，并新增 `sandbox_permissions` 参数（`workspace-write` / `danger-full-access`）作为被拒后的一次性升级路径。
 - **质量修补（0.22.2，采纳 codex 评审五项）**：① client typecheck 修复——`project.ts` 不再依赖 `node:path`，浏览器面可完整类型检查；② sandbox 升级补审批——`sandbox_permissions` 必须与 `justification` 成对出现，`danger-full-access` 需人工一次批准，无审批服务即拒绝；③ Remote 任意路径设防——工作台 Remote 拒绝非绝对路径与系统级根目录；④ `set_risk` 升到 `high_risk` 时受流程能力门约束（`minimal`/`agile` 拒绝，不再绕过 `create` 的检查）；⑤ `loadTask` 补齐旧记录缺失字段（items / verification / review / commits），损坏记录 fail-closed 而非引擎裸崩。
 - **可信边界加固（0.22.3，采纳 GPT 评审）**：① 验证命令统一在任务记录的项目根运行（monorepo 子目录不再跑错目录），receipt.root 与任务根强校验；② 旧任务（无 frozen 快照）禁止升 `high_risk`——迁移或重建后才可；③ `init apply` 强制 `expected_hash`，新增 `existing_hash` 防审批期间文件被换（TOCTOU）；④ 任务记录新增 `revision`，每次写入 compare-and-swap，并发覆盖直接报错（`changed concurrently`）；⑤ 工作台 Remote 增加 host workspace registry（`registerWorkspace` 供 harness 集成，注册后未授权路径一律拒绝）；⑥ sandbox 升级审批展示 workspace；⑦ 文档明确 hook（本地反馈）/ host（工具流约束）/ CI（最终可信门禁）三层职责边界。
-- **并发与发布闭环（0.22.4，采纳 REVIEW-0.22.3）**：① `init apply` 在目标文件存在时**强制** `existing_hash`（不再可选），propose→apply 之间文件被篡改直接 fail-closed；② 任务写入升级为真正的原子 CAS——逻辑 `revision` 检查 + dsh-fs 的 `lstat` 版本号 `replaceIfVersion` write intent，并发写入报 `FS_STALE_VERSION` 而非静默覆盖；③ workspace registry 增加 `enableStrictWorkspaces()` 生产模式（空 registry 不再回退放行）；④ `exports["./client"]` 补 `types` 条件（`lib/client.d.ts` 随构建生成）；⑤ 新增 `npm run verify:package` 发布包黑盒验证（pack → 白名单一致性 → 真实安装 → 主入口 import → client 注册 → 包内 123 checks → CLI 语法）；⑥ 工作台 UI 优化——侧栏「工程流程」入口与设置按钮逐像素对齐（实测对齐 36 圆形 rail / 42 高 12 圆角展开行）、流程预设改卡片式选择器、工作台 header 品牌化、初始化预览容器化。REVIEW 指出的 Typert invocation context、host 可信状态签名、CI 最终门禁仍属 harness 层，集成点已在文档标注。
+- **并发与发布闭环（0.22.4，采纳 REVIEW-0.22.3）**：① `init apply` 在目标文件存在时**强制** `existing_hash`（不再可选），propose→apply 之间文件被篡改直接 fail-closed；② 任务写入接入文件版本 CAS（读取次序竞态在 0.23.0 修复）——逻辑 `revision` 检查 + dsh-fs 的 `lstat` 版本号 `replaceIfVersion` write intent，并发写入报 `FS_STALE_VERSION` 而非静默覆盖；③ workspace registry 增加 `enableStrictWorkspaces()` 生产模式（空 registry 不再回退放行）；④ `exports["./client"]` 补 `types` 条件（`lib/client.d.ts` 随构建生成）；⑤ 新增 `npm run verify:package` 发布包黑盒验证（pack → 白名单一致性 → 真实安装 → 主入口 import → client 注册 → 包内 123 checks → CLI 语法）；⑥ 工作台 UI 优化——侧栏「工程流程」入口与设置按钮逐像素对齐（实测对齐 36 圆形 rail / 42 高 12 圆角展开行）、流程预设改卡片式选择器、工作台 header 品牌化、初始化预览容器化。REVIEW 指出的 Typert invocation context、host 可信状态签名、CI 最终门禁仍属 harness 层，集成点已在文档标注。
 - **目录型 skill 安装（0.22.5）**：工作台「技能」页新增「安装 skill」——把本机已有的目录型 skill（`SKILL.md` + references / scripts / agents 等文件）一键装到<b>项目级</b>（工作区 `.dsh/skills`，团队共享）或<b>用户级</b>（`$DSH_HOME/skills`，个人所有项目可用）；安装校验 SKILL.md frontmatter、拒绝覆盖内置同名、拒绝覆盖已装同名、自动排除 node_modules / .git / `__pycache__` 等缓存目录并限制 200 文件 / 20 MB；实机验证 `software-testing` 目录型 skill 从 UI 安装完整落盘（含 references + scripts）。
 - **文案与安装体验（0.22.6）**：「安装 skill」输入框 placeholder 去掉示例绝对路径，改为通用提示「本机 skill 目录，需含 SKILL.md」；`installSkill` 支持<b>容器目录自动定位</b>——填的目录自身没有 SKILL.md 但直接子目录里恰好有一个含 SKILL.md 的 skill 根时自动装入该子目录（多个候选则提示直接填 skill 根）。
 - **skill 目录选择器 + 包形态（0.22.7）**：① 安装表单新增「浏览…」——host 端 `listDirs` 逐级列举目录（Windows 盘符快捷 + 路径输入回车跳转 + ↑ 上级 + **可点击面包屑**标明当前位置），含 `SKILL.md` 的子目录标「含 SKILL.md ✓」，当前目录能否直接安装实时提示，点「选此目录」回填路径，彻底不用手输；② 安装上限放宽到 1000 文件 / 100 MB（单文件 20 MB 上限），skill 作为<b>完整包</b>安装（references / scripts / 模板 / 资源等全部保留，仍自动排除 node_modules / `.git` / `__pycache__` 缓存）；③ 实机验证<b>项目级</b>（工作区 `.dsh/skills`）与<b>用户级</b>（`$DSH_HOME/skills`）两条安装路径均完整落盘，逐级进入与面包屑经浏览器实测确认。
+
+- **安装与工作台改进（0.23.0）**：技能选文件夹、规则选 Markdown 文件；预览后确认安装；项目/个人范围与目标路径可见；加强导入校验和失败回滚；统一资源卡片、搜索与来源筛选；台账增加风险/阶段筛选；修复并发任务写入的版本读取次序；优先使用 Harness 注册工作区。详见[修改清单](docs/release-0.23.0.md)。

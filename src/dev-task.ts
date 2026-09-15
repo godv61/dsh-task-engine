@@ -341,6 +341,7 @@ async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
 async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   const path = taskPath(state.id)
   // Friendly fast-fail first: the logical revision must still be the one loaded.
+  const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
   const onDiskRaw = await readText(fs, path, cwd)
   if (onDiskRaw === undefined) {
     state.revision = state.revision ?? 1 // first write of a fresh record keeps the factory revision
@@ -356,11 +357,11 @@ async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode
   // Atomic guard: the write carries the file's current version as a
   // replace-if-version intent, so a concurrent write between our read and our
   // write fails with FS_STALE_VERSION instead of silently overwriting.
-  const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
   const intent = info === undefined
     ? { kind: 'createIfAbsent' }
     : { kind: 'replaceIfVersion', version: info.version }
   try {
+    state.updated_at = new Date().toISOString()
     await writeText(fs, path, JSON.stringify(state, null, 2), cwd, mode, intent)
   } catch (error) {
     const code = (error as { code?: unknown })?.code

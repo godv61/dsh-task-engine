@@ -10,6 +10,7 @@
  * @module dsh-task-engine/TaskEngineSection
  */
 
+import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
 import { createElement, useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -90,6 +91,10 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and per-item audit trail. */
 export interface TaskLedgerEntry {
+  risk_level?: string
+  updated_at?: string
+  verification_passed?: boolean
+  review_outcome?: string
   task_id: string
   title: string
   stage: string
@@ -128,6 +133,9 @@ export interface InitWriteResult {
 
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
+  resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
+  previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
+  importResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   read(path: string): Promise<RemoteResult<EngConfigView>>
   write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding> }): Promise<RemoteResult<EngConfigView>>
   listSkills(path: string): Promise<RemoteResult<{ skills: SkillCatalogEntry[] }>>
@@ -165,6 +173,10 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   const [source, setSource] = useState<string>('default')
   const [savedAt, setSavedAt] = useState<string>('')
   const [loadError, setLoadError] = useState<string>('')
+  const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [loadAttempt, setLoadAttempt] = useState(0)
+  const [configProblems, setConfigProblems] = useState<string[]>([])
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([])
   const [rules, setRules] = useState<RuleCatalogEntry[]>([])
 
@@ -172,21 +184,24 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     if (workspace === '') return
     let alive = true
     setLoadError('')
+    setLoading(true)
     void remote.read(workspace).then((result) => {
       if (!alive) return
+      setLoading(false)
       if (result.ok) {
         setFlow(result.value.flow)
         setStageBindings(result.value.config.stage_bindings ?? {})
         setSource(result.value.source)
+        setConfigProblems(result.value.problems)
         setSavedAt('')
       } else {
         setLoadError('读取配置失败：' + describeError(result.error))
       }
     }, (error: unknown) => {
-      if (alive) setLoadError('读取配置失败：' + describeError(error))
+      if (alive) { setLoading(false); setLoadError('读取配置失败：' + describeError(error)) }
     })
     return () => { alive = false }
-  }, [remote, workspace])
+  }, [remote, workspace, loadAttempt])
 
   const refreshCatalogs = useCallback(() => {
     if (workspace === '') return
@@ -224,13 +239,17 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         <div style={styles.problems}>
           <span style={styles.problemsTitle}><StateDot state="error" />读取失败</span>
           <p style={styles.muted}>{loadError}</p>
+          <Button onClick={() => setLoadAttempt(n => n + 1)}>重试</Button>
         </div>
       </div>
     )
   }
 
+  if (loading) return <p role="status">正在读取流程配置…</p>
+
   return (
     <div style={styles.wrap}>
+      {configProblems.length > 0 && <p role="alert" style={styles.problems}>原配置有问题：{configProblems.join('；')}。请选择有效预设并保存修复。</p>}
       <div style={styles.head}>
         <h2 style={styles.title}>工程流程配置</h2>
         <p style={styles.muted}>选一套流程，再给每个节点挂上 skill / rule。阶段流转、守卫、提交规则都由流程预设固化，无需手工配置。</p>
@@ -300,10 +319,10 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           variant="primary"
           size="md"
           icon={<IconCheckOutline16 size={16} />}
-          disabled={problems.length > 0}
-          onClick={() => { void save(remote, flow, stageBindings, workspace, setSavedAt, setSource) }}
+          disabled={problems.length > 0 || saving}
+          onClick={() => { setSaving(true); void save(remote, flow, stageBindings, workspace, setSavedAt, setSource).then(ok => { if (ok) setConfigProblems([]) }).finally(() => setSaving(false)) }}
         >
-          保存到 .dsh/eng.json
+          {saving ? '正在保存…' : '保存到 .dsh/eng.json'}
         </Button>
         {savedAt !== ''
           ? (
@@ -430,12 +449,13 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
   )
 }
 
-async function save(remote: TaskEngineRemote, flow: string, stageBindings: Record<string, StageBinding>, workspace: string, setSavedAt: (s: string) => void, setSource: (s: string) => void): Promise<void> {
-  const result = await remote.write({ path: workspace, flow, stage_bindings: stageBindings })
-  if (!result.ok) {
-    setSavedAt('保存失败：' + describeError(result.error))
-    return
-  }
-  setSource(result.value.source)
-  setSavedAt(result.value.ok ? '已保存' : '')
+async function save(remote: TaskEngineRemote, flow: string, stageBindings: Record<string, StageBinding>, workspace: string, setSavedAt: (s: string) => void, setSource: (s: string) => void): Promise<boolean> {
+  try {
+    const result = await remote.write({ path: workspace, flow, stage_bindings: stageBindings })
+    if (!result.ok) { setSavedAt('保存失败：' + describeError(result.error)); return false }
+    if (!result.value.ok) { setSavedAt('保存失败：' + result.value.problems.join('；')); return false }
+    setSource(result.value.source)
+    setSavedAt('已保存')
+    return true
+  } catch (error) { setSavedAt('保存失败：' + describeError(error)); return false }
 }
