@@ -90,7 +90,7 @@ try {
 
 // Resource package behavior from the installed artifact.
 try {
-  const out = execSync('node --test .resource-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource import behavior', /# fail 0/u.test(out))
 } catch (error) { check('in-package resource import behavior', false, String(error.stderr ?? error)) }
 
