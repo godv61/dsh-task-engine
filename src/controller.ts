@@ -9,7 +9,7 @@
  * @module dsh-task-engine/controller
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -76,6 +76,16 @@ export interface WriteSkillRequest {
   whenToUse?: string
   content: string
   /** `project` writes under the workspace's `.dsh/skills`; `user` under `$DSH_HOME/skills`. */
+  level: 'project' | 'user'
+  /** Absolute workspace directory (required when level is `project`). */
+  path?: string
+}
+
+/** Install an existing directory-bundle skill (SKILL.md + assets) into a level root. */
+export interface InstallSkillRequest {
+  /** Absolute source directory containing `SKILL.md` (plus optional references/scripts/assets). */
+  sourceDir: string
+  /** `project` installs under the workspace's `.dsh/skills`; `user` under `$DSH_HOME/skills`. */
   level: 'project' | 'user'
   /** Absolute workspace directory (required when level is `project`). */
   path?: string
@@ -283,6 +293,39 @@ function renderSkillFile(name: string, description: string, whenToUse: string | 
   const head = [`name: ${name}`, `description: ${description}`]
   if (whenToUse !== undefined && whenToUse.trim() !== '') head.push(`whenToUse: ${whenToUse.trim()}`)
   return `---\n${head.join('\n')}\n---\n\n${content.trimEnd()}\n`
+}
+
+/** Directory names never copied when installing a skill directory. */
+const SKILL_SKIP_DIRS = new Set(['node_modules', '.git', '__pycache__', '.venv', 'venv', '.idea', '.vscode', '.cache'])
+/** Install bounds: refuse oversized bundles instead of copying junk. */
+const SKILL_MAX_FILES = 200
+const SKILL_MAX_BYTES = 20 * 1024 * 1024
+
+/**
+ * Recursively copy a validated skill directory, skipping dependency caches and
+ * enforcing file-count / byte caps. Throws with a clear message on oversize.
+ */
+function copySkillDir(source: string, dest: string): void {
+  let files = 0
+  let bytes = 0
+  const walk = (src: string, dst: string): void => {
+    mkdirSync(dst, { recursive: true })
+    for (const entry of readdirSync(src, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (SKILL_SKIP_DIRS.has(entry.name)) continue
+        walk(join(src, entry.name), join(dst, entry.name))
+      } else if (entry.isFile()) {
+        const srcPath = join(src, entry.name)
+        bytes += statSync(srcPath).size
+        files += 1
+        if (files > SKILL_MAX_FILES || bytes > SKILL_MAX_BYTES) {
+          throw new Error(`skill 目录过大（上限 ${SKILL_MAX_FILES} 个文件 / ${Math.round(SKILL_MAX_BYTES / 1024 / 1024)} MB），已排除 node_modules/.git 等缓存目录`)
+        }
+        copyFileSync(srcPath, join(dst, entry.name))
+      }
+    }
+  }
+  walk(source, dest)
 }
 
 /** Scan a markdown directory, returning `{ name }` per `.md` file. */
@@ -674,6 +717,55 @@ export default class TaskEngineController extends TypertRemoteService {
       : join(dshHome(), 'skills')
     const file = join(base, name, 'SKILL.md')
     return writeResourceFile(file, renderSkillFile(name, request.description, request.whenToUse, request.content), name)
+  }
+
+  /**
+   * Install an existing directory-bundle skill (SKILL.md plus its references,
+   * scripts, and assets) into the project or user skill root. The source is
+   * validated as a skill before anything is copied; the target refuses to
+   * shadow a bundled skill or overwrite an existing install.
+   * @param request - source directory, target level, and workspace for `project`.
+   * @returns the installed path, or `ok: false` with an error.
+   */
+  @Remote
+  async installSkill(request: InstallSkillRequest): Promise<WriteResourceResult> {
+    const sourceDir = request.sourceDir.trim()
+    if (sourceDir === '' || !isAbsolute(sourceDir)) {
+      return { ok: false, name: '', path: '', error: '源目录必须是绝对路径' }
+    }
+    const skillFile = join(sourceDir, 'SKILL.md')
+    if (!existsSync(skillFile)) {
+      return { ok: false, name: '', path: '', error: `所选目录不是 skill：缺少 ${skillFile}` }
+    }
+    let parsed: { name: string; description: string; whenToUse: string; content: string } | undefined
+    try {
+      parsed = parseSkillFile(readFileSync(skillFile, 'utf8'))
+    } catch {
+      parsed = undefined
+    }
+    if (parsed === undefined) {
+      return { ok: false, name: '', path: '', error: 'SKILL.md frontmatter 不可读（需要 name + description）' }
+    }
+    const name = sanitizeName(parsed.name)
+    if (name === '') {
+      return { ok: false, name, path: '', error: 'skill name 无效（只含小写字母数字和 -）' }
+    }
+    if (bundledSkillExists(name)) {
+      return { ok: false, name, path: '', error: `"${name}" 是内置技能，不可覆盖；给 SKILL.md 换个名字` }
+    }
+    const base = request.level === 'project'
+      ? join(request.path !== undefined ? checkedPath(request.path) : '', '.dsh/skills')
+      : join(dshHome(), 'skills')
+    const dest = join(base, name)
+    if (existsSync(dest)) {
+      return { ok: false, name, path: dest, error: `目标位置已存在同名技能（${dest}）——先删除或换名再装` }
+    }
+    try {
+      copySkillDir(sourceDir, dest)
+    } catch (error) {
+      return { ok: false, name, path: dest, error: error instanceof Error ? error.message : String(error) }
+    }
+    return { ok: true, name, path: dest }
   }
 
   /**

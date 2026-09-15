@@ -97,6 +97,13 @@ const writeSkillRequestSchema = z.object({
   path: z.string().optional(),
 })
 
+/** `installSkill` request: an existing directory-bundle skill plus target level. */
+const installSkillRequestSchema = z.object({
+  sourceDir: z.string(),
+  level: z.enum(['project', 'user']),
+  path: z.string().optional(),
+})
+
 /** `writeRule` request: rule content plus target level. */
 const writeRuleRequestSchema = z.object({
   name: z.string(),
@@ -298,6 +305,22 @@ export const TYPERT_REMOTE = {
           wire: 'request',
           source: 'json',
           codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteSkillRequest`, schema: writeSkillRequestSchema },
+        },
+      ],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/installSkill`,
+      service: 'taskEngineController',
+      namespace: 'task-engine',
+      method: 'installSkill',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'request',
+          wire: 'request',
+          source: 'json',
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InstallSkillRequest`, schema: installSkillRequestSchema },
         },
       ],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },

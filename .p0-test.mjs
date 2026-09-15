@@ -708,4 +708,19 @@ function memProbe(files) {
   assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'strict mode still admits registered workspaces')
 }
 
+// ── 36. 0.22.5: directory-bundle skill install Remote ──────────────────────
+{
+  const controller = readFileSync('./lib/controller.js', 'utf8')
+  assert(controller.includes('installSkill'), 'installSkill Remote is registered')
+  assert(controller.includes('源目录必须是绝对路径'), 'install rejects a non-absolute source directory')
+  assert(controller.includes('SKILL.md'), 'install requires SKILL.md in the source directory')
+  assert(controller.includes('node_modules'), 'install skips dependency caches')
+  assert(controller.includes('内置技能，不可覆盖'), 'install refuses to shadow a bundled skill')
+}
+{
+  const client = readFileSync('./lib/client.js', 'utf8')
+  assert(client.includes('installSkill'), 'client declares the installSkill Remote contract')
+  assert(client.includes('sourceDir'), 'client schema carries the source directory')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

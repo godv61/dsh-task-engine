@@ -58,6 +58,11 @@ export function SkillManager({ workspace, remote }: {
   const [body, setBody] = useState('')
   const [msg, setMsg] = useState('')
 
+  // Directory install form: an existing SKILL.md bundle on this machine.
+  const [installing, setInstalling] = useState(false)
+  const [installDir, setInstallDir] = useState('')
+  const [installLevel, setInstallLevel] = useState<'project' | 'user'>('project')
+
   const refresh = useCallback(() => {
     void remote.listSkills(workspace).then((r) => {
       if (r.ok) setSkills(r.value.skills)
@@ -77,8 +82,37 @@ export function SkillManager({ workspace, remote }: {
     setEditing(null)
     setCreating(true)
     setViewing(false)
+    setInstalling(false)
     setLevel('project')
     setName(''); setDescription(''); setWhenToUse(''); setBody(''); setMsg('')
+  }
+
+  const startInstall = (): void => {
+    setEditing(null)
+    setCreating(false)
+    setViewing(false)
+    setInstalling(true)
+    setInstallDir(''); setInstallLevel('project'); setMsg('')
+  }
+
+  const submitInstall = async (): Promise<void> => {
+    setMsg('')
+    const result = await remote.installSkill({
+      sourceDir: installDir,
+      level: installLevel,
+      path: installLevel === 'project' ? workspace : undefined,
+    })
+    if (!result.ok) {
+      setMsg('安装失败：' + describeError(result.error))
+      return
+    }
+    if (!result.value.ok) {
+      setMsg('安装失败：' + (result.value.error ?? '未知错误'))
+      return
+    }
+    setMsg(`已安装 skill「${result.value.name}」→ ${result.value.path}`)
+    setInstalling(false)
+    refresh()
   }
 
   const loadSkill = (skillName: string, lvl: 'project' | 'user' | 'bundled'): void => {
@@ -157,7 +191,7 @@ export function SkillManager({ workspace, remote }: {
     refresh()
   }
 
-  const formOpen = editing !== null || creating
+  const formOpen = editing !== null || creating || installing
 
   const renderRow = (sk: SkillCatalogEntry): ReturnType<typeof createElement> =>
     createElement('div', {
@@ -217,18 +251,50 @@ export function SkillManager({ workspace, remote }: {
     )
   }
 
+  const renderInstallForm = (): ReturnType<typeof createElement> =>
+    createElement(ResourceModal, {
+      title: '安装现有 skill（目录型）',
+      description: '把一个本机已有的 skill 目录（含 SKILL.md，可带 references / scripts 等文件）安装到项目级或用户级。',
+      onClose: () => { setInstalling(false); setMsg('') },
+      footer: createElement('div', { style: styles.row },
+        createElement(Button, {
+          variant: 'primary', size: 'sm',
+          disabled: installDir.trim() === '',
+          onClick: () => { void submitInstall() },
+        }, '安装'),
+        createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => { setInstalling(false); setMsg('') } }, '取消'),
+      ),
+    },
+      createElement('div', { style: styles.chips },
+        createElement(Pill, { active: installLevel === 'project', onClick: () => { setInstallLevel('project') }, title: '装到工作区 .dsh/skills，团队共享' }, '项目级'),
+        createElement(Pill, { active: installLevel === 'user', onClick: () => { setInstallLevel('user') }, title: '装到 $DSH_HOME/skills，个人所有项目可用' }, '用户级'),
+      ),
+      createElement('input', {
+        style: control,
+        placeholder: '源目录绝对路径（如 D:\\yourong\\software-testing）',
+        value: installDir,
+        onChange: (ev: ChangeEvent<HTMLInputElement>) => { setInstallDir(ev.target.value) },
+      }),
+      createElement('p', { style: styles.hint }, '要求：目录内有 SKILL.md（frontmatter 含 name + description）。安装会复制整个目录（自动排除 node_modules / .git 等缓存），同名内置技能拒绝覆盖，同名已装技能需先删除。'),
+      msg !== '' ? createElement('p', { style: styles.status }, msg) : null,
+    )
+
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
       createElement('div', { style: styles.bindingStage },
         createElement('span', { style: styles.bindingLabel }, '已安装的 skill'),
         skills.length === 0
-          ? createElement('p', { style: styles.muted }, '暂无 skill，点下方「新建 skill」创建一个。')
+          ? createElement('p', { style: styles.muted }, '暂无 skill，点下方「新建 skill」创建，或「安装 skill」导入本机已有的 skill 目录。')
           : createElement('div', { style: styles.section },
             ...skills.map(renderRow),
           ),
       ),
-      createElement(Button, { variant: 'outline', size: 'md', onClick: startCreate }, '新建 skill'),
+      createElement('div', { style: styles.row },
+        createElement(Button, { variant: 'outline', size: 'md', onClick: startCreate }, '新建 skill'),
+        createElement(Button, { variant: 'outline', size: 'md', onClick: startInstall }, '安装 skill'),
+      ),
     ),
-    formOpen ? renderForm() : null,
+    installing ? renderInstallForm() : null,
+    formOpen && !installing ? renderForm() : null,
   )
 }
