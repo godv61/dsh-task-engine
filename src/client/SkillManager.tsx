@@ -46,6 +46,32 @@ function joinPath(dir: string, name: string): string {
   return dir.replace(/[\\/]+$/u, '') + '/' + name
 }
 
+/** Split an absolute path into clickable breadcrumb segments (drive-aware). */
+function breadcrumbSegments(path: string): { label: string; path: string }[] {
+  const trimmed = path.replace(/[\\/]+$/u, '')
+  const sep = trimmed.includes('\\') ? '\\' : '/'
+  const parts = trimmed.split(/[\\/]+/u).filter(part => part !== '')
+  const segments: { label: string; path: string }[] = []
+  let acc = ''
+  for (const part of parts) {
+    if (acc === '') {
+      // Drive letter (`C:`) or a POSIX root.
+      acc = /^[A-Za-z]:$/u.test(part) ? part + sep : sep + part
+      segments.push({ label: part, path: acc })
+    } else {
+      acc = acc.replace(/[\\/]+$/u, '') + sep + part
+      segments.push({ label: part, path: acc })
+    }
+  }
+  return segments
+}
+
+/** True when "up" has nowhere useful to go (no level listed yet, or a drive/filesystem root). */
+function isRootLevel(path: string): boolean {
+  if (path === '') return true
+  return /^[A-Za-z]:[\\/]?$/u.test(path) || path === '/'
+}
+
 export function SkillManager({ workspace, remote }: {
   workspace: string
   remote: TaskEngineRemote
@@ -93,7 +119,10 @@ export function SkillManager({ workspace, remote }: {
         setBrowseEntries([])
         setBrowseError(describeError(r.ok ? r.value.error : r.error))
       }
-    }, () => { setBrowseEntries([]); setBrowseError('目录读取失败') })
+    }, (error) => {
+      setBrowseEntries([])
+      setBrowseError('目录读取失败：' + describeError(error))
+    })
   }
 
   const openBrowse = (): void => {
@@ -356,7 +385,7 @@ export function SkillManager({ workspace, remote }: {
           onKeyDown: (ev: { key: string }) => { if (ev.key === 'Enter') refreshBrowse(browseDraft.trim()) },
         }),
         createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => { refreshBrowse(browseDraft.trim()) } }, '前往'),
-        createElement(Button, { variant: 'ghost', size: 'sm', disabled: browsePath === '', onClick: browseUp, title: '进入上级目录' }, '↑ 上级'),
+        createElement(Button, { variant: 'ghost', size: 'sm', disabled: isRootLevel(browsePath), onClick: browseUp, title: '进入上级目录' }, '↑ 上级'),
       ),
       browseRoots.length > 1
         ? createElement('div', { style: { ...styles.chips, marginBottom: 6 } },
@@ -364,10 +393,26 @@ export function SkillManager({ workspace, remote }: {
             createElement(Button, { key: root, variant: 'ghost', size: 'sm', onClick: () => { refreshBrowse(root) } }, root.replace(/[\\/]+$/u, ''))),
         )
         : null,
+      // Breadcrumb: the current level with every ancestor clickable — the
+      // visible answer to "where am I / how do I go up".
+      createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2, marginBottom: 6, minHeight: 22 } },
+        browsePath === ''
+          ? createElement('span', { style: styles.sourceText }, '主目录')
+          : createElement('span', { style: { display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 } },
+            ...breadcrumbSegments(browsePath).map(seg =>
+              createElement('button', {
+                key: seg.path,
+                type: 'button',
+                onClick: () => { refreshBrowse(seg.path) },
+                title: seg.path,
+                style: { border: 'none', background: 'transparent', cursor: 'pointer', padding: '1px 3px', borderRadius: 4, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
+              }, seg.label + ' ›'),
+            )),
+      ),
       browseError !== ''
         ? createElement('p', { style: { ...styles.status, color: 'var(--dsw-alias-state-error-primary)' } }, browseError)
         : null,
-      createElement('div', { style: { maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 } },
+      createElement('div', { style: { maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: 4 } },
         browseEntries.length === 0 && browseError === ''
           ? createElement('p', { style: styles.sourceText }, '（此目录下没有子目录）')
           : null,
