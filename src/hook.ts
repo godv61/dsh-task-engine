@@ -17,6 +17,7 @@ import {
   checkFileScope,
   commitCheckpoint,
   validateCommitMessage,
+  taskIdFromMessage,
   type FlowSnapshot,
   type StageBinding,
   type TaskState,
@@ -57,6 +58,7 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     work_size: (task.work_size as TaskState['work_size']) ?? 'standard',
     risk_level: (task.risk_level as TaskState['risk_level']) ?? 'standard',
     stage: String(task.stage ?? ''),
+    ...(task.stage_confirmations !== undefined ? { stage_confirmations: task.stage_confirmations as NonNullable<TaskState['stage_confirmations']> } : {}),
     requirement_confirmed: task.requirement_confirmed === true,
     solution_confirmed: task.solution_confirmed === true,
     items: Array.isArray(task.items) ? (task.items as TaskState['items']) : [],
@@ -197,42 +199,43 @@ function defaultConfig(): WorkflowConfig {
  * task record carries no frozen snapshot. Mirrors `dev_task` `resolveWorkflow`:
  * no file → standard; missing/unknown `flow` → fail closed (never silent fallback).
  */
-function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown } | undefined): WorkflowConfig {
+function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown; custom_flow?: unknown } | undefined): WorkflowConfig {
   if (parsed === undefined) return defaultConfig()
-  const flow = parsed.flow
+  const flow = parsed?.flow
   if (typeof flow !== 'string' || flow.trim() === '') {
     refuse('项目 .dsh/eng.json 缺 "flow" 字段——设为 standard|agile|minimal，或删除该文件')
   }
   const override = typeof parsed.stage_bindings === 'object' && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings)
     ? { stage_bindings: parsed.stage_bindings as Record<string, StageBinding> }
     : undefined
-  const resolved = resolveFlow(flow, override)
+  const resolved = resolveFlow(flow, { ...override, custom_flow: parsed.custom_flow })
   if (!resolved.ok) {
-    refuse(`未知流程 "${resolved.flow}"（已知流程：${resolved.knownFlows.join('、')}）`)
+    refuse(resolved.problems?.join('; ') ?? `未知流程 "${resolved.flow}"（已知流程：${resolved.knownFlows.join('、')}）`)
   }
   return resolved.config
 }
 
-// --- gather project state (fallback config) ---
-const cwd = process.cwd()
-const configPath = path.join(cwd, '.dsh', 'eng.json')
-let config: WorkflowConfig
-if (fs.existsSync(configPath)) {
-  let raw = ''
-  try {
-    raw = fs.readFileSync(configPath, 'utf8')
-  } catch {
-    raw = ''
+/** Only legacy tasks depend on the live project file. Frozen tasks survive later config errors. */
+function loadProjectWorkflow(): WorkflowConfig {
+  const cwd = process.cwd()
+  const configPath = path.join(cwd, '.dsh', 'eng.json')
+  if (fs.existsSync(configPath)) {
+    let raw = ''
+    try {
+      raw = fs.readFileSync(configPath, 'utf8')
+    } catch {
+      raw = ''
+    }
+    let parsed: { flow?: string; stage_bindings?: unknown; custom_flow?: unknown }
+    try {
+      parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: unknown; custom_flow?: unknown }
+    } catch (error) {
+      refuse('invalid JSON in .dsh/eng.json: ' + (error instanceof Error ? error.message : String(error)))
+    }
+    return loadWorkflow(parsed)
+  } else {
+    return loadWorkflow(undefined)
   }
-  let parsed: { flow?: string; stage_bindings?: unknown }
-  try {
-    parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: unknown }
-  } catch (error) {
-    refuse('invalid JSON in .dsh/eng.json: ' + (error instanceof Error ? error.message : String(error)))
-  }
-  config = loadWorkflow(parsed)
-} else {
-  config = loadWorkflow(undefined)
 }
 
 // --- the gate ---
@@ -253,7 +256,9 @@ if (taskId !== undefined) {
   }
   state = found.task
 } else {
-  state = pickTask(tasks, currentBranch())
+  const matching = tasks.filter(({ task }) => task.flow && taskIdFromMessage(message, task.flow.config) === task.id)
+  if (matching.length > 1) refuse('提交消息匹配多个任务，请使用唯一任务 ID')
+  state = matching[0]?.task ?? pickTask(tasks, currentBranch())
 }
 if (!state) {
   refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
@@ -263,19 +268,17 @@ if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.fl
   refuse(`任务 ${state.id} 的流程快照 hash 不匹配——task 记录在创建后被改动过，修复或重建任务后再提交`)
 }
 
-// Check this task against its frozen snapshot, not the live .dsh/eng.json
-// (which may have drifted mid-task). Fall back to the live config only for
-// legacy records that predate the snapshot field.
-if (state.flow !== undefined && state.flow.config !== undefined) {
-  config = state.flow.config
-}
+const config = state.flow?.config ?? loadProjectWorkflow()
+
+const messageTaskId = taskIdFromMessage(message, config)
+if (messageTaskId !== undefined && messageTaskId !== state.id) refuse(`提交消息指定任务 ${messageTaskId}，与当前任务 ${state.id} 不一致`)
 
 const verdict = validateCommitMessage(message, config)
 if (!verdict.ok) {
   refuse(verdict.errors?.[0] ?? 'commit summary does not match the configured pattern')
 }
 
-const checkpoint = commitCheckpoint(state, config)
+const checkpoint = commitCheckpoint(state, config, true)
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
 }

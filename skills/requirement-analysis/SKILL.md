@@ -1,6 +1,6 @@
 ---
 name: requirement-analysis
-description: 需求评审节点：把一条需求拆成目标、验收、非目标和待确认项，落需求说明并等确认。仅在任务处于「需求评审」阶段时使用（以 dev_task status 的 stage 为准）。
+description: 需求评审节点：把一条需求拆成目标、验收、非目标和待确认项，落需求说明并等确认。仅在 dev_task status 的当前阶段绑定本技能时使用，阶段名称可以自定义。
 ---
 
 # 需求分析

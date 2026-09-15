@@ -23,10 +23,14 @@ import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typer
 // Type-only: pulls the `Context.fs` augmentation into this module.
 import type {} from '@deepseek-ai/dsh-fs'
 import { validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
+import type { CustomFlow } from './custom-flow.ts'
+import { hashText } from './snapshot.ts'
 import { resolveFlow } from './workflows.ts'
 
 /** Merged workflow plus its validation state, returned by both config methods. */
 export interface EngConfigView {
+  custom_flow?: CustomFlow
+  revision?: string
   /** Whether `config` passes validation; `false` means `problems` names the defects. */
   ok: boolean
   /** Where the config came from: a preset default, a sound project file, or an invalid one. */
@@ -41,6 +45,8 @@ export interface EngConfigView {
 
 /** A `write` request: the workspace directory and the flow selection to persist. */
 export interface EngWriteRequest {
+  custom_flow?: CustomFlow
+  expected_revision?: string
   /** Absolute workspace directory; `.dsh/eng.json` is written under it. */
   path: string
   /** Preset workflow id. */
@@ -210,6 +216,8 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and the per-item audit trail. */
 export interface TaskLedgerEntry {
+  flow_id?: string
+  flow_version?: number
   risk_level?: string
   updated_at?: string
   verification_passed?: boolean
@@ -463,11 +471,11 @@ export default class TaskEngineController extends TypertRemoteService {
     const fs = this.fs()
     const raw = await readEngText(fs, path)
     if (raw === undefined) {
-      return { ok: true, source: 'default', flow: 'standard', config: standardConfig(), problems: [] }
+      return { ok: true, source: 'default', flow: 'standard', config: standardConfig(), problems: [], revision: hashText('') }
     }
-    let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding> }
+    let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding>; custom_flow?: unknown }
     try {
-      parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding> }
+      parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding>; custom_flow?: unknown }
     } catch (error) {
       return {
         ok: false,
@@ -477,7 +485,7 @@ export default class TaskEngineController extends TypertRemoteService {
         problems: [`invalid JSON: ${error instanceof Error ? error.message : String(error)}`],
       }
     }
-    if (parsed.flow === undefined || parsed.flow.trim() === '') {
+    if (parsed === null || typeof parsed !== 'object' || typeof parsed.flow !== 'string' || parsed.flow.trim() === '') {
       return {
         ok: false,
         source: 'invalid',
@@ -488,7 +496,7 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     const resolved = resolveFlow(
       parsed.flow,
-      parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : undefined,
+      parsed,
     )
     if (!resolved.ok) {
       return {
@@ -496,7 +504,7 @@ export default class TaskEngineController extends TypertRemoteService {
         source: 'invalid',
         flow: resolved.flow,
         config: standardConfig(),
-        problems: [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
+        problems: resolved.problems ?? [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
       }
     }
     const problems = validateWorkflow(resolved.config)
@@ -505,6 +513,8 @@ export default class TaskEngineController extends TypertRemoteService {
       source: problems.length === 0 ? 'project' : 'invalid',
       flow: resolved.preset.id,
       config: resolved.config,
+      revision: hashText(raw),
+      ...(resolved.preset.id.startsWith('custom:') ? { custom_flow: { schema: 1 as const, id: resolved.preset.id, label: resolved.preset.label, version: resolved.preset.version, config: resolved.config } } : {}),
       problems,
     }
   }
@@ -520,7 +530,7 @@ export default class TaskEngineController extends TypertRemoteService {
     request.path = await this.authorizedPath(request.path)
     const resolved = resolveFlow(
       request.flow,
-      request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : undefined,
+      request,
     )
     if (!resolved.ok) {
       return {
@@ -528,24 +538,51 @@ export default class TaskEngineController extends TypertRemoteService {
         source: 'invalid',
         flow: resolved.flow,
         config: standardConfig(),
-        problems: [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
+        problems: resolved.problems ?? [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
       }
     }
     const problems = validateWorkflow(resolved.config)
     if (problems.length > 0) {
       return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems }
     }
-    const payload = {
-      flow: request.flow,
-      ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+    if (request.flow.startsWith('custom:')) {
+      const [skills, rules] = await Promise.all([this.listSkills(request.path), this.listRules(request.path)])
+      for (const [stage, binding] of Object.entries(resolved.config.stage_bindings ?? {})) {
+        for (const name of binding.skills ?? []) if (!skills.skills.some(s => s.name === name)) problems.push(`${stage}：技能 ${name} 不存在，请先安装或移除绑定`)
+        for (const name of binding.rules ?? []) if (!rules.rules.some(r => r.name === name)) problems.push(`${stage}：规则 ${name} 不存在，请先安装或移除绑定`)
+      }
+      if (problems.length) return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems }
     }
     const fs = this.fs()
+    const observed = await fs.lstat(ENGFILE, { cwd: request.path })
+    const raw = await readEngText(fs, request.path)
+    if (request.expected_revision !== undefined && request.expected_revision !== hashText(raw ?? '')) {
+      return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems: ['项目配置已被修改，请重新读取后再保存'] }
+    }
+    let previous: Record<string, unknown> = {}
+    if (raw !== undefined) {
+      try { previous = JSON.parse(raw) as Record<string, unknown> } catch {
+        return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems: ['原配置不是有效 JSON，请先修复文件，避免丢失项目设置'] }
+      }
+      if (previous === null || typeof previous !== 'object' || Array.isArray(previous)) return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems: ['原配置必须是 JSON 对象'] }
+    }
+    const payload: Record<string, unknown> = { ...previous, flow: request.flow }
+    delete payload.custom_flow
+    delete payload.stage_bindings
+    if (request.flow.startsWith('custom:')) {
+      const prior = previous.custom_flow as CustomFlow | undefined
+      const version = prior?.id === request.flow && Number.isSafeInteger(prior.version)
+        ? prior.version + (JSON.stringify(prior.config) === JSON.stringify(resolved.config) && prior.label === resolved.preset.label ? 0 : 1) : 1
+      payload.custom_flow = { schema: 1, id: request.flow, label: resolved.preset.label, version, config: resolved.config }
+    } else if (request.stage_bindings !== undefined) payload.stage_bindings = request.stage_bindings
     const target = await fs.resolve(ENGFILE, { cwd: request.path })
-    await fs.writeText(target, JSON.stringify(payload, null, 2), undefined, undefined, {
+    await fs.writeText(target, JSON.stringify(payload, null, 2), observed === undefined
+      ? { kind: 'createIfAbsent' }
+      : { kind: 'replaceIfVersion', version: observed.version }, undefined, {
       mode: 'workspace-write',
       workspaceRoot: request.path,
     })
-    return { ok: true, source: 'project', flow: request.flow, config: resolved.config, problems: [] }
+    return { ok: true, source: 'project', flow: request.flow, config: resolved.config, problems: [], revision: hashText(JSON.stringify(payload, null, 2)), ...(payload.custom_flow ? { custom_flow: payload.custom_flow as CustomFlow } : {}) }
   }
 
   /**
@@ -626,6 +663,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.updated_at ? { updated_at: state.updated_at } : {}),
           verification_passed: state.verification?.passed ?? false,
           review_outcome: state.review?.outcome ?? 'pending',
+          ...(state.flow ? { flow_id: state.flow.flow, flow_version: state.flow.version } : {}),
           task_id: state.id,
           title: state.title,
           stage: state.stage,

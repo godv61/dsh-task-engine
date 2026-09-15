@@ -1,15 +1,12 @@
 /**
- * Built-in engineering workflows. A workflow is a complete, engine-resolved
- * `WorkflowConfig` a project adopts by id: the stage graph, transition guards,
- * artifacts, commit rule, and default skill/rule bindings are all baked in
- * here. A project overrides only its stage bindings by APPENDING skill/rule
- * names to the preset defaults; every guard, artifact, and commit field stays
- * a fixed property of the chosen preset, so a project cannot hand-edit the gate
- * semantics or cancel a core binding.
+ * Resolve built-in presets and versioned custom workflows into engine configs.
+ * Built-in bindings are additive; custom definitions own all stages, guards,
+ * artifacts, commit settings and resource bindings.
  *
  * @module dsh-task-engine/workflows
  */
 
+import { parseCustomFlow } from './custom-flow.ts'
 import type { StageBinding, WorkflowConfig } from './engine.ts'
 
 /** A preset workflow a project can select by id. */
@@ -126,7 +123,7 @@ const MINIMAL: WorkflowConfig = {
  * Derive a preset's capability set from its own structure, so the capability
  * claims can never drift from the actual gate graph.
  */
-function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
+export function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
   const caps: WorkflowCapability[] = []
   const guards = new Set(config.transitions.flatMap(t => t.requires ?? []))
   if (guards.has('verified')) caps.push('verification_gate')
@@ -170,18 +167,18 @@ export const HIGH_RISK_REQUIRED_CAPABILITIES: readonly WorkflowCapability[] = [
 ]
 
 /** Whether a flow's derived capabilities cover every required capability. */
-export function flowSatisfies(flow: string, required: readonly WorkflowCapability[]): boolean {
-  const preset = FLOW_PRESETS[flow]
-  if (preset === undefined) return false
-  return required.every(cap => preset.capabilities.includes(cap))
+export function flowSatisfies(flow: string | WorkflowConfig, required: readonly WorkflowCapability[]): boolean {
+  const config = typeof flow === 'string' ? FLOW_PRESETS[flow]?.config : flow
+  return config !== undefined && required.every(cap => deriveCapabilities(config).includes(cap))
 }
 
-/** Resolve an unknown flow id's failure, surprising no caller with a fallback. */
+/** Unknown ids and invalid custom definitions fail without falling back to a preset. */
 export interface UnknownFlow {
   ok: false
-  code: 'UNKNOWN_FLOW'
+  code: 'UNKNOWN_FLOW' | 'INVALID_FLOW'
   flow: string
   knownFlows: string[]
+  problems?: string[]
 }
 
 /** Resolve a known flow id's complete config. */
@@ -231,7 +228,13 @@ function mergeBindings(base: WorkflowConfig, override?: Record<string, StageBind
  * @param flow - workflow id from the project's `.dsh/eng.json`.
  * @param override - optional whole `stage_bindings` map APPENDED to the preset defaults.
  */
-export function resolveFlow(flow: string, override?: { stage_bindings?: Record<string, StageBinding> }): FlowResolve {
+export function resolveFlow(flow: string, override?: { stage_bindings?: Record<string, StageBinding>; custom_flow?: unknown }): FlowResolve {
+  if (flow.startsWith('custom:')) {
+    const parsed = parseCustomFlow(override?.custom_flow)
+    if (!parsed.ok || parsed.value.id !== flow) return { ok: false, code: 'INVALID_FLOW', flow, knownFlows: Object.keys(FLOW_PRESETS), problems: parsed.ok ? ['flow 与 custom_flow.id 不一致'] : parsed.problems }
+    const custom = parsed.value
+    return { ok: true, config: custom.config, preset: { id: custom.id, label: custom.label, description: '自定义顺序流程', version: custom.version, config: custom.config, capabilities: deriveCapabilities(custom.config) } }
+  }
   const preset = FLOW_PRESETS[flow]
   if (preset === undefined) {
     return { ok: false, code: 'UNKNOWN_FLOW', flow, knownFlows: Object.keys(FLOW_PRESETS) }

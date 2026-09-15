@@ -1,6 +1,6 @@
 ---
 name: code-implement
-description: 开发节点：按方案拆解实施项，每项派 fresh 子 agent 独立实现，经「规格符合 → 代码质量」两阶段审查通过才记完成。仅在任务处于「开发」阶段时使用（以 dev_task status 的 stage 为准）。
+description: 开发节点：按方案拆解实施项，每项派 fresh 子 agent 独立实现，经「规格符合 → 代码质量」两阶段审查通过才记完成。仅在 dev_task status 的当前阶段绑定本技能时使用，阶段名称可以自定义。
 ---
 
 # 代码实现

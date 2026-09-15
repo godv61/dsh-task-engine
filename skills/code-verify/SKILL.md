@@ -1,6 +1,6 @@
 ---
 name: code-verify
-description: 交付验证节点：执行目标测试、编译与契约检查，记录验证结果与证据。仅在任务处于「交付」阶段时使用（以 dev_task status 的 stage 为准）。
+description: 交付验证节点：执行目标测试、编译与契约检查，记录验证结果与证据。仅在 dev_task status 的当前阶段绑定本技能时使用，阶段名称可以自定义。
 ---
 
 # 验证

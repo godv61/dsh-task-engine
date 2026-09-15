@@ -9,7 +9,7 @@ DSH Task Engine 是 DeepSeek Harness 的个人工程流程工作台。先完成�
 | 文档 | 内容 |
 | :--- | :--- |
 | [安装与启用](getting-started.md) | 安装到 Web profile、启用工程会话、确认安装结果。 |
-| [流程配置](configuration.md) | 三个内置流程、阶段绑定、配置文件与任务快照。 |
+| [流程配置与自定义流程](configuration.md) | 三个内置流程、阶段绑定、配置文件与任务快照。 |
 | [技能与规则安装](resource-install.md) | 系统文件选择、安装预览、项目/个人范围和格式要求。 |
 | [常见问题](faq.md) | 预设区别、资源使用、项目目录与能力限制。 |
 | [完整 HTML 手册](manual.html) | 详细操作、工具说明与任务走查；下载后在浏览器中打开。 |

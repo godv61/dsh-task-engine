@@ -7,10 +7,12 @@
  *
  * @module dsh-task-engine/Workbench
  */
+import { t as flowText } from './flow-locale.ts'
 
 import { createElement, useState, type CSSProperties, type ChangeEvent } from 'react'
 import { IconCloseOutline16, IconSettingsOutline16, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
 import { workbenchTheme } from './workbench-theme.ts'
+import { useFlowConfirmation } from './FlowConfirmation.tsx'
 import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
 import type { TaskEngineRemote } from './TaskEngineSection.ts'
@@ -80,11 +82,11 @@ const closeStyle: CSSProperties = {
   color: 'var(--dsw-alias-label-secondary)',
 }
 const TABS = [
-  { id: 'init', label: '项目初始化' },
-  { id: 'flow', label: '流程配置' },
-  { id: 'tasks', label: '任务台账' },
-  { id: 'skills', label: '技能' },
-  { id: 'rules', label: '规则' },
+  { id: 'init', label: flowText("项目初始化") },
+  { id: 'flow', label: flowText("流程配置") },
+  { id: 'tasks', label: flowText("任务台账") },
+  { id: 'skills', label: flowText("技能") },
+  { id: 'rules', label: flowText("规则") },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -95,10 +97,13 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
   useWorkspaces: <S>(selector: (state: { items: readonly WorkspaceItem[] }) => S) => S
   remote: TaskEngineRemote
 }): null | ReturnType<typeof createElement> {
+  const { confirm, dialog } = useFlowConfirmation()
   const open = useStore((s) => s.open)
   const workspaces = useWorkspaces((s) => s.items)
   const [tab, setTab] = useState<TabId>('init')
   const [workspace, setWorkspace] = useState('')
+  const [flowDirty, setFlowDirty] = useState(false)
+  const withLeave = (action: () => void) => { if (flowDirty) confirm(flowText("有未保存的流程修改，放弃后无法恢复。"), flowText("放弃修改"), action); else action() }
 
   if (!open) return null
 
@@ -106,18 +111,19 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
 
   return createElement('div', { style: overlay, className: 'te-workbench' },
     createElement('style', null, workbenchTheme),
+    dialog,
     createElement('div', { style: header },
       createElement('div', { style: headerBrand },
         createElement(IconSettingsOutline16, { size: 18 }),
         createElement('div', { style: headerText },
-          createElement('span', { style: headerTitle }, '工程流程'),
-          createElement('p', { style: headerSub }, '工程化交付工作台 · 需求评审 → 设计 → 开发 → 交付 → 代码审核'),
+          createElement('span', { style: headerTitle }, flowText("工程流程")),
+          createElement('p', { style: headerSub }, flowText("个人工程流程工作台 · 预设与自定义流程 · 技能和规则")),
         ),
       ),
       createElement('button', {
         type: 'button',
-        title: '关闭',
-        onClick: () => { actions.close() },
+        title: flowText("关闭"),
+        onClick: () => { withLeave(() => actions.close()) },
         style: closeStyle,
         onMouseEnter: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'var(--dsw-alias-bg-layer-2)' },
         onMouseLeave: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'transparent' },
@@ -125,24 +131,24 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
         createElement(IconCloseOutline16, { size: 16 })),
     ),
     createElement('div', { style: tabbar },
-      ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => { setTab(t.id) } }, t.label)),
+      ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => { if (t.id !== tab) withLeave(() => setTab(t.id)) } }, t.label)),
       workspaces.length > 0
         ? createElement('select', {
-          style: selectStyle, 'aria-label': '当前工作区',
+          style: selectStyle, 'aria-label': flowText("当前工作区"),
           value: current,
-          onChange: (ev: ChangeEvent<HTMLSelectElement>) => { setWorkspace(ev.target.value) },
+          onChange: (ev: ChangeEvent<HTMLSelectElement>) => { const value = ev.target.value; withLeave(() => setWorkspace(value)) },
         }, ...workspaces.map(w => createElement('option', { key: w.path, value: w.path }, w.title || w.path)))
         : null,
     ),
     createElement('div', { style: body },
       createElement('div', { className: 'te-content', key: current },
-      createElement('p', { style: { ...styles.hint, marginBottom: 20 }, title: current }, '工作区 · ' + current),
+      createElement('p', { style: { ...styles.hint, marginBottom: 20 }, title: current }, flowText("工作区 · ") + current),
       current === ''
-        ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区，再回来配置流程。')
+        ? createElement('p', { style: styles.muted }, flowText("当前没有工作区：请先在侧栏创建一个工作区，再回来配置流程。"))
         : tab === 'init'
           ? createElement(InitPanel, { workspace: current, remote })
           : tab === 'flow'
-            ? createElement(TaskEngineSection, { workspace: current, remote })
+            ? createElement(TaskEngineSection, { workspace: current, remote, onDirtyChange: setFlowDirty })
             : tab === 'tasks'
               ? createElement(TaskLedger, { workspace: current, remote })
               : tab === 'skills'

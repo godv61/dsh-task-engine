@@ -18,6 +18,7 @@ export type ItemStatus = 'todo' | 'doing' | 'done'
 
 /** Guard names the engine resolves natively. Opaque names are config errors. */
 export type GuardName =
+  | 'confirmation'
   | 'requirement_confirmation'
   | 'solution_confirmation'
   | 'todos_done'
@@ -64,6 +65,8 @@ export interface StageBinding {
 }
 
 export interface WorkflowConfig {
+  /** Custom flows require evidence recorded at the current stage. Absent on legacy presets. */
+  evidence_scope?: 'stage'
   stages: string[]
   start_stage: string
   transitions: Transition[]
@@ -156,11 +159,13 @@ export interface TaskState {
   /** Frozen workflow captured at create time; gates re-read this, not the live config. Absent on pre-snapshot task records. */
   flow?: FlowSnapshot
   stage: string
+  /** Human approvals keyed by stage; legacy booleans remain for frozen built-in flows. */
+  stage_confirmations?: Record<string, GuardName[]>
   requirement_confirmed: boolean
   solution_confirmed: boolean
   items: TaskItem[]
-  verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt }
-  review: { outcome: 'pending' | 'pass' | 'blocked' }
+  verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt; stage?: string }
+  review: { outcome: 'pending' | 'pass' | 'blocked'; stage?: string }
   /** Recorded artifacts (artifact id -> field -> value). */
   artifacts: Record<string, Record<string, string>>
   /** Repo-relative paths this task may touch (checked by the file-scope commit gate). */
@@ -187,6 +192,7 @@ export interface Result {
 
 /** The full guard vocabulary. Unknown guard names are configuration errors. */
 const GUARD_NAMES: readonly GuardName[] = [
+  'confirmation',
   'requirement_confirmation',
   'solution_confirmation',
   'todos_done',
@@ -343,7 +349,14 @@ export function todosBlockers(state: TaskState): string[] {
 }
 
 function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConfig): boolean {
+  if (config.evidence_scope === 'stage') {
+    if (['confirmation', 'requirement_confirmation', 'solution_confirmation'].includes(guard)) return state.stage_confirmations?.[state.stage]?.includes(guard) === true
+    if (guard === 'verified' && state.verification.stage !== state.stage) return false
+    if (guard === 'review_passed' && state.review.stage !== state.stage) return false
+  }
   switch (guard) {
+    case 'confirmation':
+      return state.stage_confirmations?.[state.stage]?.includes(guard) === true
     case 'requirement_confirmation':
       return state.requirement_confirmed
     case 'solution_confirmation':
@@ -455,14 +468,15 @@ export interface CommitCheckpoint {
  * stage. `item` allows `T<n>` commits mid-flow and a closing `TASK` at a
  * checkpoint. A stage only permits a commit once its outgoing guards already
  * hold, so the engine cannot be asked to commit before its own state is valid.
+ * @param manualRequested - true only for an explicit custom-flow commit; tool callers must obtain approval.
  */
-export function commitCheckpoint(state: TaskState, config: WorkflowConfig): CommitCheckpoint {
+export function commitCheckpoint(state: TaskState, config: WorkflowConfig, manualRequested = false): CommitCheckpoint {
   const { policy, checkpoints } = config.commit
-  if (policy === 'manual') {
+  if (policy === 'manual' && !(manualRequested && config.evidence_scope === 'stage')) {
     return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
   }
 
-  if (checkpoints.includes(state.stage)) {
+  if (checkpoints.includes(state.stage) || (policy === 'manual' && checkpoints.length === 0)) {
     const ready = config.transitions
       .filter(transition => transition.from === state.stage)
       .every(transition => (transition.requires ?? []).every(g => guardSatisfied(g, state, config)))

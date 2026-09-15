@@ -12,6 +12,7 @@
  */
 
 import { z } from 'zod'
+import { customFlowSchema } from '../custom-flow.ts'
 
 /** Browser-safe shape of a workflow transition (guard names are plain strings). */
 const transitionSchema = z.object({
@@ -45,6 +46,7 @@ const stageBindingSchema = z.object({
 
 /** The complete workflow config. Structural only: semantic checks live in `validateWorkflow`. */
 const configSchema = z.object({
+  evidence_scope: z.literal('stage').optional(),
   stages: z.array(z.string()),
   start_stage: z.string(),
   transitions: z.array(transitionSchema),
@@ -56,6 +58,8 @@ const configSchema = z.object({
 
 /** `read`/`write` result: preset flow, resolved workflow, plus validation state. */
 const viewSchema = z.object({
+  custom_flow: customFlowSchema.optional(),
+  revision: z.string().optional(),
   ok: z.boolean(),
   source: z.enum(['default', 'project', 'invalid']),
   flow: z.string(),
@@ -65,6 +69,8 @@ const viewSchema = z.object({
 
 /** `write` request: workspace directory + the flow selection. */
 const writeRequestSchema = z.object({
+  custom_flow: customFlowSchema.optional(),
+  expected_revision: z.string().optional(),
   path: z.string(),
   flow: z.string(),
   stage_bindings: z.record(z.string(), stageBindingSchema).optional(),
@@ -194,6 +200,7 @@ const taskLedgerViewSchema = z.object({
   tasks: z.array(z.object({
     risk_level: z.string().optional(), updated_at: z.string().optional(),
     verification_passed: z.boolean().optional(), review_outcome: z.string().optional(),
+    flow_id: z.string().optional(), flow_version: z.number().optional(),
     task_id: z.string(),
     title: z.string(),
     stage: z.string(),

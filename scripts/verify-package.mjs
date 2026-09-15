@@ -42,7 +42,7 @@ const listing = execSync(`tar -tzf "${tgzPath}"`, { encoding: 'utf8' })
 check('extract', existsSync(join(pkgDir, 'package.json')))
 
 // 3. files whitelist sanity
-for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', '.p0-test.mjs', 'preset/enable.mjs', 'README.md', '.resource-test.mjs']) {
+for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', '.p0-test.mjs', 'preset/enable.mjs', 'README.md', '.resource-test.mjs', '.custom-flow-test.mjs', 'lib/custom-flow.js']) {
   check(`tarball contains ${required}`, listing.includes(required))
 }
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
@@ -93,6 +93,12 @@ try {
   const out = execSync('node --test --test-reporter=tap .resource-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource import behavior', /# fail 0/u.test(out))
 } catch (error) { check('in-package resource import behavior', false, String(error.stderr ?? error)) }
+
+// Exercise custom workflow loading, tool behavior, Remote codecs and hook from installed files.
+try {
+  const out = execSync('node --test --test-reporter=tap .custom-flow-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  check('in-package custom workflow behavior', /# fail 0/u.test(out))
+} catch (error) { check('in-package custom workflow behavior', false, String(error.stderr ?? error)) }
 
 // 7. CLI parses
 try {

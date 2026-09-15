@@ -267,9 +267,9 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
     const standard = standardWorkflow()
     return { ...standard, problems: [], source: 'default' }
   }
-  let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding> }
+  let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding>; custom_flow?: unknown }
   try {
-    parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding> }
+    parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding>; custom_flow?: unknown }
   } catch (error) {
     const standard = standardWorkflow()
     return {
@@ -278,7 +278,7 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
       source: 'invalid',
     }
   }
-  if (parsed.flow === undefined || parsed.flow.trim() === '') {
+  if (parsed === null || typeof parsed !== 'object' || typeof parsed.flow !== 'string' || parsed.flow.trim() === '') {
     const standard = standardWorkflow()
     return {
       ...standard,
@@ -288,7 +288,7 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
   }
   const resolved = resolveFlow(
     parsed.flow,
-    parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : undefined,
+    parsed,
   )
   if (!resolved.ok) {
     const standard = standardWorkflow()
@@ -296,7 +296,7 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
       flow: resolved.flow,
       version: 0,
       config: standard.config,
-      problems: [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
+      problems: resolved.problems ?? [`unknown flow "${resolved.flow}" (known: ${resolved.knownFlows.join(', ')})`],
       source: 'invalid',
     }
   }
@@ -566,7 +566,7 @@ function requireItem(state: TaskState, id: string | undefined): TaskItem {
 }
 
 /** Confirmation gates satisfied by a human approval, never by the task record. */
-const CONFIRMATION_GUARDS: readonly GuardName[] = ['requirement_confirmation', 'solution_confirmation']
+const CONFIRMATION_GUARDS: readonly GuardName[] = ['confirmation', 'requirement_confirmation', 'solution_confirmation']
 
 /** Narrow runtime view of the shared `approval` service (read optionally). */
 interface ApprovalAsk {
@@ -581,7 +581,7 @@ interface ApprovalAsk {
 
 /** Human-readable label for a confirmation gate, used in the approval reason. */
 function confirmationLabel(guard: GuardName): string {
-  return guard === 'requirement_confirmation' ? '需求' : '方案'
+  return guard === 'confirmation' ? '阶段' : guard === 'requirement_confirmation' ? '需求' : '方案'
 }
 
 /**
@@ -607,13 +607,14 @@ export async function approveAdvance(
     agent: exec.agent,
     toolName: 'dev_task',
     callId: exec.callId,
-    reason: `${labels}确认：请确认「${state.title}」的${labels}已达成，批准后流转到下一阶段。`,
+    reason: `${labels}确认：请确认「${state.title}」在「${state.stage}」阶段的${labels}已达成，批准后流转到下一阶段。`,
     signal: exec.signal,
   })
   if (outcome !== 'allowed-once') {
     const verb = outcome === 'rejected' ? '被驳回' : outcome === 'cancelled' ? '已取消' : '无人批准'
     return { ok: false, errors: [`${labels}确认${verb}，流转被拒绝`] }
   }
+  state.stage_confirmations = { ...state.stage_confirmations, [state.stage]: [...new Set([...(state.stage_confirmations?.[state.stage] ?? []), ...confirmations])] }
   if (confirmations.includes('requirement_confirmation')) state.requirement_confirmed = true
   if (confirmations.includes('solution_confirmation')) state.solution_confirmed = true
   return assertAdvance(state, target, workflow)
@@ -822,7 +823,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
         const risk = a.risk_level ?? 'standard'
-        if (risk === 'high_risk' && !flowSatisfies(resolved.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+        if (risk === 'high_risk' && !flowSatisfies(resolved.config, HIGH_RISK_REQUIRED_CAPABILITIES)) {
           throw new Error(
             `high_risk task cannot run on flow "${resolved.flow}" — it lacks the required capabilities ` +
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
@@ -866,12 +867,15 @@ export function registerDevTask(ctx: Context): void {
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
           risk_level: state.risk_level,
           work_size: state.work_size,
+          stage_confirmations: state.stage_confirmations ?? {},
           requirement_confirmed: state.requirement_confirmed,
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           verification: state.verification,
           review: state.review,
           artifacts: state.artifacts,
+          required_artifacts: workflow.artifacts.filter(a => a.stage === state.stage),
+          stage_requirements: workflow.transitions.filter(t => t.from === state.stage).map(t => ({ target: t.to, requires: t.requires ?? [], unmet: unmetGuards(state, t.to, workflow) })),
           files: state.files,
           legal_next: legalTargets(state.stage, workflow),
           commit: commitCheckpoint(state, workflow),
@@ -887,7 +891,8 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'commit') {
-        const checkpoint = commitCheckpoint(state, workflow)
+        const manual = workflow.commit.policy === 'manual' && workflow.evidence_scope === 'stage'
+        const checkpoint = commitCheckpoint(state, workflow, manual)
         if (!checkpoint.allowed) throw new Error(checkpoint.reason ?? 'no commit is due')
         if (workflow.commit.file_scope) {
           if (!a.files || a.files.length === 0) {
@@ -905,6 +910,10 @@ export function registerDevTask(ctx: Context): void {
         const committedId = taskIdFromMessage(a.message ?? '', workflow)
         if (committedId !== undefined && committedId !== state.id) {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
+        }
+        if (manual) {
+          const approval = ctx.get('approval') as ApprovalAsk | undefined
+          if (!approval || await approval.request({ agent: exec.agent, toolName: 'dev_task', callId: exec.callId, signal: exec.signal, reason: `手动提交：请确认任务 ${state.id} 在「${state.stage}」阶段提交「${a.message ?? ''}」，文件：${(a.files ?? []).join('、') || '未列出'}` }) !== 'allowed-once') throw new Error('手动提交未获人工批准')
         }
         if (a.hash) state.commits.push({ label: checkpoint.label!, hash: a.hash })
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
@@ -996,7 +1005,7 @@ export function registerDevTask(ctx: Context): void {
                 'a task without a frozen snapshot cannot prove its flow carries the high-risk capabilities',
               )
             }
-            if (!flowSatisfies(state.flow.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+            if (!flowSatisfies(workflow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
               throw new Error(
                 `cannot raise risk to high_risk on flow "${state.flow.flow}" — it lacks the required capabilities ` +
                 `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
@@ -1043,15 +1052,16 @@ export function registerDevTask(ctx: Context): void {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted,
               evidence: a.evidence ?? [],
               receipt,
+              stage: state.stage,
             }
           } else {
-            state.verification = { passed: a.passed === true, evidence: a.evidence ?? [] }
+            state.verification = { passed: a.passed === true, evidence: a.evidence ?? [], stage: state.stage }
           }
           break
         }
         case 'review':
           if (a.outcome !== 'pass' && a.outcome !== 'blocked') throw new Error('review requires outcome: pass|blocked')
-          state.review.outcome = a.outcome
+          state.review = { outcome: a.outcome, stage: state.stage }
           break
         default:
           throw new Error(`unknown operation ${a.operation}`)

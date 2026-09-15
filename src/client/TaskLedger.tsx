@@ -135,6 +135,7 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, task.title),
               createElement('span', { style: badge }, task.stage),
               createElement('span', { style: badge }, task.branch),
+              task.flow_id ? createElement('span', { style: badge }, `${task.flow_id} · v${task.flow_version}`) : null,
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
               createElement('span', { className: 'te-badge' }, task.verification_passed ? '验证通过' : '待验证'),
               createElement('span', { className: 'te-badge' }, `审核：${task.review_outcome ?? 'pending'}`),

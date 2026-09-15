@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: 代码审核节点：评审变更，产出结论与问题清单并落评审记录。仅在任务处于「代码审核」阶段时使用（以 dev_task status 的 stage 为准）。
+description: 代码审核节点：评审变更，产出结论与问题清单并落评审记录。仅在 dev_task status 的当前阶段绑定本技能时使用，阶段名称可以自定义。
 ---
 
 # 代码审核

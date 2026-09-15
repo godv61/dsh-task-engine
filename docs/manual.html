@@ -82,7 +82,7 @@
         </div>
         <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
         <div class="callout warn">
-          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
+          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。「阶段确认」「需求确认」「方案确认」由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
         </div>
       </section>
 
@@ -139,7 +139,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="flows">
         <h2>4. 三套流程预设</h2>
-        <p>阶段图、守卫、提交规则都随预设固化好，团队只选一套，不改流程图。</p>
+        <p>三套预设开箱即用；需要调整阶段、条件或提交方式时，复制成自定义流程。</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>预设</th><th>阶段顺序</th><th>适用</th><th>守卫强度</th></tr></thead>
@@ -152,7 +152,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
         </div>
         <div class="callout warn">
           <p>预设之外，单个任务还有两个模型自动判断的字段：<code>work_size</code>（tiny / standard / complex，决定拆多细）和 <code>risk_level</code>（standard / high_risk，决定验证强度）。它们不是流程档位，是单个任务的规模与风险标签。</p>
-          <p><strong>高风险任务只能在 <code>standard</code> 流程建</strong>——引擎要求高风险任务具备「验证门 + 文件范围 + 评审门」，<code>agile</code>/<code>minimal</code> 没有验证门和评审门，建 <code>high_risk</code> 任务会被直接拒绝。要跑高风险就选标准研发，或把风险降到 standard。</p>
+          <p><strong>高风险任务可使用 <code>standard</code> 或满足条件的自定义流程</strong>——引擎要求高风险任务具备「验证门 + 文件范围 + 评审门」，<code>agile</code>/<code>minimal</code> 没有验证门和评审门，建 <code>high_risk</code> 任务会被直接拒绝。要跑高风险就选标准研发，或把风险降到 standard。</p>
           <p>任务创建时会把所选流程<b>固化成快照</b>——之后在途任务一直按创建时的门禁走，中途改 <code>.dsh/eng.json</code> 只影响新任务，不影响已建任务。</p>
         </div>
       </section>
@@ -193,13 +193,16 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
       </section>
 
       <section id="configure">
-        <p>当前版本支持三个内置流程及追加阶段资源。可视化自定义流程处于规划阶段，尚未发布。</p>
+        <p>支持三个内置预设和可视化自定义顺序流程。可以复制预设或从空白创建，在左侧增删、重命名和排序阶段，右侧设置退出条件、产物与资源，下方预览并保存。</p>
         <h2>7. 配置流程与挂载</h2>
         <p>侧边栏点「工程流程」打开工作台，五个标签页：<strong>项目初始化 / 流程配置 / 任务 / 技能 skill / 规则 rule</strong>，默认落在「项目初始化」（详见第 8 节）。日常配流程只需在「流程配置」页做两件事：</p>
         <ol>
-          <li><strong>选流程预设</strong>：standard / agile / minimal 点一下即切。</li>
-          <li><strong>给节点挂 skill / rule</strong>：先选一个节点（如「开发」），再勾选它用什么 skill、守哪条 rule，保存。</li>
+          <li><strong>选预设或自定义</strong>：复制当前预设后编辑；第一个阶段为起点，最后一个为完成，支持 2–30 个阶段的顺序流程。</li>
+          <li><strong>配置阶段</strong>：设置人工确认、实施项完成、验证、审核或必填产物，勾选技能与规则。自定义流程允许移除默认绑定；保存会检查资源是否存在。</li>
+          <li><strong>配置提交并复用</strong>：选择提交阶段、按任务/实施项/手动策略、消息格式和文件范围；通过 JSON 导入导出复用。</li>
         </ol>
+        <p>自定义流程的确认、验证、审核按阶段记录，前一阶段通过不能满足后一阶段。保存保留 verify_command 等其他项目字段；发现并发修改会拒绝覆盖。进行中的任务保留创建时的流程快照。第一版不支持分支、循环或并行。</p>
+        <p>导入文件为 schema 1 的流程定义，最多 256 KB，不包含技能和规则正文。手动提交需要人工批准，钩子仍检查退出条件、消息和文件范围；更新插件后需在项目执行 install_hook 更新旧钩子。详细步骤及示例见 <a href="configuration.md">流程配置指南</a>。</p>
         <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源只读。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
         <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
         <p>资源删除前会显示名称与实际目标路径，确认后永久删除；可点击「保留」取消。任务台账支持搜索、风险与阶段筛选，并显示验证、审核和更新时间。流程配置读取与保存失败时显示错误，损坏任务记录不会被静默视为没有任务。</p>
@@ -380,7 +383,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>Remote 如何限制工作区？</summary><div>有 <code>workspaceRegistry.resolveByPath</code> 的 Harness 使用主机注册目录；未注册路径拒绝。旧主机保留绝对路径和系统目录检查，并提供严格注册 API。工作区注册不等于当前会话授权；共享多用户部署仍需要调用上下文和主机权限边界。</div></details>
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">版本 0.23.0 · 系统文件选择与安装预览 · 工作台交互改进 · 最后更新：2026-09-15</p>
+        <p class="stamp">自定义流程 · 阶段编辑与配置导入导出 · 保留旧任务快照 · 最后更新：2026-09-15</p>
       </section>
     </main>
   </div>

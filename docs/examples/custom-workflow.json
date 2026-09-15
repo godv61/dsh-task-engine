@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "id": "custom:fix-and-accept",
+  "label": "修复与验收",
+  "version": 1,
+  "config": {
+    "evidence_scope": "stage",
+    "stages": [
+      "修复",
+      "验证",
+      "验收",
+      "完成"
+    ],
+    "start_stage": "修复",
+    "transitions": [
+      {
+        "from": "修复",
+        "to": "验证",
+        "requires": [
+          "todos_done"
+        ]
+      },
+      {
+        "from": "验证",
+        "to": "验收",
+        "requires": [
+          "verified"
+        ]
+      },
+      {
+        "from": "验收",
+        "to": "完成",
+        "requires": [
+          "confirmation",
+          "review_passed"
+        ]
+      }
+    ],
+    "artifacts": [],
+    "commit": {
+      "policy": "task",
+      "message_pattern": "^TASK-([A-Z0-9-]+): .+",
+      "message_hint": "TASK-任务ID: 结果说明",
+      "checkpoints": [
+        "验收"
+      ],
+      "file_scope": true
+    },
+    "high_risk_requires_verification": true,
+    "stage_bindings": {
+      "修复": {
+        "skills": [
+          "code-implement"
+        ],
+        "rules": [
+          "coding-conventions"
+        ]
+      },
+      "验证": {
+        "skills": [
+          "code-verify"
+        ]
+      },
+      "验收": {
+        "skills": [
+          "code-review",
+          "code-commit"
+        ]
+      }
+    }
+  }
+}
