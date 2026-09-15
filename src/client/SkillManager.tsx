@@ -72,6 +72,13 @@ function isRootLevel(path: string): boolean {
   return /^[A-Za-z]:[\\/]?$/u.test(path) || path === '/'
 }
 
+/** One Miller column: a scrollable list of directory rows. */
+const paneStyle: CSSProperties = {
+  flex: '1 1 0', minWidth: 0, overflowY: 'auto',
+  display: 'flex', flexDirection: 'column', gap: 2,
+  border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: 4,
+}
+
 export function SkillManager({ workspace, remote }: {
   workspace: string
   remote: TaskEngineRemote
@@ -95,26 +102,33 @@ export function SkillManager({ workspace, remote }: {
   const [installDir, setInstallDir] = useState('')
   const [installLevel, setInstallLevel] = useState<'project' | 'user'>('project')
 
-  // Directory picker (host lists each level; the web never sees absolute paths).
+  // Miller directory picker (mirrors the shell's "add workspace" dialog):
+  // `current` is the left column; selecting a row opens the right column on it
+  // and keeps the parent visible, so stepping in and back out reads as panes.
   const [browsing, setBrowsing] = useState(false)
-  const [browsePath, setBrowsePath] = useState('')
-  const [browseDraft, setBrowseDraft] = useState('')
+  const [browseCurrent, setBrowseCurrent] = useState('')
   const [browseEntries, setBrowseEntries] = useState<{ name: string; hasSkill: boolean }[]>([])
+  const [browseSelected, setBrowseSelected] = useState<{ name: string; path: string } | null>(null)
+  const [browseChildEntries, setBrowseChildEntries] = useState<{ name: string; hasSkill: boolean }[]>([])
+  const [browseChildHasSkill, setBrowseChildHasSkill] = useState(false)
   const [browseRoots, setBrowseRoots] = useState<string[]>([])
   const [browseHasSkill, setBrowseHasSkill] = useState(false)
+  const [browseDraft, setBrowseDraft] = useState('')
   const [browseError, setBrowseError] = useState('')
 
-  const refreshBrowse = (path: string): void => {
-    setBrowsePath(path)
-    setBrowseDraft(path)
+  /** List one directory into the left column, clearing the right column. */
+  const loadLevel = (path: string): void => {
     setBrowseError('')
+    setBrowseSelected(null)
+    setBrowseChildEntries([])
+    setBrowseChildHasSkill(false)
     void remote.listDirs({ path }).then((r) => {
       if (r.ok && r.value.ok) {
+        setBrowseCurrent(r.value.path)
+        setBrowseDraft(r.value.path)
         setBrowseEntries(r.value.entries)
         setBrowseRoots(r.value.roots)
         setBrowseHasSkill(r.value.currentHasSkill)
-        setBrowsePath(r.value.path)
-        setBrowseDraft(r.value.path)
       } else {
         setBrowseEntries([])
         setBrowseError(describeError(r.ok ? r.value.error : r.error))
@@ -125,17 +139,57 @@ export function SkillManager({ workspace, remote }: {
     })
   }
 
+  /** Load one directory's children into the right column. */
+  const loadChild = (path: string): void => {
+    setBrowseChildEntries([])
+    setBrowseChildHasSkill(false)
+    void remote.listDirs({ path }).then((r) => {
+      if (r.ok && r.value.ok) {
+        setBrowseChildEntries(r.value.entries)
+        setBrowseChildHasSkill(r.value.currentHasSkill)
+      } else {
+        setBrowseChildEntries([])
+      }
+    }, () => { setBrowseChildEntries([]) })
+  }
+
+  /** Select a left-column row: highlight it and open the right column on it. */
+  const selectRow = (entry: { name: string; hasSkill: boolean }): void => {
+    const next = joinPath(browseCurrent, entry.name)
+    setBrowseSelected({ name: entry.name, path: next })
+    loadChild(next)
+  }
+
+  /** Select a right-column row: the panes advance one level. */
+  const selectChildRow = (entry: { name: string; hasSkill: boolean }): void => {
+    if (browseSelected === null) return
+    const base = browseSelected.path
+    const baseEntries = browseChildEntries
+    const baseHasSkill = browseChildHasSkill
+    setBrowseCurrent(base)
+    setBrowseDraft(base)
+    setBrowseEntries(baseEntries)
+    setBrowseHasSkill(baseHasSkill)
+    const next = joinPath(base, entry.name)
+    setBrowseSelected({ name: entry.name, path: next })
+    loadChild(next)
+  }
+
   const openBrowse = (): void => {
     setBrowsing(true)
     setBrowseError('')
-    refreshBrowse('')
+    loadLevel('')
   }
 
   const browseUp = (): void => {
-    const p = browsePath.replace(/[\\/]+$/u, '')
+    const p = browseCurrent.replace(/[\\/]+$/u, '')
     const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
-    refreshBrowse(idx <= 2 ? '' : p.slice(0, idx))
+    loadLevel(idx <= 2 ? '' : p.slice(0, idx))
   }
+
+  /** What the confirm button picks: the highlighted row when one is selected. */
+  const pickedPath = browseSelected !== null ? browseSelected.path : browseCurrent
+  const pickedHasSkill = browseSelected !== null ? browseChildHasSkill : browseHasSkill
 
   const refresh = useCallback(() => {
     void remote.listSkills(workspace).then((r) => {
@@ -356,6 +410,26 @@ export function SkillManager({ workspace, remote }: {
       msg !== '' ? createElement('p', { style: styles.status }, msg) : null,
     )
 
+  /** One Miller row; \`active\` marks the row selected in this column. */
+  const renderDirRow = (entry: { name: string; hasSkill: boolean }, active: boolean, onClick: () => void): ReturnType<typeof createElement> =>
+    createElement('button', {
+      key: entry.name,
+      type: 'button',
+      onClick,
+      title: entry.name,
+      style: {
+        display: 'flex', alignItems: 'center', gap: 6, width: '100%',
+        border: 'none', cursor: 'pointer', textAlign: 'left',
+        padding: '5px 8px', borderRadius: 6, fontSize: 13,
+        background: active ? 'var(--dsw-alias-bg-layer-2)' : 'transparent',
+        color: 'var(--dsw-alias-label-primary)',
+        fontWeight: active ? 600 : 400,
+      },
+    },
+      createElement('span', { style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, ' ' + entry.name),
+      entry.hasSkill ? createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-state-success-primary)' } }, 'SKILL.md') : null,
+    )
+
   const renderBrowseModal = (): ReturnType<typeof createElement> =>
     createElement(ResourceModal, {
       title: '选择 skill 目录',
@@ -365,13 +439,13 @@ export function SkillManager({ workspace, remote }: {
         createElement('span', {
           style: {
             ...styles.sourceText, flex: '1 1 auto',
-            color: browseHasSkill ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-tertiary)',
+            color: pickedHasSkill ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-label-tertiary)',
           },
-        }, browseHasSkill ? '✓ 当前目录含 SKILL.md，可直接安装' : '当前目录不含 SKILL.md——进入含 SKILL.md 的子目录再选'),
+        }, pickedHasSkill ? '✓ 当前目录含 SKILL.md，可直接安装' : '当前目录不含 SKILL.md——进入含 SKILL.md 的子目录再选'),
         createElement(Button, {
           variant: 'primary', size: 'sm',
-          disabled: browsePath.trim() === '',
-          onClick: () => { setInstallDir(browsePath); setBrowsing(false) },
+          disabled: pickedPath.trim() === '',
+          onClick: () => { setInstallDir(pickedPath); setBrowsing(false) },
         }, '选此目录'),
         createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => { setBrowsing(false) } }, '取消'),
       ),
@@ -382,28 +456,28 @@ export function SkillManager({ workspace, remote }: {
           placeholder: '输入绝对路径后回车前往',
           value: browseDraft,
           onChange: (ev: ChangeEvent<HTMLInputElement>) => { setBrowseDraft(ev.target.value) },
-          onKeyDown: (ev: { key: string }) => { if (ev.key === 'Enter') refreshBrowse(browseDraft.trim()) },
+          onKeyDown: (ev: { key: string }) => { if (ev.key === 'Enter') loadLevel(browseDraft.trim()) },
         }),
-        createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => { refreshBrowse(browseDraft.trim()) } }, '前往'),
-        createElement(Button, { variant: 'ghost', size: 'sm', disabled: isRootLevel(browsePath), onClick: browseUp, title: '进入上级目录' }, '↑ 上级'),
+        createElement(Button, { variant: 'ghost', size: 'sm', onClick: () => { loadLevel(browseDraft.trim()) } }, '前往'),
+        createElement(Button, { variant: 'ghost', size: 'sm', disabled: isRootLevel(browseCurrent), onClick: browseUp, title: '进入上级目录' }, '↑ 上级'),
       ),
       browseRoots.length > 1
         ? createElement('div', { style: { ...styles.chips, marginBottom: 6 } },
           ...browseRoots.map(root =>
-            createElement(Button, { key: root, variant: 'ghost', size: 'sm', onClick: () => { refreshBrowse(root) } }, root.replace(/[\\/]+$/u, ''))),
+            createElement(Button, { key: root, variant: 'ghost', size: 'sm', onClick: () => { loadLevel(root) } }, root.replace(/[\\/]+$/u, ''))),
         )
         : null,
       // Breadcrumb: the current level with every ancestor clickable — the
       // visible answer to "where am I / how do I go up".
       createElement('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2, marginBottom: 6, minHeight: 22 } },
-        browsePath === ''
+        browseCurrent === ''
           ? createElement('span', { style: styles.sourceText }, '主目录')
           : createElement('span', { style: { display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 } },
-            ...breadcrumbSegments(browsePath).map(seg =>
+            ...breadcrumbSegments(browseCurrent).map(seg =>
               createElement('button', {
                 key: seg.path,
                 type: 'button',
-                onClick: () => { refreshBrowse(seg.path) },
+                onClick: () => { loadLevel(seg.path) },
                 title: seg.path,
                 style: { border: 'none', background: 'transparent', cursor: 'pointer', padding: '1px 3px', borderRadius: 4, fontSize: 12, color: 'var(--dsw-alias-label-secondary)' },
               }, seg.label + ' ›'),
@@ -412,21 +486,21 @@ export function SkillManager({ workspace, remote }: {
       browseError !== ''
         ? createElement('p', { style: { ...styles.status, color: 'var(--dsw-alias-state-error-primary)' } }, browseError)
         : null,
-      createElement('div', { style: { maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: 4 } },
+      createElement('div', { style: { display: 'flex', gap: 8, height: 260 } },
+        createElement('div', { style: paneStyle },
         browseEntries.length === 0 && browseError === ''
           ? createElement('p', { style: styles.sourceText }, '（此目录下没有子目录）')
           : null,
-        ...browseEntries.map(entry =>
-          createElement('button', {
-            key: entry.name,
-            type: 'button',
-            onClick: () => { refreshBrowse(joinPath(browsePath, entry.name)) },
-            style: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left', padding: '5px 8px', borderRadius: 6, color: 'var(--dsw-alias-label-primary)', fontSize: 13 },
-          },
-            createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)' } }, '📁 ' + entry.name),
-            entry.hasSkill ? createElement('span', { style: { fontSize: 11, color: 'var(--dsw-alias-state-success-primary)' } }, '· 含 SKILL.md ✓') : null,
-          ),
+        ...browseEntries.map(entry => renderDirRow(entry, browseSelected?.name === entry.name, () => { selectRow(entry) })),
         ),
+        browseSelected !== null
+          ? createElement('div', { style: paneStyle },
+            browseChildEntries.length === 0
+              ? createElement('p', { style: styles.sourceText }, '（没有子目录）')
+              : null,
+            ...browseChildEntries.map(entry => renderDirRow(entry, false, () => { selectChildRow(entry) })),
+          )
+          : null,
       ),
     )
 
