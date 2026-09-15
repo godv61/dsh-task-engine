@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="400" viewBox="0 0 1280 400" role="img" aria-labelledby="title description">
+  <title id="title">DSH Task Engine · 个人工程流程工作台</title>
+  <desc id="description">标准流程示意：需求评审、设计、开发、交付、代码审核、完成。流程、技能与规则组成个人开发工作台。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#111b2c"/><stop offset="1" stop-color="#172c35"/></linearGradient>
+    <linearGradient id="accent"><stop stop-color="#86efac"/><stop offset="1" stop-color="#5eead4"/></linearGradient>
+  </defs>
+  <rect width="1280" height="400" rx="24" fill="url(#bg)"/>
+  <path d="M1000 0L1280 280M1120 0L1280 160M920 0L1280 360" stroke="#345454" stroke-opacity=".2" stroke-width="1"/>
+  <g font-family="Segoe UI, PingFang SC, Microsoft YaHei, sans-serif">
+    <rect x="56" y="43" width="30" height="30" rx="8" fill="url(#accent)"/>
+    <path d="M64 58h14m-6-6 6 6-6 6" fill="none" stroke="#14262c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="101" y="65" fill="#d2e8e3" font-size="18" font-weight="600" letter-spacing="2">DSH TASK ENGINE</text>
+    <text x="56" y="141" fill="#f4f7f7" font-size="46" font-weight="650">让每次开发，都有清晰的下一步。</text>
+    <text x="58" y="184" fill="#a6b9bd" font-size="22">DeepSeek Harness 的个人工程流程工作台</text>
+    <text x="58" y="228" fill="#80dcb3" font-size="15" letter-spacing="1">流程预设  /  阶段技能  /  项目规则  /  交付记录</text>
+    <g fill="#1c3440" stroke="#35505a">
+      <rect x="56" y="264" width="168" height="76" rx="13"/><rect x="252" y="264" width="168" height="76" rx="13"/>
+      <rect x="448" y="264" width="168" height="76" rx="13"/><rect x="644" y="264" width="168" height="76" rx="13"/>
+      <rect x="840" y="264" width="168" height="76" rx="13"/><rect x="1036" y="264" width="168" height="76" rx="13"/>
+    </g>
+    <g fill="#e4efee" font-size="21" text-anchor="middle">
+      <text x="140" y="310">需求评审</text><text x="336" y="310">设计</text><text x="532" y="310">开发</text>
+      <text x="728" y="310">交付</text><text x="924" y="310">代码审核</text><text x="1120" y="310" fill="#86efac">完成</text>
+    </g>
+    <g fill="#729a9b" font-size="22" text-anchor="middle"><text x="238" y="310">→</text><text x="434" y="310">→</text><text x="630" y="310">→</text><text x="826" y="310">→</text><text x="1022" y="310">→</text></g>
+    <text x="1204" y="372" fill="#839b9f" font-size="13" text-anchor="end">STANDARD WORKFLOW · 标准流程示意</text>
+  </g>
+</svg>

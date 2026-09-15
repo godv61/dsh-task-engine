@@ -35,7 +35,7 @@
   <header class="hero">
     <p class="eyebrow">DSH · ENGINEERING DELIVERY ENGINE</p>
     <h1>工程化交付引擎 使用手册</h1>
-    <p class="lead">这是一套装在 DeepSeek Harness 里的工程流程约束。它把「需求评审 → 设计 → 开发 → 交付 → 代码审核」做成硬门槛：阶段不能跳、关键节点必须人来拍板、验证和提交都被机械检查。团队只选一套流程，再给每个节点挂上合适的 skill 和 rule。</p>
+    <p class="lead">这是一套装在 DeepSeek Harness 里的工程流程约束。它把「需求评审 → 设计 → 开发 → 交付 → 代码审核」做成硬门槛：阶段不能跳、关键节点必须人来拍板、验证和提交都被机械检查。在个人工作台里选一套流程，再给每个节点挂上合适的技能和规则。</p>
     <div class="badges">
       <span class="badge">选流程预设即可</span>
       <span class="badge">standard / agile / minimal</span>
@@ -48,6 +48,7 @@
   <div class="layout">
     <nav aria-label="目录">
       <strong>目录</strong>
+      <a href="https://github.com/godv61/dsh-task-engine#readme">项目首页 ↗</a>
       <a href="#overview">1. 工作原理</a>
       <a href="#install">2. 安装与启用</a>
       <a href="#structure">3. 文件与目录</a>
@@ -192,6 +193,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
       </section>
 
       <section id="configure">
+        <p>当前版本支持三个内置流程及追加阶段资源。可视化自定义流程处于规划阶段，尚未发布。</p>
         <h2>7. 配置流程与挂载</h2>
         <p>侧边栏点「工程流程」打开工作台，五个标签页：<strong>项目初始化 / 流程配置 / 任务 / 技能 skill / 规则 rule</strong>，默认落在「项目初始化」（详见第 8 节）。日常配流程只需在「流程配置」页做两件事：</p>
         <ol>
