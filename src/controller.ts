@@ -729,11 +729,30 @@ export default class TaskEngineController extends TypertRemoteService {
    */
   @Remote
   async installSkill(request: InstallSkillRequest): Promise<WriteResourceResult> {
-    const sourceDir = request.sourceDir.trim()
+    let sourceDir = request.sourceDir.trim()
     if (sourceDir === '' || !isAbsolute(sourceDir)) {
       return { ok: false, name: '', path: '', error: '源目录必须是绝对路径' }
     }
-    const skillFile = join(sourceDir, 'SKILL.md')
+    let skillFile = join(sourceDir, 'SKILL.md')
+    if (!existsSync(skillFile)) {
+      // Container-directory convenience: when the given path holds exactly one
+      // direct child that itself carries a SKILL.md, treat that child as the
+      // skill root (users often point at the outer folder).
+      const candidates: string[] = []
+      for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+        if (entry.isDirectory() && existsSync(join(sourceDir, entry.name, 'SKILL.md'))) {
+          candidates.push(join(sourceDir, entry.name))
+        }
+      }
+      if (candidates.length === 1) {
+        sourceDir = candidates[0]!
+        skillFile = join(sourceDir, 'SKILL.md')
+      } else if (candidates.length > 1) {
+        return { ok: false, name: '', path: '', error: `所选目录没有 SKILL.md，且含多个带 SKILL.md 的子目录——请直接填 skill 根目录` }
+      } else {
+        return { ok: false, name: '', path: '', error: `所选目录不是 skill：缺少 ${skillFile}` }
+      }
+    }
     if (!existsSync(skillFile)) {
       return { ok: false, name: '', path: '', error: `所选目录不是 skill：缺少 ${skillFile}` }
     }

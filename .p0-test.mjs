@@ -723,4 +723,13 @@ function memProbe(files) {
   assert(client.includes('sourceDir'), 'client schema carries the source directory')
 }
 
+// ── 37. 0.22.7: installSkill auto-locates a single nested skill root ───────
+{
+  const controller = readFileSync('./lib/controller.js', 'utf8')
+  assert(controller.includes('多个带 SKILL.md 的子目录') || controller.includes("candidates.length > 1"),
+    'installSkill rejects an ambiguous container directory')
+  assert(controller.includes('缺少') && controller.includes('candidates[0]'),
+    'installSkill auto-locates the single nested skill root')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)
