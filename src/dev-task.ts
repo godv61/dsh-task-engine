@@ -45,6 +45,7 @@ import {
   resolveFlow,
 } from './workflows.ts'
 import { hashConfig, hashText } from './snapshot.ts'
+import { loadedSkills, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
   detectType,
@@ -177,6 +178,8 @@ interface ShellRunRequest {
   command: string
   workdir?: string
   timeoutMs?: number
+  signal?: AbortSignal | undefined
+  sandboxPolicy?: unknown
 }
 interface ShellRunSpec {
   command: string
@@ -189,6 +192,7 @@ interface ShellRunOutcome {
   aborted: boolean
   stdout?: { text?: string }
   stderr?: { text?: string }
+  sandbox?: VerificationReceipt['sandbox']
 }
 interface ShellRunner {
   resolve(request: ShellRunRequest): ShellRunSpec
@@ -200,15 +204,17 @@ interface ShellRunner {
  * objective {@link VerificationReceipt}; `passed` derives from the exit code,
  * never from the model's claim.
  */
-async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined): Promise<VerificationReceipt> {
+async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined, exec: ToolRunContext): Promise<VerificationReceipt> {
   const shell = ctx.get('shell') as ShellRunner | undefined
   if (shell === undefined) {
     throw new Error('verify 带 command 需要 host 提供 shell 服务（用于跑真实验证命令），但当前未挂载')
   }
   const started_at = new Date().toISOString()
-  const spec = shell.resolve(cwd !== undefined
-    ? { command, workdir: cwd, timeoutMs: VERIFY_TIMEOUT_MS }
-    : { command, timeoutMs: VERIFY_TIMEOUT_MS })
+  const policyService = ctx.get('sandboxPolicy') as { resolve(request: { session?: unknown }): unknown } | undefined
+  const spec = shell.resolve({ command, ...(cwd !== undefined ? { workdir: cwd } : {}),
+    timeoutMs: VERIFY_TIMEOUT_MS, signal: exec.signal,
+    ...(policyService ? { sandboxPolicy: policyService.resolve({ session: exec.agent?.session }) } : {}),
+  })
   const outcome = await shell.run(spec)
   return {
     command,
@@ -220,6 +226,7 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
     ...(cwd !== undefined ? { root: cwd } : {}),
     stdout: outcome.stdout?.text ?? '',
     stderr: outcome.stderr?.text ?? '',
+    ...(outcome.sandbox ? { sandbox: outcome.sandbox } : {}),
   }
 }
 
@@ -478,13 +485,13 @@ async function resolveRules(names: string[], fs: Fs, cwd?: string): Promise<{ na
       result.push({ name: rawName, content: bundled })
       continue
     }
-    const user = readAbsRule(join(dshHome(), 'rules', `${name}.md`))
-    if (user !== undefined) {
-      result.push({ name: rawName, content: user })
+    const project = await readText(fs, `.dsh/rules/${name}.md`, cwd)
+    if (project !== undefined) {
+      result.push({ name: rawName, content: project })
       continue
     }
-    const project = await readText(fs, `.dsh/rules/${name}.md`, cwd)
-    if (project !== undefined) result.push({ name: rawName, content: project })
+    const user = readAbsRule(join(dshHome(), 'rules', `${name}.md`))
+    if (user !== undefined) result.push({ name: rawName, content: user })
   }
   return result
 }
@@ -544,15 +551,56 @@ interface OpArgs {
   sandbox_permissions?: 'workspace-write' | 'danger-full-access'
   justification?: string
   phase?: 'inspect' | 'propose' | 'apply'
+  skill_name?: string
 }
 
 /** Normalize the tool's `items` argument into complete TaskItem records. */
-function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[] | undefined): TaskItem[] {
-  return (items ?? []).map(item => ({
-    id: String(item.id ?? ''),
-    title: String(item.title ?? ''),
-    status: item.status ?? 'todo',
-  }))
+function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[] | undefined, previous: TaskItem[] = []): TaskItem[] {
+  const ids = new Set<string>()
+  const result = (items ?? []).map(item => {
+    const id = String(item.id ?? '').trim()
+    const title = String(item.title ?? '').trim()
+    if (!id || !title || ids.has(id)) throw new Error('items require non-empty unique id and title')
+    ids.add(id)
+    const old = previous.find(entry => entry.id === id)
+    const status = item.status ?? old?.status ?? 'todo'
+    const unchanged = old?.title === title && !(old.status === 'done' && status !== 'done')
+    return { ...(unchanged ? old : {}), id, title, status }
+  })
+  if (result.filter(item => item.status === 'doing').length > 1) throw new Error('only one implementation item may be doing')
+  return result
+}
+
+/** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
+async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise<string> {
+  const entries = []
+  for (const path of [...new Set(state.files)].filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(path)).sort()) {
+    assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
+    const root = state.root ?? cwd
+    const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
+    let content: string | undefined
+    try {
+      content = await (fs as unknown as { readText(target: unknown): Promise<string> }).readText(target)
+    } catch (error) {
+      if (!['ENOENT', 'FS_NOT_FOUND'].includes((error as { code?: string }).code ?? '')) throw error
+    }
+    entries.push([path, content === undefined ? null : hashText(content)])
+  }
+  return hashText(JSON.stringify(entries))
+}
+
+/** A previous pass cannot authorize a changed tree. Commands still need meaningful human-reviewed coverage. */
+async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
+  if (state.execution_version !== 1) return
+  const current = await scopeFingerprint(fs, state, cwd)
+  if (state.verification.passed && state.verification.receipt?.scope_hash !== current) {
+    throw new Error('verification is missing or stale after file/scope changes; rerun verify with a real command')
+  }
+  for (const stage of obligationStages(state, workflow)) {
+    for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
+      if (result.receipt?.scope_hash !== current) throw new Error(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
+    }
+  }
 }
 
 /** Resolve one item by id for the item-scoped audit operations. */
@@ -619,7 +667,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk'] as const
+const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -644,7 +692,8 @@ export function registerDevTask(ctx: Context): void {
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
-      task_id: { type: 'string', description: 'Task id (short stable id like GREET-001); required on create and every other operation.' },
+      task_id: { type: 'string', description: 'Task id. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
+      skill_name: { type: 'string', description: 'Bound skill to record after executing it (skill_result): requires prior successful skill load, evidence and a real validation command. target_stage may name the upcoming terminal stage.' },
       branch: { type: 'string', description: 'Current git branch (recorded on create).' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Workload tier (create).' },
@@ -667,9 +716,9 @@ export function registerDevTask(ctx: Context): void {
       spec_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Specification-conformance verdict (review_item).' },
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
-      target_stage: { type: 'string', description: 'Stage to advance to (advance).' },
-      command: { type: 'string', description: 'Verification command to run for a real receipt (verify); when set, passed derives from its exit code instead of the model claim.' },
-      passed: { type: 'boolean', description: 'Verification passed (verify), used only when no command is given.' },
+      target_stage: { type: 'string', description: 'Stage to advance to, or current/upcoming terminal skill binding stage for skill_result.' },
+      command: { type: 'string', description: 'Real acceptance command for verify/skill_result. New tasks require command receipts. Propagate failures when composing shell commands.' },
+      passed: { type: 'boolean', description: 'Legacy tasks only: verification claim when no command can be resolved. New tasks require real command receipts.' },
       evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
       outcome: { type: 'string', enum: ['pass', 'blocked'], description: 'Review outcome (review).' },
       artifact: { type: 'string', description: 'Artifact id to record fields for (record).' },
@@ -705,6 +754,19 @@ export function registerDevTask(ctx: Context): void {
       // The session workspace drives every relative path; the backend's own base
       // (its config.cwd) is the harness process directory, never the workspace.
       const cwd = exec.agent?.session.header.cwd
+      const session = exec.agent?.session as unknown as SkillSession | undefined
+
+      if (a.operation === 'status' && !a.task_id) {
+        const tasks: { id: string; title: string; branch: string; stage: string }[] = []
+        const names = await projectProbe(fs).list?.(cwd ?? '', '.dsh') ?? []
+        for (const name of names.filter(name => /^task-.+\.json$/.test(name))) {
+          const raw = await readText(fs, `.dsh/${name}`, cwd)
+          if (!raw) continue
+          const task = JSON.parse(raw) as TaskState
+          if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage })
+        }
+        return JSON.stringify({ tasks, next_action: tasks.length ? 'Call status with the selected task_id; create a new task for a new requirement.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
+      }
 
       if (a.operation === 'config') {
         const resolved = await resolveWorkflow(fs, cwd)
@@ -846,11 +908,12 @@ export function registerDevTask(ctx: Context): void {
           project_type: await detectType(projectProbe(fs), root),
         })
         state.items = normalizeItems(a.items)
+        state.execution_version = 1
         state.files = a.files ?? []
         state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}`
+        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd)}\nBefore advance, load all bound skills. For additional skills, execute their instructions then use skill_result with evidence and command. Terminal bindings must finish before entering the terminal stage.`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
@@ -869,6 +932,11 @@ export function registerDevTask(ctx: Context): void {
           requirement_confirmed: state.requirement_confirmed,
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
+          items: state.items,
+          skill_obligations: obligationStages(state, workflow).map(stage => ({ stage, skills: workflow.stage_bindings?.[stage]?.skills ?? [] })),
+          skill_blockers: skillBlockers(state, workflow, session),
+          skill_results: state.skill_results ?? {},
+          commits: state.commits,
           verification: state.verification,
           review: state.review,
           artifacts: state.artifacts,
@@ -887,6 +955,9 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'commit') {
+        await assertFreshEvidence(fs, state, workflow, cwd)
+        const missingSkills = skillBlockers(state, workflow, session)
+        if (missingSkills.length) throw new Error(missingSkills.join('; '))
         const checkpoint = commitCheckpoint(state, workflow)
         if (!checkpoint.allowed) throw new Error(checkpoint.reason ?? 'no commit is due')
         if (workflow.commit.file_scope) {
@@ -906,8 +977,20 @@ export function registerDevTask(ctx: Context): void {
         if (committedId !== undefined && committedId !== state.id) {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
         }
-        if (a.hash) state.commits.push({ label: checkpoint.label!, hash: a.hash })
+        if (a.hash) {
+          if (!/^[0-9a-f]{7,40}$/i.test(a.hash)) throw new Error('commit hash must be a Git object id')
+          if (state.execution_version === 1) {
+            const receipt = await runVerificationCommand(ctx, 'git -c core.quotepath=false log -1 --format=%H%n%s%n --name-only HEAD', state.root ?? cwd, exec)
+            if (receipt.exit_code !== 0 || receipt.aborted || receipt.timed_out || receipt.sandbox?.denied || receipt.sandbox?.runnerFailed) throw new Error('cannot verify the recorded Git commit')
+            const lines = receipt.stdout.trim().split(/\r?\n/)
+            if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
+            const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
+            if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
+          }
+          if (!state.commits.some(entry => entry.hash === a.hash)) state.commits.push({ label: checkpoint.label!, hash: a.hash })
+        }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+        if (a.hash) return `commit recorded (${checkpoint.label ?? ''}): ${a.hash}; use status to inspect remaining gates, then advance`
         return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
       }
 
@@ -941,7 +1024,7 @@ export function registerDevTask(ctx: Context): void {
           note = `file scope set to ${state.files.length} files${state.files.length > 0 ? ': ' + state.files.join(', ') : ' (empty — commits are blocked until files are declared)'}`
           break
         case 'items':
-          state.items = normalizeItems(a.items)
+          state.items = normalizeItems(a.items, state.items)
           note = `items set: ${state.items.map(i => `${i.id}:${i.status}`).join(', ') || 'none'}`
           break
         case 'dispatch': {
@@ -964,6 +1047,9 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'advance': {
           const target = a.target_stage ?? ''
+          await assertFreshEvidence(fs, state, workflow, cwd)
+          const missingSkills = skillBlockers(state, workflow, session)
+          if (missingSkills.length) throw new Error(missingSkills.join('; '))
           let result = assertAdvance(state, target, workflow)
           if (!result.ok) {
             const unmet = unmetGuards(state, target, workflow)
@@ -977,7 +1063,9 @@ export function registerDevTask(ctx: Context): void {
           if (!result.ok) throw new Error(result.errors!.join('; '))
           state.stage = target
           const disclosure = await renderBindings(state.stage, workflow, fs, cwd)
-          note = disclosure === '' ? `advanced to ${state.stage}` : `advanced to ${state.stage}\n${disclosure}`
+          const terminalObligations = obligationStages(state, workflow).filter(stage => stage !== state.stage)
+          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd)}`))
+          note = [`advanced to ${state.stage}`, disclosure, ...terminalDisclosure].filter(Boolean).join('\n')
           break
         }
         case 'set_risk': {
@@ -1035,18 +1123,35 @@ export function registerDevTask(ctx: Context): void {
           const verifyRoot = state.root ?? cwd
           const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, verifyRoot)
           if (command !== undefined) {
-            const receipt = await runVerificationCommand(ctx, command, verifyRoot)
+            const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec)
+            if (state.execution_version === 1) receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
             }
             state.verification = {
-              passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted,
+              passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied && !receipt.sandbox?.runnerFailed,
               evidence: a.evidence ?? [],
               receipt,
             }
           } else {
+            if (state.execution_version === 1) throw new Error('verify requires a real validation command; pass command explicitly for this project')
             state.verification = { passed: a.passed === true, evidence: a.evidence ?? [] }
           }
+          note = JSON.stringify({ ok: state.verification.passed, stage: state.stage, verification: state.verification }, null, 2)
+          break
+        }
+        case 'skill_result': {
+          const stage = a.target_stage ?? state.stage
+          if (!obligationStages(state, workflow).includes(stage) || !workflow.stage_bindings?.[stage]?.skills?.includes(a.skill_name ?? '')) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
+          const loadCall = loadedSkills(session).get(a.skill_name!)
+          if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
+          if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')
+          const receipt = await runVerificationCommand(ctx, a.command, state.root ?? cwd, exec)
+          receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
+          state.skill_results ??= {}
+          state.skill_results[stage] ??= {}
+          state.skill_results[stage]![a.skill_name!] = { session_id: session?.id ?? '', load_call_id: loadCall, evidence: a.evidence, receipt }
+          note = JSON.stringify({ skill: a.skill_name, stage, receipt }, null, 2)
           break
         }
         case 'review':

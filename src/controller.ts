@@ -355,6 +355,7 @@ function scanRuleDir(dir: string, source: string): RuleCatalogEntry[] {
 
 /** Parse the `name`+`description` frontmatter of one SKILL.md without invoking the registry. */
 function parseSkillFrontmatter(raw: string): { name: string; description: string } | undefined {
+  raw = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   const m = raw.match(/^---\n([\s\S]*?)\n---\n/)
   if (!m) return undefined
   const meta: Record<string, string> = {}
@@ -368,6 +369,7 @@ function parseSkillFrontmatter(raw: string): { name: string; description: string
 
 /** Full parse of one SKILL.md: frontmatter fields plus the body below it. */
 function parseSkillFile(raw: string): { name: string; description: string; whenToUse: string; content: string } | undefined {
+  raw = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   const m = raw.match(/^---\n([\s\S]*?)\n---\n/)
   if (!m) return undefined
   const meta: Record<string, string> = {}
@@ -563,11 +565,8 @@ export default class TaskEngineController extends TypertRemoteService {
     const project = path === '' ? [] : listSkillsFromDir(join(path, '.dsh/skills'), 'project')
     const user = listSkillsFromDir(join(dshHome(), 'skills'), 'user')
     const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled')
-    // Bundled (core) entries win over user and project entries of the same name,
-    // so a project cannot shadow a shipped skill; local additions use distinct names.
-    const merged = new Map<string, SkillCatalogEntry>()
-    for (const entry of [...project, ...user, ...bundled]) merged.set(entry.name, entry)
-    const skills = [...merged.values()].sort((a, b) => a.name.localeCompare(b.name))
+    // Management retains every scope; invocation remains a registry lookup by name.
+    const skills = [...bundled, ...project, ...user].sort((a, b) => a.name.localeCompare(b.name))
     return { skills }
   }
 
@@ -583,14 +582,7 @@ export default class TaskEngineController extends TypertRemoteService {
     const project = path === '' ? [] : scanRuleDir(join(path, '.dsh/rules'), 'project')
     const user = scanRuleDir(join(dshHome(), 'rules'), 'user')
     const bundled = scanRuleDir(BUNDLED_RULES_DIR, 'bundled')
-    // Bundled (core) rules win over user and project rules of the same name, so a
-    // project cannot shadow a shipped rule like `security-redlines`; local additions
-    // use distinct names.
-    const merged = new Map<string, string>()
-    for (const entry of [...project, ...user, ...bundled]) merged.set(entry.name, entry.source)
-    const rules = [...merged.entries()]
-      .map(([name, source]) => ({ name, source }))
-      .sort((a, b) => a.name.localeCompare(b.name))
+    const rules = [...bundled, ...project, ...user].sort((a, b) => a.name.localeCompare(b.name))
     return { rules }
   }
 

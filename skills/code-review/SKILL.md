@@ -10,4 +10,4 @@ description: 代码审核节点：评审变更，产出结论与问题清单并�
 3. 结论与问题用 `dev_task`（operation=record, artifact=review, fields={conclusion, issues}）落库。
 4. 结论用 `dev_task`（operation=review, outcome=pass|blocked）记录；blocked 写清阻塞原因。
 
-complex、用户要求或验证发现阻塞风险时才进入本节点；其余验证通过可直接完成。
+是否进入本节点由冻结流程的 legal_next 决定，标准流程必须审核。发现缺陷时在当前阶段修复并重跑 verify，更新结论；不要新建“收尾任务”绕过当前门禁。完成即将进入的终态技能义务后，按 status.commit 执行本地提交并回写真实 hash，再 advance。

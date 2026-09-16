@@ -144,6 +144,9 @@ export interface VerificationReceipt {
   stdout: string
   /** Captured stderr tail. */
   stderr: string
+  sandbox?: { mode: string; denied: boolean; enforcement?: string; runnerFailed?: boolean }
+  /** Fingerprint of declared task files after validation; code edits invalidate the receipt. */
+  scope_hash?: string
 }
 
 export interface TaskState {
@@ -178,6 +181,9 @@ export interface TaskState {
   revision?: number
   /** Time of the latest successful tool write, absent on older records. */
   updated_at?: string
+  /** New tasks enforce skill evidence and checkpoint completion; old snapshots remain readable. */
+  execution_version?: 1
+  skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt }>>
 }
 
 export interface Result {
@@ -401,6 +407,11 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
       return guard
     })
     return { ok: false, errors: [`guards unmet: ${details.join(', ')}`] }
+  }
+  if (state.execution_version === 1 && config.commit.policy !== 'manual'
+    && config.commit.checkpoints.includes(state.stage)
+    && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
+    return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
   }
   return { ok: true }
 }

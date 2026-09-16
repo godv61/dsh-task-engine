@@ -403,6 +403,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
 
   return (
     <div style={styles.section}>
+      <p style={styles.hint}>绑定按名称生效；同名资源可在资源管理中按项目／个人分别查看。完成节点的技能必须在进入完成前执行，测试技能建议放在交付节点。</p>
       <div style={styles.field}>
         <span style={styles.fieldLabel}>选择节点（改哪个节点的挂载）</span>
         <div style={styles.chips}>
@@ -418,7 +419,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
           <div style={styles.chips}>
             {skills.length === 0
               ? <span style={styles.sourceBadge}>暂无可用 skill —— 切到上方「技能」标签页新建</span>
-              : skills.map(sk => (
+              : skills.filter((sk, index, all) => all.findIndex(other => other.name === sk.name) === index).map(sk => (
                 <Pill key={sk.name} active={boundSkills.includes(sk.name)} onClick={() => { toggleSkill(sk.name) }} title={`${sk.description}（${sourceLabel(sk.source)}）`}>
                   {sk.name}
                   {sk.source !== 'bundled' ? <span style={styles.sourceBadge}>（{sourceLabel(sk.source)}）</span> : null}
@@ -432,7 +433,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
           <div style={styles.chips}>
             {rules.length === 0
               ? <span style={styles.sourceBadge}>暂无可用 rule —— 切到上方「规则」标签页新建</span>
-              : rules.map(rule => (
+              : rules.filter((rule, index, all) => all.findIndex(other => other.name === rule.name) === index).map(rule => (
                 <Pill key={rule.name} active={boundRules.includes(rule.name)} onClick={() => { toggleRule(rule.name) }} title={`来源：${sourceLabel(rule.source)}`}>
                   {rule.name}
                   {rule.source !== 'bundled' ? <span style={styles.sourceBadge}>（{sourceLabel(rule.source)}）</span> : null}

@@ -75,14 +75,14 @@
       → 需求评审 · requirement-analysis
       → 设计     · solution-design
       → 开发     · code-implement
-      → 交付     · code-verify + code-commit
-      → 代码审核 · code-review</code></pre>
+      → 交付     · code-verify
+      → 代码审核 · code-review + code-commit</code></pre>
         <div class="callout">
           <p><strong>它不是常驻程序。</strong>只有你在「工程化开发引擎」预设的会话里提出开发请求时，才触发 <code>dev_task</code> 和这套门禁；换到别的预设，流程完全不介入。</p>
         </div>
         <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
         <div class="callout warn">
-          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：常规风险的验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
+          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：旧任务的常规风险验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
         </div>
       </section>
 
@@ -266,12 +266,13 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
               <tr><td>需求评审</td><td>拆需求、落「需求说明」</td><td>字段填全，且<b>人点「允许」确认需求</b></td></tr>
               <tr><td>设计</td><td>出最小方案、落「设计文档」</td><td>字段填全，且<b>人点「允许」确认方案</b></td></tr>
               <tr><td>开发</td><td>逐项实现，每项做规格 + 质量两阶段评审</td><td>实施项非空且全部 done（每项带两阶段评审）</td></tr>
-              <tr><td>交付</td><td>验证、记证据，按门禁提交</td><td>验证通过（高风险必须真实命令回执，退出码 0）</td></tr>
-              <tr><td>代码审核</td><td>评审变更，落「评审记录」</td><td>结论通过且字段填全</td></tr>
+              <tr><td>交付</td><td>执行验证、记录证据</td><td>新任务必须真实命令回执，退出码 0，未超时、取消或被沙箱拒绝</td></tr>
+              <tr><td>代码审核</td><td>评审变更，执行终态技能，受控提交</td><td>结论通过、字段填全、技能义务完成且真实 Git 提交已回写</td></tr>
               <tr><td>完成</td><td>收尾</td><td>—</td></tr>
             </tbody>
           </table>
         </div>
+        <p>新任务离开阶段前检查绑定技能是否通过 skill 工具成功加载；附加技能需通过 <code>skill_result</code> 记录执行场景与真实验收命令。挂在“完成”的技能在前一阶段执行。命令成功只证明该命令通过，不证明测试覆盖完整。审核改动后须重跑验证。旧任务继续使用冻结快照。</p>
         <h3>贯穿全程的硬规则</h3>
         <ul>
           <li>阶段是硬状态：status 说你在哪，就只做那一步，绝不倒带重走、绝不跳。</li>
@@ -356,10 +357,11 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
 
 ④ 交付
    - 验证：跑鉴权用例，`verify` 传真实命令（high_risk 由引擎取退出码判定）。
-   - 提交：【模块】【TASK】查询接口增加权限校验（只含本任务文件）
+   - 文件改动后必须重新验证，旧回执失效。
 
 ⑤ 代码审核
    - 结论：通过 · 问题：无
+   - 执行挂在完成阶段的附加技能，再提交并回写真实 hash。
 
 ⑥ 完成</code></pre>
         <p>这类任务不应因为「以后可能复用」扩展成多层架构，也不应把推荐项自动当成验收条件。</p>
@@ -380,7 +382,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>Remote 如何限制工作区？</summary><div>有 <code>workspaceRegistry.resolveByPath</code> 的 Harness 使用主机注册目录；未注册路径拒绝。旧主机保留绝对路径和系统目录检查，并提供严格注册 API。工作区注册不等于当前会话授权；共享多用户部署仍需要调用上下文和主机权限边界。</div></details>
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">版本 0.23.0 · 系统文件选择与安装预览 · 工作台交互改进 · 最后更新：2026-09-15</p>
+        <p class="stamp">版本 0.23.1-rc.2（本地候选版） · 流程执行与真实回执修复 · 最后更新：2026-09-16</p>
       </section>
     </main>
   </div>

@@ -14,14 +14,17 @@ whenToUse: 开始任何开发、改 bug、加功能、代码评审或提交任�
 
 ## 入口
 
-1. 先 `dev_task`（operation=status）读当前分支任务与阶段：
+1. 先 `dev_task`（operation=status, branch=当前分支）发现任务，再带 task_id 查询所选任务的详细状态；有多个候选时不要猜测：
    - 没有任务 → `dev_task`（operation=create，task_id=短 ID 如 GREET-001，title=任务标题，branch=当前 git 分支，files=本任务涉及的文件列表）建立任务并停在**起始阶段**（由配置 `start_stage` 决定，默认「需求评审」），从起始阶段开始。
-   - 已有任务 → **从 `status` 返回的 `stage` 继续，绝不重走已过的阶段**。每个阶段对应一个节点技能：需求评审→`requirement-analysis`、设计→`solution-design`、开发→`code-implement`、交付→`code-verify`（提交用 `code-commit`）、代码审核→`code-review`、完成→收尾。只做当前 stage 那一个节点的事：完成该阶段产物、满足 guard，才 `advance` 到下一阶段。
+   - 已有任务 → **从 `status` 返回的 `stage` 继续，绝不重走已过的阶段**。每个阶段对应一个节点技能：需求评审→`requirement-analysis`、设计→`solution-design`、开发→`code-implement`、交付→`code-verify`、代码审核→`code-review` + `code-commit`、完成→收尾。只做当前 stage 那一个节点的事：完成该阶段产物、满足 guard，才 `advance` 到下一阶段。
    - 文件范围一时不清就先 `operation=create` 建任务，摸清后用 `operation=scope, files=...` 补齐。
-2. 每阶段：完成本阶段产物后：
+2. 每阶段先通过 `skill` 工具加载所有绑定技能，再执行其指引；仅看到技能名称不算执行。完成本阶段产物后：
+   - 新任务的附加技能还需 `operation=skill_result, skill_name=技能名, target_stage=所属阶段, evidence=[实际场景与结果], command=真实验收命令`。命令由引擎执行，失败不能流转；非测试技能可用检查其交付文件内容的命令，不能用 echo/恒成功命令代替验收。
+   - `status.skill_obligations` 包含紧邻的终态绑定：例如挂在“完成”的 software-testing，需要在代码审核阶段提前加载、执行、记录，再提交和进入完成。不要等宣告完成后才测试。
+   - 标准流程在代码审核阶段完成评审后提交；其他流程以 `status.commit` 返回的检查点为准。审核修复允许留在当前阶段处理，但改动后须重新验证，更新评审结论。
    - 若本阶段配置了必交产物（`dev_task` operation=status 会列出 still missing 的字段），先用 `dev_task`（operation=record, artifact=..., fields=...）逐字段记录；字段不填全，流转会被 `artifacts_present` guard 拒绝。
    - 再用 `dev_task`（operation=advance）流转到目标阶段；被拒绝说明 guard 未满足（需求/方案未获人批准 / 产物字段没填全 / 实施项没完 / 高风险没验证 / 评审没过），先补齐再重试，不得绕过。
-3. 提交前用 `dev_task`（operation=commit, files=<要提交的文件列表>, message=...）校验阶段、文件范围与消息格式；拿到 approved 后再 `git add <同一批文件>; git commit -m "<approved>"`，并把 commit hash 通过 `dev_task`（operation=commit, hash=...）回写。落在任务 `files` 之外的文件一律不能提交。
+3. 提交前用 `dev_task`（operation=commit, files=<要提交的文件列表>, message=...）校验阶段、文件范围与消息格式；拿到 approved 后再逐文件 git add 和 git commit，并把 commit hash 通过 `dev_task`（operation=commit, files=同一列表, message=同一消息, hash=真实HEAD）回写。引擎核对 Git HEAD、消息和实际文件。没有回写成功，不得离开提交检查点。落在任务 files 之外的文件先明确与当前需求的关系，必要时更新 scope；无关工作另开任务。
 
 ## 硬规则
 

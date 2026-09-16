@@ -101,7 +101,7 @@ function sessionExec(cwd) {
 assert(flowSatisfies('standard', HIGH_RISK_REQUIRED_CAPABILITIES), 'standard satisfies high-risk capabilities')
 assert(!flowSatisfies('agile', HIGH_RISK_REQUIRED_CAPABILITIES), 'agile lacks a high-risk capability')
 assert(!flowSatisfies('minimal', HIGH_RISK_REQUIRED_CAPABILITIES), 'minimal lacks a high-risk capability')
-assert(FLOW_PRESETS.standard.version === 1, 'preset carries a version')
+assert(FLOW_PRESETS.standard.version === 2, 'standard preset carries the review-before-commit version')
 
 // ── 2. unknown flow fails closed ───────────────────────────────────────────
 const unknown = resolveFlow('nope')
@@ -135,7 +135,7 @@ await assertThrows(
   assert(created.includes('需求评审'), 'standard create starts at 需求评审')
   fs._files.set('.dsh/eng.json', JSON.stringify({ flow: 'minimal' }))
   const status = JSON.parse(await exe({ operation: 'status', task_id: 'T3' }, EXEC))
-  assert(status.flow?.flow === 'standard' && status.flow.version === 1, 'status re-reads the frozen snapshot')
+  assert(status.flow?.flow === 'standard' && status.flow.version === 2, 'status re-reads the frozen snapshot')
   assert(Array.isArray(status.legal_next) && status.legal_next.includes('设计'),
     'gates come from the frozen standard flow, not the live minimal flow')
 }
@@ -542,8 +542,13 @@ function memProbe(files) {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'V-3', title: 'x', branch: 'main' }, EXEC)
-  assert((await exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC)).includes('ok'),
-    'unknown-type verify keeps the legacy self-reported path')
+  await assertThrows(() => exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC),
+    'real validation command', 'new tasks refuse self-reported verification')
+  const legacy = JSON.parse(fs._files.get('.dsh/task-V-3.json'))
+  delete legacy.execution_version
+  fs._files.set('.dsh/task-V-3.json', JSON.stringify(legacy))
+  assert(JSON.parse(await exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC)).ok,
+    'legacy tasks retain their verification contract')
 }
 {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'standard' }) })

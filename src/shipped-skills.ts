@@ -29,6 +29,7 @@ export function registerShippedSkills(ctx: Context): void {
   for (const entry of readdirSync(skillsRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const raw = readFileSync(fileURLToPath(new URL(`../skills/${entry.name}/SKILL.md`, import.meta.url)), 'utf8')
+      .replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
     const m = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
     if (!m) continue
     const head = m[1]!

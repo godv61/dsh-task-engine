@@ -90,6 +90,7 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 | 完整操作说明 | [HTML 手册](docs/manual.html)（下载后在浏览器打开） |
 | 当前能力与常见问题 | [常见问题](docs/faq.md) |
 | 本地开发与验证 | [开发指南](docs/development.md) |
+| 本地候选版流程修复 | [回归迭代说明](docs/workflow-regression.md)（尚未发布） |
 | 版本变化与验证记录 | [更新日志](docs/CHANGELOG.md) · [0.23.0 测试报告](docs/testing/0.23.0/测试报告.md) |
 
 ## 能力说明

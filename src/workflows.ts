@@ -59,7 +59,7 @@ const STANDARD: WorkflowConfig = {
     policy: 'task',
     message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
     message_hint: '【<task_id>】【TASK/T1】说明 —— 第一段填本任务 id（如 GREET-001），写结果不写空泛动作',
-    checkpoints: ['交付'],
+    checkpoints: ['代码审核'],
     file_scope: true,
   },
   high_risk_requires_verification: true,
@@ -67,8 +67,8 @@ const STANDARD: WorkflowConfig = {
     '需求评审': { skills: ['requirement-analysis'], rules: ['security-redlines'] },
     '设计': { skills: ['solution-design'] },
     '开发': { skills: ['code-implement'], rules: ['coding-conventions'] },
-    '交付': { skills: ['code-verify', 'code-commit'], rules: ['coding-conventions', 'commit-conventions'] },
-    '代码审核': { skills: ['code-review'], rules: ['security-redlines'] },
+    '交付': { skills: ['code-verify'], rules: ['coding-conventions'] },
+    '代码审核': { skills: ['code-review', 'code-commit'], rules: ['security-redlines', 'commit-conventions'] },
   },
 }
 
@@ -147,7 +147,7 @@ function preset(
 }
 
 export const FLOW_PRESETS: Record<string, FlowPreset> = {
-  standard: preset('standard', 1, '标准研发', '需求评审 → 设计 → 开发 → 交付 → 代码审核，含产物门 + 确认门', STANDARD),
+  standard: preset('standard', 2, '标准研发', '需求评审 → 设计 → 开发 → 交付 → 代码审核，审核后提交', STANDARD),
   agile: preset('agile', 1, '敏捷轻量', '需求 → 开发 → 交付 → 审查，四阶段、少产物', AGILE),
   minimal: preset('minimal', 1, '纯代码', '开发 → 交付，两阶段，只留提交门禁', MINIMAL),
 }

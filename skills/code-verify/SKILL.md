@@ -7,7 +7,8 @@ description: 交付验证节点：执行目标测试、编译与契约检查，�
 
 1. `dev_task`（operation=status）读风险等级与验收条件。
 2. 执行聚焦验证：目标测试、受影响模块编译、契约检查与必要人工步骤，不默认叠加 clean/package 全家桶。
-3. 结果用 `dev_task`（operation=verify）记录：`high_risk` 必须跑真实命令回执（显式传 `command` 指定验收命令；不传时引擎按 `.dsh/eng.json` 的 `verify_command` → 语言默认自动选，但默认命令可能不覆盖验收点，高风险仍建议显式传）。退出码由引擎当客观结论，不得自报 passed；常规风险可用 `passed` + `evidence` 文本。
-4. 环境受阻时如实记"未编译/未联调"；high_risk 核心行为无法验证时不得通过。
+3. 结果用 `dev_task`（operation=verify, command=真实验收命令, evidence=[场景与结果]）记录。新任务不接受纯文本 passed 声明；不传 command 时尝试项目 verify_command 和语言默认，但默认命令可能不覆盖验收点。退出码、取消、超时和沙箱结果由引擎采集。PowerShell 多条命令必须显式传播失败退出码，不能让最后成功的命令掩盖前面的失败。
+4. 文件或范围变更会使旧验证回执失效，审核修复后可在当前阶段重跑 verify。沙箱拒绝属于环境阻塞，不能改跑不相关的简单命令来冒充原验收通过。
+5. 环境受阻时如实记"未编译/未联调"；high_risk 核心行为无法验证时不得通过。
 
 验证失败不得 advance。
