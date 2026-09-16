@@ -7,12 +7,12 @@ description: 开发节点：按方案拆解实施项，每项派 fresh 子 agent
 
 进入本节点时需求与方案均已确认。按顺序，一项一项做：
 
-1. `dev_task`（operation=status）读当前阶段、风险与验证基线。实施项若太粗，先按方案拆成「2-10 分钟能独立完成、能独立验证」的小项，用 `dev_task`（operation=items, items=[...]) 全量落回；把这份清单保持在对话上下文里（`status` 只回 items_done 计数，不回明细）。
-2. 激活唯一 doing（没有则激活首个 todo）。当前项派一个 fresh 子 agent 实现：
+1. `dev_task`（operation=status）读当前阶段、风险、实施项明细与验证基线。实施项按能独立审查的交付内容拆分，不为达到任意时间粒度重复拆同一调用链；用 `dev_task`（operation=items, items=[...]) 记录清单，后续可通过 status 读取明细和审核记录。
+2. 先 `dev_task`（operation=dispatch, item_id=<本项 id>, description=<目标与范围>）登记派发计划，工具会把该项设为唯一 doing；再派一个 fresh 子 agent 实现：
    - 用 `subagent` 工具，前台调用（默认等结果，不设 run_in_background）。
    - prompt 必须自包含（子 agent 看不到本对话），写清：任务目标（引用需求/方案要点）、本项要做什么、只改本项和必要调用方（不顺带重构）、可改的文件范围、完成标准，并要求返回「改动文件清单 + 验证结果/命令」。
    - 明令子 agent：只实现这一项、跑本地验证，不要调 dev_task 流转、不要 items、不要 commit、不要 push。
-   - 派发后用 `dev_task`（operation=dispatch, item_id=<本项 id>, description=<本项任务一句话>）留痕：这一项交给了哪个子任务、做什么。
+   - 不要等子代理返回才登记派发，否则任务台账会在实际开发时一直显示 todo。dispatch 只是计划记录，实际执行由子代理工具调用和结果证明；重派会使该项旧审核失效。
 3. 子 agent 返回后，主 agent 做两阶段审查（顺序不可反）：
    - 规格符合：对照需求/方案，查「做对了没、有没有超范围、漏没漏边界」。
    - 代码质量：按内置规则 coding-conventions 查「做得好不好」——契约兼容、边界与错误处理、命名与结构。

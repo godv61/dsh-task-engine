@@ -45,7 +45,7 @@ import {
   resolveFlow,
 } from './workflows.ts'
 import { hashConfig, hashText } from './snapshot.ts'
-import { loadedSkills, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
+import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
   detectType,
@@ -517,7 +517,11 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const rulePart = rules.length > 0
     ? `rules for this stage:\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`
     : ''
-  return [skillPart, rulePart].filter(Boolean).join('\n')
+  const additional = skills.filter(needsSkillReceipt)
+  const receiptPart = additional.length
+    ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
+    : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
+  return [skillPart, receiptPart, rulePart].filter(Boolean).join('\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -598,6 +602,7 @@ async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowC
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
+      if (!needsSkillReceipt(name)) continue
       if (result.receipt?.scope_hash !== current) throw new Error(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
     }
   }
@@ -660,7 +665,7 @@ export async function approveAdvance(
   })
   if (outcome !== 'allowed-once') {
     const verb = outcome === 'rejected' ? '被驳回' : outcome === 'cancelled' ? '已取消' : '无人批准'
-    return { ok: false, errors: [`${labels}确认${verb}，流转被拒绝`] }
+    return { ok: false, errors: [`${labels}确认${verb}，流转被拒绝。保持当前阶段；先获取用户的修改意见并修订，不要假定误操作或直接重复申请。`] }
   }
   if (confirmations.includes('requirement_confirmation')) state.requirement_confirmed = true
   if (confirmations.includes('solution_confirmation')) state.solution_confirmed = true
@@ -933,7 +938,10 @@ export function registerDevTask(ctx: Context): void {
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
-          skill_obligations: obligationStages(state, workflow).map(stage => ({ stage, skills: workflow.stage_bindings?.[stage]?.skills ?? [] })),
+          skill_obligations: obligationStages(state, workflow).map(stage => ({
+            stage, skills: workflow.stage_bindings?.[stage]?.skills ?? [],
+            command_receipts_required: (workflow.stage_bindings?.[stage]?.skills ?? []).filter(needsSkillReceipt),
+          })),
           skill_blockers: skillBlockers(state, workflow, session),
           skill_results: state.skill_results ?? {},
           commits: state.commits,
@@ -1029,8 +1037,11 @@ export function registerDevTask(ctx: Context): void {
           break
         case 'dispatch': {
           const item = requireItem(state, a.item_id)
+          if (state.items.some(other => other.id !== item.id && other.status === 'doing')) throw new Error('finish or pause the current doing item before dispatching another item')
+          item.status = 'doing'
+          delete item.review
           item.dispatch = { description: a.description ?? '', at: new Date().toISOString() }
-          note = `dispatched item "${item.id}" to a subagent: ${item.dispatch.description || '(no description)'}`
+          note = `item "${item.id}" is doing; dispatch intent recorded: ${item.dispatch.description || '(no description)'}. Now invoke the subagent; after it returns, review_item then items(done).`
           break
         }
         case 'review_item': {

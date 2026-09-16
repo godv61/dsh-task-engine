@@ -19,6 +19,7 @@ whenToUse: 开始任何开发、改 bug、加功能、代码评审或提交任�
    - 已有任务 → **从 `status` 返回的 `stage` 继续，绝不重走已过的阶段**。每个阶段对应一个节点技能：需求评审→`requirement-analysis`、设计→`solution-design`、开发→`code-implement`、交付→`code-verify`、代码审核→`code-review` + `code-commit`、完成→收尾。只做当前 stage 那一个节点的事：完成该阶段产物、满足 guard，才 `advance` 到下一阶段。
    - 文件范围一时不清就先 `operation=create` 建任务，摸清后用 `operation=scope, files=...` 补齐。
 2. 每阶段先通过 `skill` 工具加载所有绑定技能，再执行其指引；仅看到技能名称不算执行。完成本阶段产物后：
+   - 内置七项（eng-delivery、requirement-analysis、solution-design、code-implement、code-verify、code-review、code-commit）使用现有 record/verify/review/commit 门禁，**不需要 skill_result**，即使项目配置显式列出了这些名称。仅对 status.skill_obligations.command_receipts_required 列出的附加技能记录 skill_result；不要为内置节点重复写“检查字段非空”的验证命令。
    - 新任务的附加技能还需 `operation=skill_result, skill_name=技能名, target_stage=所属阶段, evidence=[实际场景与结果], command=真实验收命令`。命令由引擎执行，失败不能流转；非测试技能可用检查其交付文件内容的命令，不能用 echo/恒成功命令代替验收。
    - `status.skill_obligations` 包含紧邻的终态绑定：例如挂在“完成”的 software-testing，需要在代码审核阶段提前加载、执行、记录，再提交和进入完成。不要等宣告完成后才测试。
    - 标准流程在代码审核阶段完成评审后提交；其他流程以 `status.commit` 返回的检查点为准。审核修复允许留在当前阶段处理，但改动后须重新验证，更新评审结论。

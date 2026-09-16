@@ -272,7 +272,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>新任务离开阶段前检查绑定技能是否通过 skill 工具成功加载；附加技能需通过 <code>skill_result</code> 记录执行场景与真实验收命令。挂在“完成”的技能在前一阶段执行。命令成功只证明该命令通过，不证明测试覆盖完整。审核改动后须重跑验证。旧任务继续使用冻结快照。</p>
+        <p>新任务离开阶段前检查绑定技能是否通过 skill 工具成功加载；附加技能需通过 <code>skill_result</code> 记录执行场景与真实验收命令；状态中的 <code>command_receipts_required</code> 列出这些技能，七个内置技能无需重复登记。挂在“完成”的技能在前一阶段执行。命令成功只证明该命令通过，不证明测试覆盖完整。审核改动后须重跑验证。旧任务继续使用冻结快照。</p>
         <h3>贯穿全程的硬规则</h3>
         <ul>
           <li>阶段是硬状态：status 说你在哪，就只做那一步，绝不倒带重走、绝不跳。</li>
@@ -382,7 +382,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>Remote 如何限制工作区？</summary><div>有 <code>workspaceRegistry.resolveByPath</code> 的 Harness 使用主机注册目录；未注册路径拒绝。旧主机保留绝对路径和系统目录检查，并提供严格注册 API。工作区注册不等于当前会话授权；共享多用户部署仍需要调用上下文和主机权限边界。</div></details>
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
-        <p class="stamp">版本 0.23.1-rc.2（本地候选版） · 流程执行与真实回执修复 · 最后更新：2026-09-16</p>
+        <p class="stamp">版本 0.23.1-rc.3（本地候选版） · 流程执行与真实回执修复 · 最后更新：2026-09-16</p>
       </section>
     </main>
   </div>

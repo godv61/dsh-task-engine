@@ -60,10 +60,37 @@ test('审查通过后更新状态并激活下一项，保留已完成项的审�
   await assert.rejects(f.call({ operation: 'items', items: [{ id: 'A', title: 'x' }, { id: 'A', title: 'y' }] }), /unique/)
 })
 
+test('派发立即反映进行中，重派不复用旧审核且保持单一进行项', async () => {
+  const f = fixture()
+  await f.call({ operation: 'items', items: [{ id: 'A', title: 'models' }, { id: 'B', title: 'api' }] })
+  await f.call({ operation: 'dispatch', item_id: 'A', description: 'implement models' })
+  assert.equal(f.state().items[0].status, 'doing')
+  await assert.rejects(f.call({ operation: 'dispatch', item_id: 'B' }), /current doing item/)
+  await f.call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' })
+  await f.call({ operation: 'dispatch', item_id: 'A', description: 'rework models' })
+  assert.equal(f.state().items[0].review, undefined)
+})
+
 test('无任务 id 的 status 发现当前工作区任务并支持分支过滤', async () => {
   const f = fixture()
   assert.equal(JSON.parse(await f.call({ operation: 'status', task_id: undefined })).tasks[0].id, 'LIVE-1')
   assert.equal(JSON.parse(await f.call({ operation: 'status', task_id: undefined, branch: 'other' })).tasks.length, 0)
+})
+
+test('状态明确区分内置节点门禁与附加技能命令回执，避免重复验证', async () => {
+  const f = fixture('代码审核')
+  const status = JSON.parse(await f.call({ operation: 'status' }))
+  assert.deepEqual(status.skill_obligations.find(row => row.stage === '代码审核').command_receipts_required, [])
+  assert.deepEqual(status.skill_obligations.find(row => row.stage === '完成').command_receipts_required, ['software-testing'])
+})
+
+test('可选内置技能回执不会因范围变更升级成额外流转门禁', async () => {
+  const f = fixture('需求评审', { artifacts: { requirement: { scope: 'device picker', acceptance_criteria: 'contract and selection' } } })
+  f.load('requirement-analysis')
+  await f.call({ operation: 'skill_result', skill_name: 'requirement-analysis', command: 'check', evidence: ['optional check'] })
+  await f.call({ operation: 'scope', files: ['app.js', 'new-vo.java'] })
+  await f.call({ operation: 'advance', target_stage: '设计' })
+  assert.equal(f.state().stage, '设计')
 })
 
 test('验证使用会话策略与取消信号，并明确返回失败及沙箱信息', async () => {
