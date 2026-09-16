@@ -563,11 +563,14 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
   const ids = new Set<string>()
   const result = (items ?? []).map(item => {
     const id = String(item.id ?? '').trim()
-    const title = String(item.title ?? '').trim()
+    const old = previous.find(entry => entry.id === id)
+    const title = String(item.title ?? old?.title ?? '').trim()
     if (!id || !title || ids.has(id)) throw new Error('items require non-empty unique id and title')
     ids.add(id)
-    const old = previous.find(entry => entry.id === id)
     const status = item.status ?? old?.status ?? 'todo'
+    if (old?.review && old.title !== title && status === 'done') {
+      throw new Error(`item "${id}" has a review: omit title to preserve it, or reopen as todo/doing before changing its title and reviewing again`)
+    }
     const unchanged = old?.title === title && !(old.status === 'done' && status !== 'done')
     return { ...(unchanged ? old : {}), id, title, status }
   })
@@ -705,7 +708,7 @@ export function registerDevTask(ctx: Context): void {
       risk_level: { type: 'string', enum: ['standard', 'high_risk'], description: 'Risk tier (create).' },
       items: {
         type: 'array',
-        description: 'Implementation items (create/update).',
+        description: 'Full implementation item list (create/replace). For an existing id, omit title to preserve its title and audit. Changing a reviewed title requires reopening as todo/doing and reviewing again. Include every item to retain.',
         items: {
           type: 'object',
           additionalProperties: false,

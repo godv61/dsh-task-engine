@@ -18,6 +18,6 @@ description: 开发节点：按方案拆解实施项，每项派 fresh 子 agent
    - 代码质量：按内置规则 coding-conventions 查「做得好不好」——契约兼容、边界与错误处理、命名与结构。
 4. 审查完用 `dev_task`（operation=review_item, item_id=<本项 id>, spec_outcome=pass|fail, quality_outcome=pass|fail, notes=[结论或问题清单]) 落两阶段结论留痕。
 5. 任一阶段不过：派一个新的 fresh 子 agent 重做，prompt 带上「上次的问题清单」但不抄实现过程（保持 fresh）；重做后再审查，并再次 `review_item` 覆盖前次结论。
-6. **两阶段都 pass 后**才用 `dev_task`（operation=items, items=[...]) 全量回写，把本项标 done（其余项原样保留）；spec 或 quality 任一 fail 都不许标 done，回到第 5 步重做。
+6. **两阶段都 pass 后**才用 `dev_task`（operation=items, items=[...]) 全量回写，把本项标 done（其余项原样保留）；已有项可只传 id/status，省略 title 以保留原文与审核。追加修复项时不要重写已完成项标题；确需改标题应显式重开并重新审核。spec 或 quality 任一 fail 都不许标 done，回到第 5 步重做。
 7. 重复 2-6 直到全部 done。随后跑一次聚焦验证（目标测试、受影响模块编译、契约检查；high_risk 覆盖核心失败路径）确认整体可交付。
 8. 全部 done 才 `dev_task`（operation=advance）；`todos_done` 门会硬校验：每个 done 的项都必须带两阶段审查留痕且都 pass，缺 `review_item` 留痕会被拒绝。失败保持 doing、只记最新结果与阻塞；需求或方案变化时回退确认并停止编码。

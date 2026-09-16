@@ -60,6 +60,19 @@ test('审查通过后更新状态并激活下一项，保留已完成项的审�
   await assert.rejects(f.call({ operation: 'items', items: [{ id: 'A', title: 'x' }, { id: 'A', title: 'y' }] }), /unique/)
 })
 
+test('追加修复项可按 id 保留旧标题，拒绝已完成项改名后静默丢审核', async () => {
+  const f = fixture()
+  await f.call({ operation: 'items', items: [{ id: 'A', title: 'reviewed models', status: 'doing' }] })
+  await f.call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' })
+  await f.call({ operation: 'items', items: [{ id: 'A', status: 'done' }, { id: 'B', title: 'fix race', status: 'doing' }] })
+  assert.equal(f.state().items[0].title, 'reviewed models')
+  assert.equal(f.state().items[0].review.quality.outcome, 'pass')
+  await assert.rejects(f.call({ operation: 'items', items: [{ id: 'A', title: 'rewritten summary', status: 'done' }, { id: 'B', status: 'doing' }] }), /omit title|reopen/)
+  assert.equal(f.state().items[0].review.quality.outcome, 'pass')
+  assert.equal(f.state().items.length, 2)
+  await assert.rejects(f.call({ operation: 'items', items: [{ id: 'NEW' }] }), /title/)
+})
+
 test('派发立即反映进行中，重派不复用旧审核且保持单一进行项', async () => {
   const f = fixture()
   await f.call({ operation: 'items', items: [{ id: 'A', title: 'models' }, { id: 'B', title: 'api' }] })
