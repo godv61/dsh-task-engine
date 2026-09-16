@@ -597,18 +597,25 @@ async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise
 }
 
 /** A previous pass cannot authorize a changed tree. Commands still need meaningful human-reviewed coverage. */
-async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
-  if (state.execution_version !== 1) return
+async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<string[]> {
+  if (state.execution_version !== 1) return []
+  const blockers: string[] = []
   const current = await scopeFingerprint(fs, state, cwd)
   if (state.verification.passed && state.verification.receipt?.scope_hash !== current) {
-    throw new Error('verification is missing or stale after file/scope changes; rerun verify with a real command')
+    blockers.push('verification is missing or stale after file/scope changes; rerun verify with a real command')
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
       if (!needsSkillReceipt(name)) continue
-      if (result.receipt?.scope_hash !== current) throw new Error(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
+      if (result.receipt?.scope_hash !== current) blockers.push(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
     }
   }
+  return blockers
+}
+
+async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
+  const blockers = await evidenceBlockers(fs, state, workflow, cwd)
+  if (blockers.length) throw new Error(blockers.join('; '))
 }
 
 /** Resolve one item by id for the item-scoped audit operations. */
@@ -931,6 +938,10 @@ export function registerDevTask(ctx: Context): void {
       if (a.operation === 'status') {
         const binding = bindingsForStage(state.stage, workflow)
         const rules = await resolveRules(binding?.rules ?? [], fs, cwd)
+        const missingSkills = skillBlockers(state, workflow, session)
+        const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
+        const checkpoint = commitCheckpoint(state, workflow)
+        const commitBlockers = [...staleEvidence, ...missingSkills]
         return JSON.stringify({
           id: state.id,
           stage: state.stage,
@@ -945,7 +956,8 @@ export function registerDevTask(ctx: Context): void {
             stage, skills: workflow.stage_bindings?.[stage]?.skills ?? [],
             command_receipts_required: (workflow.stage_bindings?.[stage]?.skills ?? []).filter(needsSkillReceipt),
           })),
-          skill_blockers: skillBlockers(state, workflow, session),
+          skill_blockers: missingSkills,
+          evidence_blockers: staleEvidence,
           skill_results: state.skill_results ?? {},
           commits: state.commits,
           verification: state.verification,
@@ -953,7 +965,9 @@ export function registerDevTask(ctx: Context): void {
           artifacts: state.artifacts,
           files: state.files,
           legal_next: legalTargets(state.stage, workflow),
-          commit: commitCheckpoint(state, workflow),
+          commit: checkpoint.allowed && commitBlockers.length
+            ? { ...checkpoint, allowed: false, reason: commitBlockers.join('; ') }
+            : checkpoint,
           bindings: {
             skills: binding?.skills ?? [],
             rules: rules.map(r => ({ name: r.name, content: r.content })),

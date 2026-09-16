@@ -101,6 +101,8 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 本地候选版允许主代理处理小修正，仍须审核和验证。遇到沙箱权限拒绝应使用宿主审批或报告阻塞，不能靠反复切换命令规避。
 
+状态查询会列出过期验证和附加技能回执；`commit.allowed` 同时检查这些阻塞，文件变化后先补验证再申请提交。
+
 ---
 
 [MIT License](LICENSE) · [反馈问题](https://github.com/godv61/dsh-task-engine/issues) · Built for DeepSeek Harness
