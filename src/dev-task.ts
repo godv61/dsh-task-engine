@@ -736,10 +736,10 @@ export function registerDevTask(ctx: Context): void {
       passed: { type: 'boolean', description: 'Legacy tasks only: verification claim when no command can be resolved. New tasks require real command receipts.' },
       evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
       outcome: { type: 'string', enum: ['pass', 'blocked'], description: 'Review outcome (review).' },
-      artifact: { type: 'string', description: 'Artifact id to record fields for (record).' },
+      artifact: { type: 'string', description: 'Artifact id from status.artifact_requirements for the current stage (record).' },
       fields: {
         type: 'object',
-        description: 'Field values for the artifact (record).',
+        description: 'Field values using only keys listed by status.artifact_requirements (record). Put questions and tradeoffs inside an allowed text field, not new keys. Allowed fields come from the frozen workflow and may differ between presets.',
         additionalProperties: true,
       },
       files: {
@@ -962,6 +962,10 @@ export function registerDevTask(ctx: Context): void {
           commits: state.commits,
           verification: state.verification,
           review: state.review,
+          artifact_requirements: workflow.artifacts.filter(def => def.stage === state.stage).map(def => ({
+            id: def.id, name: def.name, fields: def.fields,
+            missing_fields: def.fields.filter(field => !(state.artifacts[def.id]?.[field] ?? '').trim()),
+          })),
           artifacts: state.artifacts,
           files: state.files,
           legal_next: legalTargets(state.stage, workflow),
@@ -1033,7 +1037,7 @@ export function registerDevTask(ctx: Context): void {
           const merged = { ...(state.artifacts[def.id] ?? {}) }
           for (const [field, value] of Object.entries(a.fields ?? {})) {
             if (!def.fields.includes(field)) {
-              throw new Error(`artifact "${def.id}" has no field "${field}"; fields: ${def.fields.join(', ')}`)
+              throw new Error(`artifact "${def.id}" has no field "${field}"; fields: ${def.fields.join(', ')}. Read status.artifact_requirements and put additional questions or tradeoffs inside an allowed text field, not a new key. No changes were saved.`)
             }
             merged[field] = value === undefined || value === null ? '' : String(value)
           }

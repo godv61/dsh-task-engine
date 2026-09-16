@@ -13,7 +13,7 @@ description: 设计节点：产出最小方案、改动点与技术选择，落�
    - UI 行为须核对当前组件版本和调用关系；属性名称看起来正确，不代表组合后实际生效。
    - 已确认业务范围不变的技术契约纠正，记录在当前设计并注明来源即可；不要为修改当前方案扫描 Harness/插件实现或手改历史审批状态。实质改变业务范围时再交用户决定。
 3. 不做投机性抽象：单一调用方不为"以后可能复用"新增抽象层或包装层，优先复用相邻实现；语言特定的分层与命名约定由项目挂载的 rule 约束，不在这里预设。
-4. 用 `dev_task`（operation=record, artifact=design, fields={approach, risks, impact}）落设计文档。
+4. 读取 `status.artifact_requirements`，用其允许字段记录设计；标准流程为 `dev_task`（operation=record, artifact=design, fields={approach, risks, impact}）。技术取舍写入 approach，未解决风险写入 risks，不自行新增字段。
 5. 在聊天中展示方案要点、关键契约和待确认项，再用 `dev_task`（operation=advance）流转；系统发起「方案确认」审批，批准才放行。被驳回时先获取修改意见，修订并重提；不要把驳回默认解释为误操作，也不要自动重试。
 
 方案未获人批准不得进入实现。

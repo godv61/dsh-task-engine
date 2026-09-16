@@ -383,7 +383,8 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
         <details><summary>「完成」等于上线了吗？</summary><div>不等于。<code>done</code> 只表示本地验证与必要评审通过；上线、合并、发布需人另行决定。</div></details>
         <p>状态查询中的 <code>evidence_blockers</code> 列出过期验证和附加技能回执；<code>commit.allowed</code> 同时检查这些阻塞及技能执行义务。<code>legal_next</code> 是流程定义的候选去向，不表示所有门禁已通过。</p>
-        <p class="stamp">版本 0.23.1-rc.5（本地候选版） · 流程执行与真实回执修复 · 最后更新：2026-09-16</p>
+        <details><summary>记录需求时提示字段不存在怎么办？</summary><div>先读取 <code>status.artifact_requirements</code>，按当前阶段列出的字段填写。标准需求为 <code>scope</code> 和 <code>acceptance_criteria</code>，敏捷流程只有 <code>scope</code>。疑问、假设或待确认取舍写入字段正文，不新增字段名。错误输入整次不保存，修正后再提交；不需要修改流程配置或历史任务记录。</div></details>
+        <p class="stamp">版本 0.23.1 · 流程执行与真实回执修复 · 最后更新：2026-09-16</p>
       </section>
     </main>
   </div>

@@ -97,6 +97,30 @@ test('状态明确区分内置节点门禁与附加技能命令回执，避免�
   assert.deepEqual(status.skill_obligations.find(row => row.stage === '完成').command_receipts_required, ['software-testing'])
 })
 
+test('status 披露当前阶段记录字段和缺项，字段误用不写入且可按提示恢复', async () => {
+  const f = fixture('需求评审')
+  const before = JSON.stringify(f.state())
+  const status = JSON.parse(await f.call({ operation: 'status' }))
+  assert.deepEqual(status.artifact_requirements, [{ id: 'requirement', name: '需求说明', fields: ['scope', 'acceptance_criteria'], missing_fields: ['scope', 'acceptance_criteria'] }])
+  assert.equal(JSON.stringify(f.state()), before)
+  await assert.rejects(f.call({ operation: 'record', artifact: 'requirement', fields: { scope: 'goal', 待确认取舍: 'question' } }), /status.artifact_requirements/)
+  assert.equal(JSON.stringify(f.state()), before)
+  await f.call({ operation: 'record', artifact: 'requirement', fields: { scope: '目标及待确认取舍', acceptance_criteria: '  ' } })
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).artifact_requirements[0].missing_fields, ['acceptance_criteria'])
+  await f.call({ operation: 'record', artifact: 'requirement', fields: { acceptance_criteria: '可执行验收' } })
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).artifact_requirements[0].missing_fields, [])
+})
+
+test('记录字段来自冻结流程，精简流程不硬编码标准字段，无记录阶段返回空列表', async () => {
+  const config = resolveFlow('agile').config
+  const f = fixture('需求', { flow: { flow: 'agile', version: 1, config } })
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).artifact_requirements, [{ id: 'requirement', name: '需求说明', fields: ['scope'], missing_fields: ['scope'] }])
+  await f.call({ operation: 'record', artifact: 'requirement', fields: { scope: '目标、验收与疑问' } })
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).artifact_requirements[0].missing_fields, [])
+  assert.deepEqual(JSON.parse(await fixture('开发').call({ operation: 'status' })).artifact_requirements, [])
+  assert.deepEqual(JSON.parse(await fixture('设计').call({ operation: 'status' })).artifact_requirements[0].fields, ['approach', 'risks', 'impact'])
+})
+
 test('可选内置技能回执不会因范围变更升级成额外流转门禁', async () => {
   const f = fixture('需求评审', { artifacts: { requirement: { scope: 'device picker', acceptance_criteria: 'contract and selection' } } })
   f.load('requirement-analysis')
