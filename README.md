@@ -99,6 +99,8 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 审核结论、实施项完成情况和测试覆盖面仍需要你判断。本地提交钩子提供即时检查，不能替代人工审核或项目自己的 CI。详细说明见[常见问题](docs/faq.md)。
 
+本地候选版允许主代理处理小修正，仍须审核和验证。遇到沙箱权限拒绝应使用宿主审批或报告阻塞，不能靠反复切换命令规避。
+
 ---
 
 [MIT License](LICENSE) · [反馈问题](https://github.com/godv61/dsh-task-engine/issues) · Built for DeepSeek Harness
