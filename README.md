@@ -103,6 +103,8 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 状态查询会列出过期验证和附加技能回执；`commit.allowed` 同时检查这些阻塞，文件变化后先补验证再申请提交。
 
+验证命令的单次权限重试先审批后执行，不改变会话权限；操作方式见[验证权限说明](docs/faq.md#验证命令被沙箱阻止怎么办)。
+
 记录需求、方案或评审前，模型可从 `artifact_requirements` 获取当前阶段允许的字段和缺项，避免猜测字段名。
 
 ---

@@ -9,7 +9,7 @@ import { resolveFlow } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
 
-function fixture(stage = '开发', extra = {}) {
+function fixture(stage = '开发', extra = {}, services = {}) {
   const cwd = resolve('test-project')
   const config = resolveFlow('standard', { stage_bindings: { 完成: { skills: ['software-testing'] } } }).config
   const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 2, config }, root: cwd })
@@ -29,6 +29,7 @@ function fixture(stage = '开发', extra = {}) {
     writeText: async (target, content) => { records.set(target.targetKey, content) },
   }
   const ctx = { fs, tools: { register(tool) { execute = tool.execute; return () => {} } }, get(name) {
+    if (Object.hasOwn(services, name)) return services[name]
     if (name === 'sandboxPolicy') return { resolve(request) { assert.equal(request.session, session); return policy } }
     if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async run(request) {
       const fail = request.command === 'fail'
@@ -88,6 +89,61 @@ test('无任务 id 的 status 发现当前工作区任务并支持分支过滤',
   const f = fixture()
   assert.equal(JSON.parse(await f.call({ operation: 'status', task_id: undefined })).tasks[0].id, 'LIVE-1')
   assert.equal(JSON.parse(await f.call({ operation: 'status', task_id: undefined, branch: 'other' })).tasks.length, 0)
+})
+
+test('verify 升级审批不可用时不得先执行命令', async () => {
+  const f = fixture('交付')
+  const before = JSON.stringify(f.state())
+  await assert.rejects(f.call({ operation: 'verify', command: 'npm test', sandbox_permissions: 'danger-full-access', justification: 'Retry the denied test command' }), /approval/)
+  assert.equal(f.runs.length, 0, 'approval must precede shell execution')
+  assert.equal(JSON.stringify(f.state()), before)
+})
+
+test('verify 拒绝、取消及无效升级参数均不执行命令或改写台账', async () => {
+  for (const outcome of ['rejected', 'cancelled', 'unavailable']) {
+    const f = fixture('交付', {}, { approval: { request: async () => outcome } })
+    const before = JSON.stringify(f.state())
+    await assert.rejects(f.call({ operation: 'verify', command: 'npm test', sandbox_permissions: 'danger-full-access', justification: 'Retry denied command' }), /not approved/)
+    assert.equal(f.runs.length, 0)
+    assert.equal(JSON.stringify(f.state()), before)
+  }
+  for (const args of [{ sandbox_permissions: 'danger-full-access' }, { justification: 'orphan justification' }]) {
+    const f = fixture('交付')
+    await assert.rejects(f.call({ operation: 'verify', command: 'npm test', ...args }), /invalid escalation/)
+    assert.equal(f.runs.length, 0)
+  }
+})
+
+test('验证命令审批先于执行，只授权本次命令且回执写入不重复审批', async () => {
+  for (const operation of ['verify', 'skill_result']) {
+    const approvals = []
+    const f = fixture('完成', {}, { approval: { request: async request => {
+      assert.equal(f.runs.length, 0)
+      approvals.push(request)
+      return 'allowed-once'
+    } } })
+    f.load('software-testing')
+    await f.call({ operation, command: 'npm test', skill_name: 'software-testing', evidence: ['real checks'], sandbox_permissions: 'danger-full-access', justification: 'Retry denied test command' })
+    assert.equal(approvals.length, 1)
+    assert.match(approvals[0].reason, /npm test/)
+    assert.equal(f.runs[0].sandboxPolicy.mode, 'danger-full-access')
+    assert.equal(f.runs[0].sandboxPolicy.workspaceRoot, f.cwd)
+    assert.equal(f.runs[0].sandboxPolicy.sessionId, f.policy.sessionId)
+    assert.equal(f.runs[0].signal, f.exec.signal)
+    assert.equal(f.policy.mode, 'workspace-write')
+    await f.call({ operation: 'verify', command: 'npm test' })
+    assert.equal(f.runs[1].sandboxPolicy, f.policy)
+    assert.equal(approvals.length, 1)
+  }
+})
+
+test('skill_result 审批拒绝时不执行命令、不写入技能回执', async () => {
+  const f = fixture('完成', {}, { approval: { request: async () => 'rejected' } })
+  f.load('software-testing')
+  const before = JSON.stringify(f.state())
+  await assert.rejects(f.call({ operation: 'skill_result', skill_name: 'software-testing', command: 'npm test', evidence: ['test'], sandbox_permissions: 'danger-full-access', justification: 'Retry denied tests' }), /not approved/)
+  assert.equal(f.runs.length, 0)
+  assert.equal(JSON.stringify(f.state()), before)
 })
 
 test('状态明确区分内置节点门禁与附加技能命令回执，避免重复验证', async () => {

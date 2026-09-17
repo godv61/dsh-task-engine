@@ -204,16 +204,21 @@ interface ShellRunner {
  * objective {@link VerificationReceipt}; `passed` derives from the exit code,
  * never from the model's claim.
  */
-async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined, exec: ToolRunContext): Promise<VerificationReceipt> {
+async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined, exec: ToolRunContext, approvedMode?: 'workspace-write' | 'danger-full-access'): Promise<VerificationReceipt> {
   const shell = ctx.get('shell') as ShellRunner | undefined
   if (shell === undefined) {
     throw new Error('verify 带 command 需要 host 提供 shell 服务（用于跑真实验证命令），但当前未挂载')
   }
   const started_at = new Date().toISOString()
-  const policyService = ctx.get('sandboxPolicy') as { resolve(request: { session?: unknown }): unknown } | undefined
+  const policyService = ctx.get('sandboxPolicy') as { resolve(request: { session?: unknown }): Record<string, unknown> } | undefined
+  if (approvedMode !== undefined && policyService === undefined) {
+    throw new Error('verification sandbox override requires the host sandboxPolicy service')
+  }
+  const standingPolicy = policyService?.resolve({ session: exec.agent?.session })
+  const sandboxPolicy = approvedMode === undefined ? standingPolicy : { ...standingPolicy, mode: approvedMode }
   const spec = shell.resolve({ command, ...(cwd !== undefined ? { workdir: cwd } : {}),
     timeoutMs: VERIFY_TIMEOUT_MS, signal: exec.signal,
-    ...(policyService ? { sandboxPolicy: policyService.resolve({ session: exec.agent?.session }) } : {}),
+    ...(sandboxPolicy ? { sandboxPolicy } : {}),
   })
   const outcome = await shell.run(spec)
   return {
@@ -382,7 +387,7 @@ async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode
 }
 
 /**
- * Resolve the sandbox mode this call's writes run under. No escalation args:
+ * Resolve the sandbox mode before this call's writes or verification command. No escalation args:
  * workspace-write. Escalation args must travel as the `sandbox_permissions` ⇔
  * `justification` pair (mirroring the harness escalation contract), and a
  * `danger-full-access` request must earn a one-shot human approval; without an
@@ -390,7 +395,7 @@ async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode
  */
 async function resolveWriteMode(
   ctx: Context,
-  args: { sandbox_permissions?: 'workspace-write' | 'danger-full-access'; justification?: string },
+  args: { sandbox_permissions?: 'workspace-write' | 'danger-full-access'; justification?: string; command?: string },
   exec: ToolRunContext,
 ): Promise<'workspace-write' | 'danger-full-access'> {
   const mode = args.sandbox_permissions
@@ -414,7 +419,9 @@ async function resolveWriteMode(
     agent: exec.agent,
     toolName: 'dev_task',
     callId: exec.callId,
-    reason: `沙箱升级：请确认允许 dev_task 以 ${mode} 模式写任务文件（workspace: ${workspace}）。理由：${args.justification}`,
+    reason: args.command !== undefined
+      ? `沙箱升级：请确认允许 dev_task 以 ${mode} 模式执行本次验证命令并保存回执（workspace: ${workspace}）。命令：${args.command}\n理由：${args.justification}`
+      : `沙箱升级：请确认允许 dev_task 以 ${mode} 模式写任务文件（workspace: ${workspace}）。理由：${args.justification}`,
     signal: exec.signal,
   })
   if (outcome !== 'allowed-once') {
@@ -753,7 +760,7 @@ export function registerDevTask(ctx: Context): void {
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
       expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; apply is rejected without it, or with a different hash (init apply).' },
       existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
-      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Wider sandbox mode for this call\'s file writes; default is workspace-write. Use only as a retry after a sandbox denial of the same call; requires justification and human approval.' },
+      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result command. Commands otherwise use the session policy. Retry the exact denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
@@ -1024,6 +1031,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       let note: string | undefined
+      let approvedWriteMode: 'workspace-write' | 'danger-full-access' | undefined
       switch (a.operation) {
         case 'record': {
           if (!a.artifact) throw new Error('record requires artifact (the artifact id)')
@@ -1155,7 +1163,8 @@ export function registerDevTask(ctx: Context): void {
           const verifyRoot = state.root ?? cwd
           const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, verifyRoot)
           if (command !== undefined) {
-            const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec)
+            approvedWriteMode = await resolveWriteMode(ctx, { ...a, command }, exec)
+            const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
             if (state.execution_version === 1) receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
@@ -1178,7 +1187,8 @@ export function registerDevTask(ctx: Context): void {
           const loadCall = loadedSkills(session).get(a.skill_name!)
           if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
           if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')
-          const receipt = await runVerificationCommand(ctx, a.command, state.root ?? cwd, exec)
+          approvedWriteMode = await resolveWriteMode(ctx, a, exec)
+          const receipt = await runVerificationCommand(ctx, a.command, state.root ?? cwd, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
           receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
           state.skill_results ??= {}
           state.skill_results[stage] ??= {}
@@ -1194,7 +1204,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`unknown operation ${a.operation}`)
       }
 
-      await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+      await writeTask(fs, state, cwd, approvedWriteMode ?? await resolveWriteMode(ctx, a, exec))
       return note ?? `ok (stage ${state.stage})`
     },
   }))
