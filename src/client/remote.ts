@@ -5,8 +5,15 @@
  * {@link ../controller.ts} exposes: workflow config read/write, the skill/rule
  * catalogs, and skill/rule creation. The generator is not required: the Client
  * gateway only consumes a plain `{ package, descriptors }` object, and each
- * codec is just `{ mode: 'strict', schema: { parse(value) } }`. zod is bundled
- * privately into `lib/client.js`, so this module stays self-contained.
+ * codec is a plain object wrapping a `{ parse(value) }` validator. zod is
+ * bundled privately into `lib/client.js`, so this module stays self-contained.
+ *
+ * Every strict codec carries BOTH `create` and `schema`. DSH 0.1.6-alpha.2
+ * changed the contract to a lazy `create: () => TypertSchema` factory and
+ * rejects a schema-only codec with "strict codec has no create() factory";
+ * earlier releases read the materialized `schema` field and never call
+ * `create`. Emitting both keeps one artifact loadable on either side of that
+ * break, and `makeCodec` is the single place that decides the shape.
  *
  * @module dsh-task-engine/remote
  */
@@ -243,6 +250,8 @@ const resourceRequestSchema = z.object({
   sourceDir: z.string().optional(), expectedHash: z.string().optional(),
 })
 const resourcePreviewSchema = z.object({ ok: z.boolean(), name: z.string(), description: z.string(), content: z.string(), target: z.string(), files: z.number(), bytes: z.number(), hash: z.string(), conflict: z.boolean(), error: z.string().optional() })
+const resourceRootsRequestSchema = z.object({ kind: z.enum(['skill', 'rule']), path: z.string() })
+const resourceRootsSchema = z.object({ project: z.string(), user: z.string() })
 const PACKAGE = '@godv61/dsh-task-engine'
 
 export const TYPERT_REMOTE = {
@@ -251,14 +260,14 @@ export const TYPERT_REMOTE = {
     ...(['previewResource', 'importResource'] as const).map(method => ({
       id: `${PACKAGE}#task-engine/${method}`, service: 'taskEngineController', namespace: 'task-engine', method,
       invocation: { kind: 'direct' },
-      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceImportRequest`, schema: resourceRequestSchema } }],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourcePreview`, schema: resourcePreviewSchema },
+      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceImportRequest`, create: () => resourceRequestSchema, schema: resourceRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourcePreview`, create: () => resourcePreviewSchema, schema: resourcePreviewSchema },
     })),
     {
       id: `${PACKAGE}#task-engine/resourceRoots`, service: 'taskEngineController', namespace: 'task-engine', method: 'resourceRoots',
       invocation: { kind: 'direct' },
-      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRootsRequest`, schema: z.object({ kind: z.enum(['skill', 'rule']), path: z.string() }) } }],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRoots`, schema: z.object({ project: z.string(), user: z.string() }) },
+      parameters: [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRootsRequest`, create: () => resourceRootsRequestSchema, schema: resourceRootsRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ResourceRoots`, create: () => resourceRootsSchema, schema: resourceRootsSchema },
     },
     {
       id: `${PACKAGE}#task-engine/read`,
@@ -271,10 +280,10 @@ export const TYPERT_REMOTE = {
           name: 'path',
           wire: 'path',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() },
+          codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngConfigView`, schema: viewSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngConfigView`, create: () => viewSchema, schema: viewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/write`,
@@ -287,10 +296,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngWriteRequest`, schema: writeRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngWriteRequest`, create: () => writeRequestSchema, schema: writeRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngConfigView`, schema: viewSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#EngConfigView`, create: () => viewSchema, schema: viewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/listSkills`,
@@ -303,10 +312,10 @@ export const TYPERT_REMOTE = {
           name: 'path',
           wire: 'path',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() },
+          codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SkillCatalog`, schema: skillCatalogSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SkillCatalog`, create: () => skillCatalogSchema, schema: skillCatalogSchema },
     },
     {
       id: `${PACKAGE}#task-engine/listRules`,
@@ -319,10 +328,10 @@ export const TYPERT_REMOTE = {
           name: 'path',
           wire: 'path',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() },
+          codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#RuleCatalog`, schema: ruleCatalogSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#RuleCatalog`, create: () => ruleCatalogSchema, schema: ruleCatalogSchema },
     },
     {
       id: `${PACKAGE}#task-engine/writeSkill`,
@@ -335,10 +344,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteSkillRequest`, schema: writeSkillRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteSkillRequest`, create: () => writeSkillRequestSchema, schema: writeSkillRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/installSkill`,
@@ -351,10 +360,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InstallSkillRequest`, schema: installSkillRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InstallSkillRequest`, create: () => installSkillRequestSchema, schema: installSkillRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/listDirs`,
@@ -367,10 +376,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsRequest`, schema: listDirsRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsRequest`, create: () => listDirsRequestSchema, schema: listDirsRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsView`, schema: listDirsViewSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ListDirsView`, create: () => listDirsViewSchema, schema: listDirsViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/writeRule`,
@@ -383,10 +392,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteRuleRequest`, schema: writeRuleRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteRuleRequest`, create: () => writeRuleRequestSchema, schema: writeRuleRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readSkill`,
@@ -399,10 +408,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadSkillRequest`, schema: readSkillRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadSkillRequest`, create: () => readSkillRequestSchema, schema: readSkillRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadSkillResult`, schema: readSkillResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadSkillResult`, create: () => readSkillResultSchema, schema: readSkillResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readRule`,
@@ -415,10 +424,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadRuleRequest`, schema: readRuleRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadRuleRequest`, create: () => readRuleRequestSchema, schema: readRuleRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadRuleResult`, schema: readRuleResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ReadRuleResult`, create: () => readRuleResultSchema, schema: readRuleResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/deleteSkill`,
@@ -431,10 +440,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#DeleteSkillRequest`, schema: deleteSkillRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#DeleteSkillRequest`, create: () => deleteSkillRequestSchema, schema: deleteSkillRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/deleteRule`,
@@ -447,10 +456,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#DeleteRuleRequest`, schema: deleteRuleRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#DeleteRuleRequest`, create: () => deleteRuleRequestSchema, schema: deleteRuleRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, schema: writeResourceResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readTasks`,
@@ -463,10 +472,10 @@ export const TYPERT_REMOTE = {
           name: 'path',
           wire: 'path',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() },
+          codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#TaskLedgerView`, schema: taskLedgerViewSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#TaskLedgerView`, create: () => taskLedgerViewSchema, schema: taskLedgerViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readInit`,
@@ -479,10 +488,10 @@ export const TYPERT_REMOTE = {
           name: 'path',
           wire: 'path',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'string', schema: z.string() },
+          codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitView`, schema: initViewSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitView`, create: () => initViewSchema, schema: initViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/writeInit`,
@@ -495,10 +504,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitWriteRequest`, schema: initWriteRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitWriteRequest`, create: () => initWriteRequestSchema, schema: initWriteRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitWriteResult`, schema: initWriteResultSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitWriteResult`, create: () => initWriteResultSchema, schema: initWriteResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/generateInit`,
@@ -511,10 +520,10 @@ export const TYPERT_REMOTE = {
           name: 'request',
           wire: 'request',
           source: 'json',
-          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, schema: initGenerateRequestSchema },
+          codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema },
         },
       ],
-      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitDraft`, schema: initDraftSchema },
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitDraft`, create: () => initDraftSchema, schema: initDraftSchema },
     },
   ],
 }

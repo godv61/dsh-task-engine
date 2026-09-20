@@ -1,6 +1,6 @@
 {
   "name": "@godv61/dsh-task-engine",
-  "version": "0.23.2",
+  "version": "0.23.3",
   "description": "Preset-workflow engineering delivery engine for DeepSeek Harness: a `dev_task` tool that hard-gates stage transitions and commit scope/message, per-node skill/rule bindings with progressive disclosure, a workbench to pick a flow preset and mount skills/rules, and preset-scoped activation — the tool and skills activate only for sessions on a preset that names the agent row.",
   "type": "module",
   "main": "lib/index.js",
@@ -64,10 +64,10 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-agent-presets": "^0.1.2-rc.1 || ^0.1.3-alpha.1",
-    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.3-alpha.1",
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1 || ^0.1.3-alpha.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.1.2-rc.1 || ^0.1.3-alpha.1"
+    "@deepseek-ai/dsh-agent-presets": "^0.1.2-rc.1 || ^0.1.3-alpha.1 || ^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.3-alpha.1 || ^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1 || ^0.1.3-alpha.1 || ^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.2-rc.1 || ^0.1.3-alpha.1 || ^0.1.6-alpha.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",

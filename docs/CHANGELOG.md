@@ -4,6 +4,12 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 0.23.3
+
+- **适配 DSH 0.1.6-alpha.2 的 typert strict codec 契约变更**。该版本把 codec 从直接携带 `schema` 改为惰性工厂 `create: () => TypertSchema`，并在注册时硬校验 `typeof codec.create === 'function'`；旧写法会在插件加载阶段抛 `strict codec has no create() factory`，整份 Remote 贡献被拒绝。`src/client/remote.ts` 的 36 个 strict codec 现在**同时携带 `create` 与 `schema`**，因此同一份产物在 0.1.2-rc.1（桌面版）与 0.1.6-alpha.2（源码版）上都能加载。两处内联的 `z.object({...})` 提为具名常量，与文件既有风格一致。
+- peer 范围补上 `|| ^0.1.6-alpha.2`。此前声明未覆盖该版本，pnpm 只在安装时警告、运行时不拦，导致问题在启动时才暴露。
+- 注意：npm 的 semver 不匹配未被范围显式点名的预发布版本，因此后续每个新的 DSH alpha 都需要在此处追加，否则会重新出现同类加载失败。
+
 ## 0.23.2
 
 - 修复 verify / skill_result 先执行命令后审批、批准权限未传入 shell 的问题；拒绝、取消或审批不可用时不执行命令。
