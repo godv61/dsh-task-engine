@@ -4,6 +4,10 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 0.23.5
+
+- **修复 `scripts/` 未随包发布，导致两条已声明的 npm script 在安装后无法执行**。`package.json` 声明了 `verify:package` 与 `verify:dsh`，但 `files` 白名单不含 `scripts/**`，用户装包后运行它们会直接 `MODULE_NOT_FOUND`。该问题早于 0.23.3 存在（`verify:package` 一直如此），0.23.4 新增的 `verify:dsh` 只是沿用了同一模式。现在把 `scripts/**` 纳入白名单，并在 `verify:package` 中加断言：包内必须能找到每一条 `package.json` 里声明的 `node <file>` script 目标。
+
 ## 0.23.4
 
 - **关闭两处 Remote 路径边界漏洞**。`checkedPath` 此前用**原始字符串**比对禁止前缀，`D:/proj/../../Windows` 不匹配任何前缀，却被后续 `join()` 解析到 `C:/Windows`；实测 8 个越界样本中旧实现放过 7 个。现在先 `resolve()` 归一化再判断，禁止列表不再绑定盘符（`D:/Windows`、`E:/Program Files` 同样拒绝），并拒绝裸盘符根（`D:/`、`C:/`）。

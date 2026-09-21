@@ -89,11 +89,52 @@ if (wantsSchema) {
 }
 
 // 3. The peer range must actually admit the installed DSH version, because npm
-//    semver will not match a prerelease the range does not name.
+//    semver will not match a prerelease the range does not name. Implemented
+//    here rather than via the `semver` package: that is a devDependency, so a
+//    consumer running this script from the installed tarball has no copy, and
+//    the whole point of this check is to run against whatever DSH is present.
 const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
 const range = pkg.peerDependencies['@deepseek-ai/dsh-typert-protocol'] ?? ''
-const { satisfies } = await import('semver')
-check(`peer range admits DSH ${protocol.version}`, satisfies(protocol.version, range) === true, range)
+check(`peer range admits DSH ${protocol.version}`, rangeAdmits(range, protocol.version), range)
+
+/**
+ * Whether one of a `||`-joined range's comparators admits `version`.
+ *
+ * npm semver matches a prerelease only when the comparator names a prerelease
+ * on the SAME major.minor.patch, which is why enumerating versions is the only
+ * way to cover a DSH alpha. This mirrors that rule for the caret and exact
+ * forms the manifest actually uses; it is deliberately conservative, and an
+ * unrecognized comparator reports `false` so the check fails loudly rather than
+ * passing by accident.
+ * @param range - the peer range expression.
+ * @param version - the installed DSH version to test.
+ * @returns true when the range admits the version.
+ */
+function rangeAdmits(range, version) {
+  const parse = text => {
+    const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(text.trim())
+    return match === null
+      ? undefined
+      : { major: +match[1], minor: +match[2], patch: +match[3], pre: match[4] }
+  }
+  const target = parse(version)
+  if (target === undefined) return false
+  for (const part of range.split('||').map(text => text.trim()).filter(Boolean)) {
+    const caret = /^\^(.+)$/u.exec(part)
+    const lower = parse(caret === null ? part : caret[1])
+    if (lower === undefined) continue
+    // Same prerelease tuple, or a plain release on the same caret line.
+    const sameTuple = target.major === lower.major
+      && target.minor === lower.minor
+      && target.patch === lower.patch
+    if (lower.pre !== undefined) {
+      if (sameTuple) return true
+    } else if (target.pre === undefined && target.major === lower.major) {
+      if (caret === null ? sameTuple : target.minor >= lower.minor) return true
+    }
+  }
+  return false
+}
 
 if (problems.length > 0) {
   console.error(`\n${problems.length} DSH compatibility problem(s)`)

@@ -48,6 +48,27 @@ for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'li
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
 check('tarball excludes build scripts', !listing.some(line => line.endsWith('build-client.mjs') || line.endsWith('build-hook.mjs')))
 
+// Every `node <file>` script the manifest declares must actually ship, EXCEPT
+// the build-time ones that `prepare` needs in the source tree only. A script
+// whose target is absent from `files` installs fine and then dies with
+// MODULE_NOT_FOUND — which is exactly what verify:package and verify:dsh did
+// until this assertion existed, because neither scripts/ path was published.
+{
+  const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
+  // Scripts that legitimately run only before publishing, never from a consumer.
+  const BUILD_ONLY = new Set(['prepare', 'build'])
+  const missing = []
+  for (const [name, command] of Object.entries(manifest.scripts ?? {})) {
+    if (BUILD_ONLY.has(name)) continue
+    for (const match of String(command).matchAll(/\bnode\s+(?:--[^\s]+\s+)*([^\s&|]+)/gu)) {
+      const target = match[1].replace(/^\.\//u, '')
+      if (!target.endsWith('.mjs') && !target.endsWith('.js')) continue
+      if (!listing.includes(target)) missing.push(`${name} -> ${target}`)
+    }
+  }
+  check('every declared node script ships in the tarball', missing.length === 0, missing.join(', '))
+}
+
 // 3b. install the tarball into a clean project so peer dependencies resolve,
 // exactly like a real consumer's `npm install`.
 const installDir = mkdtempSync(join(tmpdir(), 'dsh-pkg-install-'))
