@@ -1,7 +1,7 @@
 /**
  * Black-box verification of the npm tarball before publishing: packs the
  * package, extracts it into a clean temp dir, and proves the published entry
- * points actually work â€” main import, browser client registration, the bundled
+ * points actually work â€?main import, browser client registration, the bundled
  * `.p0-test.mjs`, the CLI, and the `files` whitelist.
  *
  * Run: `npm run verify:package`
@@ -42,7 +42,7 @@ const listing = execSync(`tar -tzf "${tgzPath}"`, { encoding: 'utf8' })
 check('extract', existsSync(join(pkgDir, 'package.json')))
 
 // 3. files whitelist sanity
-for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', '.p0-test.mjs', 'preset/enable.mjs', 'README.md', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs']) {
+for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', '.p0-test.mjs', 'preset/enable.mjs', 'README.md', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs']) {
   check(`tarball contains ${required}`, listing.includes(required))
 }
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
@@ -51,7 +51,7 @@ check('tarball excludes build scripts', !listing.some(line => line.endsWith('bui
 // Every `node <file>` script the manifest declares must actually ship, EXCEPT
 // the build-time ones that `prepare` needs in the source tree only. A script
 // whose target is absent from `files` installs fine and then dies with
-// MODULE_NOT_FOUND â€” which is exactly what verify:package and verify:dsh did
+// MODULE_NOT_FOUND â€?which is exactly what verify:package and verify:dsh did
 // until this assertion existed, because neither scripts/ path was published.
 {
   const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))
@@ -112,7 +112,7 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
 } catch (error) { check('in-package resource, workflow and hook behavior', false, String(error.stderr ?? error)) }
 

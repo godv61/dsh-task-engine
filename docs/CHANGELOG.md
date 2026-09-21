@@ -4,6 +4,13 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 0.23.6
+
+- **修复「工程化开发引擎」预设加载失败**。`seed-preset.ts` 用 `@deepseek-ai/dsh-agent-presets` 导出的 `SHIPPED_PRESET_ROOT` 常量定位源预设，而该常量是 `fileURLToPath(new URL('../presets/', import.meta.url))`——它锁在**插件自己依赖树**里的那份包上，可能和**正在运行的** DSH 不同版本。于是派生出的预设携带运行中 harness 早已替换掉的行：DSH 2026-09-13 把 `workflow-worker-thread` 换成了 `workflow-ptc`，而该包同时退出了 `apps/cli` 的依赖，预设因此报 `row "workflow-worker-thread" names a plugin that cannot be resolved`，整个预设显示「加载失败」，任何新会话都无法启用任务流程。现在改为在**调用时**用 `createRequire` 从插件自身位置解析，跟随宿主的安装图。
+- **预设改为每次启动重新派生**，而非"存在即跳过"。此前一次性复制把预设冻结成首次运行时的快照，DSH 每次修改 `standard` 都会让它失配；persona 格式也经历过 `text:` → `prefix`/`suffix` 的迁移，旧副本因此被 persona 插件的 schema 拒绝。现在检测到是本插件生成的预设才更新，**手工编辑过的预设绝不被覆盖**。
+- persona 行改为**整块重写 `config:`**，不再匹配某一种历史措辞，因此对 schema 的后续演进免疫。同时**不再设置 `complete: true`**——那会让这段 prefix 成为整个系统提示词并抑制其余所有 section。
+- 新增 `.preset-test.mjs`（7 项），断言 persona 已替换、使用当前 `prefix` 形式、不含 `complete`、agent 行只出现一次、`standard` 的所有顶层行都被继承、以及重复派生结果稳定。已反向验证：把 `complete: true` 加回去该测试即失败。`npm test` 从 43 项增至 50 项。
+
 ## 0.23.5
 
 - **修复 `scripts/` 未随包发布，导致两条已声明的 npm script 在安装后无法执行**。`package.json` 声明了 `verify:package` 与 `verify:dsh`，但 `files` 白名单不含 `scripts/**`，用户装包后运行它们会直接 `MODULE_NOT_FOUND`。该问题早于 0.23.3 存在（`verify:package` 一直如此），0.23.4 新增的 `verify:dsh` 只是沿用了同一模式。现在把 `scripts/**` 纳入白名单，并在 `verify:package` 中加断言：包内必须能找到每一条 `package.json` 里声明的 `node <file>` script 目标。
