@@ -736,4 +736,54 @@ function memProbe(files) {
   assert(JSON.parse(fs._files.get('.dsh/task-CAS-RACE.json')).title === 'concurrent writer', 'CAS preserves the concurrent writer record')
 }
 
+// ── 36. 0.23.3: the path guard normalizes BEFORE the forbidden-prefix test ──
+// Testing the raw string let `D:/proj/../../Windows` through: it matches no
+// forbidden prefix as written, yet every later join() resolves it to C:/Windows.
+// NOTE: block 35 above already activated the module-level registry and strict
+// mode, so every path asserted VALID here must be registered first.
+{
+  const ctl = await import('./lib/controller.js')
+  const valid = ['D:/work/my project', 'D:/mydir/users-guide', 'D:/proj/one/']
+  for (const good of valid) ctl.registerWorkspace(good)
+  // Must still accept ordinary workspaces, including names that merely look risky.
+  for (const good of valid) {
+    try {
+      ctl.checkedPath(good)
+    } catch (error) {
+      throw new Error(`checkedPath wrongly rejected a valid workspace "${good}": ${error.message}`)
+    }
+  }
+  assert(ctl.checkedPath('D:/proj/one/') === 'D:/proj/one', 'trailing slash is still normalized away')
+  assert(ctl.checkedPath('D:/work/my project') === 'D:/work/my project', 'a space in a workspace name is preserved')
+  // Traversal must not smuggle a system directory past the guard.
+  await assertThrows(() => ctl.checkedPath('D:/proj/../../Windows'), 'not an allowed workspace', 'traversal into a system dir is rejected after normalization')
+  await assertThrows(() => ctl.checkedPath('C:/Users/x/../../Windows'), 'not an allowed workspace', 'traversal out of C:/Users into Windows is rejected')
+  await assertThrows(() => ctl.checkedPath('D:/proj/../../../Users'), 'not an allowed workspace', 'traversal into a user tree is rejected')
+  // The system list is drive-agnostic: matching only c:/windows left D:/Windows open.
+  await assertThrows(() => ctl.checkedPath('D:/Windows'), 'not an allowed workspace', 'a system dir on a non-C drive is rejected')
+  await assertThrows(() => ctl.checkedPath('E:/Program Files/x'), 'not an allowed workspace', 'Program Files on any drive is rejected')
+  await assertThrows(() => ctl.checkedPath('C:/ProgramData/x'), 'not an allowed workspace', 'ProgramData is rejected')
+  // A bare filesystem root is not a workspace.
+  await assertThrows(() => ctl.checkedPath('D:/'), 'filesystem root', 'a drive root is rejected')
+  await assertThrows(() => ctl.checkedPath('C:/'), 'filesystem root', 'C:/ is rejected')
+  // Regression guard for behaviour block 35 already covered.
+  await assertThrows(() => ctl.checkedPath('C:/Windows/system32'), 'not an allowed workspace', 'the original system-root case still fails closed')
+  await assertThrows(() => ctl.checkedPath('relative/path'), 'must be absolute', 'a relative path is still rejected')
+}
+
+// ── 37. 0.23.3: init writes never escape the authorized workspace ──────────
+{
+  const ctl = await import('./lib/controller.js')
+  assert(typeof ctl.isInside === 'function', 'the containment helper is exported for host integrations')
+  // Segment-level comparison: a name-prefix sibling is NOT inside its neighbour.
+  assert(ctl.isInside('D:/a/b', 'D:/a/b/c') === true, 'a descendant is inside')
+  assert(ctl.isInside('D:/a/b', 'D:/a/b') === true, 'the root itself is inside')
+  assert(ctl.isInside('D:/a/b', 'D:/a/bc') === false, 'a name-prefix sibling is NOT inside')
+  assert(ctl.isInside('D:/a/b', 'D:/a') === false, 'a parent is not inside')
+  assert(ctl.isInside('D:/a/b', 'D:/a/b/../c') === false, 'a traversal out of the workspace is NOT inside')
+  const controllerSrc = readFileSync('./lib/controller.js', 'utf8')
+  assert(controllerSrc.includes('定位到工作区之外'), 'writeInit refuses a target located outside the workspace')
+  assert(controllerSrc.includes('INIT_MAX_ANCESTOR_CLIMB'), 'the ancestor walk is bounded rather than unbounded')
+}
+
 console.log(`\nP0 acceptance: ${passed} checks passed`)

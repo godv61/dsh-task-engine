@@ -18,3 +18,39 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run verify:package
+
+  # The plugin's Typert Remote contribution must satisfy the strict-codec
+  # contract the INSTALLED DSH expects. DSH 0.1.6-alpha.2 changed it from a
+  # materialized `schema` to a lazy `create()` factory and rejected the old
+  # shape at plugin load, so the workbench and dev_task never mounted — a
+  # failure none of the unit tests above can see, because they never load the
+  # descriptors through a real registry. npm semver cannot wildcard
+  # prereleases, so a new DSH alpha silently falls outside the peer range and
+  # pnpm only warns at install time. This job checks the contract where it
+  # actually lives and fails the build when the two drift apart.
+  dsh-contract:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `master` catches a breaking change as soon as DSH makes it; the pinned
+        # alpha keeps a known-good baseline so a red run names the culprit.
+        dsh: [master, dsh-v0.1.6-alpha.2]
+    continue-on-error: ${{ matrix.dsh == 'master' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      # A shallow checkout is enough: the check reads package.json and the
+      # protocol's type declarations, not the whole build.
+      - name: Check out DSH
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ matrix.dsh }}
+          path: dsh
+          fetch-depth: 1
+      - name: Verify the codec contract against DSH ${{ matrix.dsh }}
+        run: npm run verify:dsh -- ${{ github.workspace }}/dsh

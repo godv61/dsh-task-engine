@@ -4,6 +4,14 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 0.23.4
+
+- **关闭两处 Remote 路径边界漏洞**。`checkedPath` 此前用**原始字符串**比对禁止前缀，`D:/proj/../../Windows` 不匹配任何前缀，却被后续 `join()` 解析到 `C:/Windows`；实测 8 个越界样本中旧实现放过 7 个。现在先 `resolve()` 归一化再判断，禁止列表不再绑定盘符（`D:/Windows`、`E:/Program Files` 同样拒绝），并拒绝裸盘符根（`D:/`、`C:/`）。
+- `writeInit` 不再写到工作区之外。`locateInitRoot` 的祖先回溯可能定位到工作区上一级：**读取**该文件是有意的（那才是真正拥有 `AGENTS.md` 的项目），但**写入**不是本工作区的事。现在越界写入直接拒绝并提示改选工作区，与 `dev_task init apply` 的 `assertInsideRoot` 一致；祖先回溯同时加上 8 层上限。新增 `isInside` 按**路径段**而非字符串前缀比较，`D:/a/bc` 不会被误判为在 `D:/a/b` 内。
+- **新增 DSH 契约兼容性检查**（`scripts/verify-dsh-compat.mjs`，`npm run verify:dsh`）。它读取真实 DSH 检出里 typert 协议的类型声明，判断当前契约是 `schema` 还是 `create()`，再断言产物满足它、且 peer 范围确实覆盖该版本。这正是 0.23.3 修复的那类问题——单元测试看不到，因为测试从不通过真实注册表加载 descriptor。CI 新增 `dsh-contract` 作业：对固定基线 `dsh-v0.1.6-alpha.2` 失败即红，对 `master` 仅告警（`continue-on-error`），因此破坏性变更会在发布前暴露。已反向验证：把 peer 范围改回旧值，该检查会失败。
+- **新增提交钩子端到端测试**（`.hook-test.mjs`，6 项）。此前的 P0 断言只检查钩子**源码**的字符串（关闭路径转义、NUL 分隔、捆绑冻结快照），能防手抄回潮，但**无法证明门禁真的拦住了提交**——一个全部拒绝或全部放行的钩子都能通过。新测试在临时 git 仓库里真实执行 `git commit`，双向断言：合法提交放行，消息格式错误、范围外文件、未到检查点、快照被篡改、敏感路径无高风险回执五类均被拒绝且给出对应理由。
+- P0 断言从 126 增至 146；`npm test` 现包含钩子端到端用例（37 → 43 项）。
+
 ## 0.23.3
 
 - **适配 DSH 0.1.6-alpha.2 的 typert strict codec 契约变更**。该版本把 codec 从直接携带 `schema` 改为惰性工厂 `create: () => TypertSchema`，并在注册时硬校验 `typeof codec.create === 'function'`；旧写法会在插件加载阶段抛 `strict codec has no create() factory`，整份 Remote 贡献被拒绝。`src/client/remote.ts` 的 36 个 strict codec 现在**同时携带 `create` 与 `schema`**，因此同一份产物在 0.1.2-rc.1（桌面版）与 0.1.6-alpha.2（源码版）上都能加载。两处内联的 `z.object({...})` 提为具名常量，与文件既有风格一致。

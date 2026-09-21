@@ -14,7 +14,7 @@ import { authorizedWorkspace } from './workspace-access.ts'
 import { prepareImport, commitImport } from './resource-import.ts'
 import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type GenerateOptions } from '@deepseek-ai/dsh-llm'
@@ -682,6 +682,19 @@ export default class TaskEngineController extends TypertRemoteService {
         error: 'AGENTS.md 已存在且受保护；若确要覆盖，请在该工作台确认覆盖后重试（overwrite: true）。',
       }
     }
+    // `locateInitRoot` may resolve ABOVE the authorized workspace (its ancestor
+    // walk finds the single owning project). Reading a parent file is useful
+    // context, but writing one is not this workspace's business: refuse rather
+    // than let a workspace aimed at a child directory edit an unrelated
+    // project's governance file. `dev_task init apply` holds itself to the same
+    // rule through `assertInsideRoot`.
+    if (!isInside(request.path, root)) {
+      return {
+        ok: false,
+        lines,
+        error: `AGENTS.md 定位到工作区之外（${join(root, INITFILE)}）；本工作台只写入所选工作区内，请改选该目录为工作区后再保存。`,
+      }
+    }
     const target = await fs.resolve(INITFILE, { cwd: root })
     await fs.writeText(target, request.content, undefined, undefined, {
       mode: 'workspace-write',
@@ -1015,12 +1028,36 @@ export function enableStrictWorkspaces(): void {
 }
 
 /**
- * Reject a client-supplied workspace path that is not absolute or points at a
- * system/home-wide root, then require the path on the host's workspace
- * allow-list when one is registered. The real containment stays with the
- * host's filesystem sandbox (writes carry a per-call `workspace-write`
- * policy); this check fails closed on the obvious mis-targets a stray client
- * call could name.
+ * System locations that are never a project workspace. Stored WITHOUT a drive
+ * letter so one rule covers every volume: matching only `c:/windows` left
+ * `D:/Windows` reachable on a machine whose system volume is not C:.
+ */
+const FORBIDDEN_WINDOWS = [
+  'windows', 'program files', 'program files (x86)', 'programdata', 'users',
+  '$recycle.bin', 'system volume information', 'perflogs', 'recovery',
+]
+/** POSIX system roots, absolute and lower-case. */
+const FORBIDDEN_POSIX = [
+  '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/boot', '/dev', '/proc',
+  '/sys', '/var', '/root', '/system', '/library', '/private',
+]
+/** Windows drive-qualified path (`D:` or `D:/…`); the drive is dropped before the prefix test. */
+const DRIVE_QUALIFIED = /^[a-z]:(\/|$)/u
+
+/**
+ * Reject a client-supplied workspace path that is not absolute, escapes its own
+ * directory through `..`, or names a filesystem root or system-wide location;
+ * then require the path on the host's workspace allow-list when one is
+ * registered. The real containment stays with the host's filesystem sandbox
+ * (writes carry a per-call `workspace-write` policy); this check fails closed on
+ * the obvious mis-targets a stray client call could name.
+ *
+ * The path is normalized BEFORE the forbidden-prefix test. Testing the raw
+ * string let `D:/proj/../../Windows` through: it matches no forbidden prefix as
+ * written, yet every later `join()` resolves it into `C:/Windows`.
+ * @param raw - the client-supplied workspace directory.
+ * @returns the canonical, POSIX-separated workspace path.
+ * @throws {RemoteError} when the path is not an allowed workspace.
  */
 /** Exported for tests and host integrations: the Remote path guard itself. */
 export function checkedPath(raw: string): string {
@@ -1028,16 +1065,42 @@ export function checkedPath(raw: string): string {
   if (!isAbsolute(raw)) {
     throw new RemoteError('gateway/internal', `task-engine: workspace path must be absolute: ${raw}`, {})
   }
-  const normalized = raw.replace(/[\\/]+$/u, '')
-  const lower = normalized.replace(/\\/gu, '/').toLowerCase()
-  const forbidden = ['c:/windows', 'c:/program files', 'c:/program files (x86)', 'c:/users']
+  // Canonical form with `.`/`..` resolved. POSIX-separated so the value a caller
+  // registers is stable across platforms.
+  const normalized = resolve(raw).replace(/\\/gu, '/').replace(/\/+$/u, '') || '/'
+  const lower = normalized.toLowerCase()
+  if (lower !== '/' && /^[a-z]:$/u.test(lower)) {
+    throw new RemoteError('gateway/internal', `task-engine: a filesystem root is not an allowed workspace: ${raw}`, {})
+  }
+  const forbidden = process.platform === 'win32' ? FORBIDDEN_WINDOWS : FORBIDDEN_POSIX
+  // Windows: strip the drive so C:/Windows and D:/Windows share one rule.
+  const key = process.platform === 'win32' && DRIVE_QUALIFIED.test(lower)
+    ? lower.slice(2).replace(/^\/+/u, '')
+    : lower
   for (const prefix of forbidden) {
-    if (lower === prefix || lower.startsWith(`${prefix}/`)) {
+    if (key === prefix || key.startsWith(`${prefix}/`)) {
       throw new RemoteError('gateway/internal', `task-engine: path is not an allowed workspace: ${raw}`, {})
     }
   }
   workspaceRegistry.assertAllowed(normalized)
   return normalized
+}
+
+/**
+ * Whether `candidate` is `root` itself or sits inside it, compared after
+ * resolution so `.`/`..` segments and a trailing separator cannot disguise an
+ * escape. Compared as a path-segment prefix, not a raw string prefix, so
+ * `D:/a/bc` is not treated as being inside `D:/a/b`.
+ * @param root - the authorized workspace directory.
+ * @param candidate - the directory a write would land in.
+ * @returns true when the write stays within the workspace.
+ */
+export function isInside(root: string, candidate: string): boolean {
+  const normalizedRoot = resolve(root)
+  const normalizedCandidate = resolve(candidate)
+  if (normalizedRoot === normalizedCandidate) return true
+  const prefix = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep
+  return normalizedCandidate.startsWith(prefix)
 }
 
 /** Directories the scan tree never descends into. */
@@ -1132,7 +1195,9 @@ function locateInitFile(path: string): string | undefined {
   if (children.length === 1) return children[0]
   if (children.length > 1) return undefined
   let current = dirname(path)
-  for (;;) {
+  // Bounded climb: an unbounded walk from a deep workspace could surface a
+  // distant, unrelated AGENTS.md as "this project's" governance file.
+  for (let level = 0; level < INIT_MAX_ANCESTOR_CLIMB; level++) {
     const up = join(current, INITFILE)
     if (existsSync(up)) return up
     const parent = dirname(current)
@@ -1142,7 +1207,14 @@ function locateInitFile(path: string): string | undefined {
   return undefined
 }
 
-/** Resolve the project root that owns AGENTS.md for a workspace, or the workspace itself. */
+/** How many directory levels the ancestor walk climbs while hunting for AGENTS.md. */
+const INIT_MAX_ANCESTOR_CLIMB = 8
+
+/**
+ * Resolve the project root that owns AGENTS.md for a workspace, or the workspace itself.
+ * @param path - absolute workspace directory.
+ * @returns the root that owns AGENTS.md plus whether one was found.
+ */
 function locateInitRoot(path: string): { root: string; found: boolean } {
   const file = locateInitFile(path)
   if (file !== undefined) return { root: dirname(file), found: true }
