@@ -1,5 +1,9 @@
 # 插件收录申请
 
+**已提交：** [PR #5681](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5681)（2026-09-22）。
+`check` 与 `Submission gate` 两项 CI 均已通过，等待维护者评审。PR 只新增
+`data/plugins/godv61__dsh-task-engine.yml`（+6 行）。
+
 目标：[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
 
 ## 提交内容
