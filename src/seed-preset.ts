@@ -1,11 +1,11 @@
 /**
  * Seed the `eng` preset into the user's `.agent-presets` root.
  *
- * Installing the bundle must put a pickable "工程化开发引擎" preset in the preset
+ * Installing the bundle must put a pickable "工程化开发引�? preset in the preset
  * picker without anyone hand-copying a composition. The preset is the shipped
  * `standard` composition with three edits: the persona is replaced by the
  * engineering persona, `task-engine-agent` is appended, and nothing else changes
- * — so a session on it has every tool `standard` has, plus `dev_task`.
+ * �?so a session on it has every tool `standard` has, plus `dev_task`.
  *
  * The seed DERIVES the composition from the `standard` that is running, and
  * RE-DERIVES it whenever that source moves. The earlier version copied once and
@@ -64,7 +64,7 @@ function dshHome(): string {
  * time from the installed DSH rather than from a build-time constant.
  *
  * `@deepseek-ai/dsh-agent-presets` also exports `SHIPPED_PRESET_ROOT`, but that
- * is `fileURLToPath(new URL('../presets/', import.meta.url))` — a constant baked
+ * is `fileURLToPath(new URL('../presets/', import.meta.url))` �?a constant baked
  * into whichever copy of the package the *plugin* resolves. Under a real install
  * that is the plugin's own dependency tree, which can sit at a different DSH
  * version than the one running: the seed then copies an obsolete `standard`,
@@ -97,12 +97,65 @@ function personaBody(): string {
 }
 
 /**
- * Replace the persona row's config with the engineering persona.
+ * Which persona config field the RUNNING harness expects.
  *
- * The persona plugin's schema has moved twice (`text:` → `prefix`/`suffix`), so
- * this rewrites the whole `config:` block of the `persona` row rather than
- * matching one historical phrasing. A shape this does not recognise is left
- * untouched and reported, never guessed at.
+ * `@deepseek-ai/dsh-persona` renamed `text` to `prefix`/`suffix` in
+ * `40792330c0` (2026-09-06, first shipped in `dsh-v0.1.3-alpha.2`). The two
+ * schemas are mutually exclusive: a preset written with `prefix` is rejected
+ * outright by an older persona plugin with `$.text missing required value`, and
+ * `text` is rejected by the newer one. The seed therefore cannot hardcode
+ * either name �?it reads which one the source composition already uses, since
+ * that composition is what the running harness mounts.
+ */
+type PersonaField = 'text' | 'prefix'
+
+/** The block-scalar styles a persona row may use, kept verbatim from the source. */
+type ScalarStyle = '|-' | '>-' | '|' | '>'
+
+/**
+ * Detect the persona field and its block-scalar style from the source's own
+ * persona row.
+ *
+ * The style is part of the value, not decoration: `>-` folds the single
+ * newlines inside the payload back into spaces, while `|-` preserves them. The
+ * shipped presets all use `>-`, so writing `|-` would silently change how the
+ * persona prose renders.
+ * @param composition - the `standard` composition text.
+ * @returns the field name and scalar style, defaulting to the older `text`/`>-`.
+ */
+function personaShapeOf(composition: string): { field: PersonaField; style: ScalarStyle } {
+  const lines = composition.split('\n')
+  const start = lines.findIndex(line => line.trimEnd() === '- id: persona')
+  if (start < 0) return { field: 'text', style: '>-' }
+  let end = start + 1
+  while (end < lines.length && !/^- /u.test(lines[end] ?? '')) end++
+  for (const line of lines.slice(start, end)) {
+    const match = /^\s+(text|prefix):\s*([|>][-+]?)\s*$/u.exec(line)
+    if (match === null) continue
+    return { field: match[1] as PersonaField, style: (match[2] ?? '>-') as ScalarStyle }
+  }
+  return { field: 'text', style: '>-' }
+}
+
+/**
+ * Detect the persona field from the source composition's own persona row.
+ * @param composition - the `standard` composition text.
+ * @returns the field name, defaulting to `text` for the pre-2026-09-06 shape.
+ */
+function personaFieldOf(composition: string): PersonaField {
+  return personaShapeOf(composition).field
+}
+
+/**
+ * Replace the persona row's config with the engineering persona, keeping the
+ * field name the running harness uses.
+ *
+ * The persona schema has moved (`text:` �?`prefix`/`suffix`), so this rewrites
+ * the whole `config:` block of the `persona` row rather than matching one
+ * historical phrasing, and writes whichever field
+ * {@link personaFieldOf} found in the source. A `suffix:` row is preserved when
+ * the source had one, because the newer schema renders it after first-party
+ * guidance and dropping it would change the system prompt's shape.
  * @param composition - the `standard` composition text.
  * @param persona - the engineering persona prose.
  * @returns the rewritten text plus whether the row was found.
@@ -117,15 +170,22 @@ function applyPersona(composition: string, persona: string): { text: string; app
 
   // Keep the row's identity lines (`- id`, `  name:`); drop only its config.
   const header = lines.slice(start, end).filter(line => !/^\s{2,}config:/u.test(line) && !/^\s{4,}\S/u.test(line))
+  const { field, style } = personaShapeOf(composition)
+  // The shipped suffix names the working directory; carry it over verbatim.
+  const suffixLine = lines.slice(start, end).find(line => /^\s+suffix:/u.test(line))
   const indented = persona.split('\n').map(line => (line === '' ? '' : `      ${line}`))
-  // `complete` is deliberately NOT set: it would make this prefix the entire
+  // `complete` is deliberately NOT set: it would make this prose the entire
   // system prompt, suppressing the suffix and every other section.
-  const body = [
-    ...header.filter(line => line !== ''),
+  const config = [
     '  config:',
-    '    prefix: |-',
+    // Carry the shipped suffix verbatim under `config:`, keeping its own
+    // indentation: it names the working directory and the newer persona schema
+    // renders it after first-party guidance.
+    ...(field === 'prefix' && suffixLine !== undefined ? [`    ${suffixLine.trim()}`] : []),
+    `    ${field}: ${style}`,
     ...indented,
   ]
+  const body = [...header.filter(line => line !== ''), ...config]
   return { text: [...lines.slice(0, start), ...body, ...lines.slice(end)].join('\n'), applied: true }
 }
 
@@ -168,7 +228,7 @@ function deriveComposition(): { text: string; personaApplied: boolean } | undefi
  *
  * Failures are swallowed: a seed that cannot write must not stop the bundle's
  * host half (its Remote controller and workbench) from loading. A preset that
- * was deleted by the user stays deleted — re-derivation only touches a file the
+ * was deleted by the user stays deleted �?re-derivation only touches a file the
  * seed itself created.
  */
 export function seedEngPreset(): void {
@@ -211,6 +271,12 @@ export function derivedEngComposition(): { text: string; personaApplied: boolean
 
 /** Exported for tests: whether a composition is one this seed owns. */
 export { wasSeeded }
+
+/**
+ * Exported for tests: apply the persona rewrite to an arbitrary composition, so
+ * both persona schema generations can be asserted without swapping harnesses.
+ */
+export { applyPersona, personaFieldOf, personaShapeOf }
 
 /** Exported for tests: the pre-2026-09-06 persona phrasing this seed must still recognise. */
 export { LEGACY_PERSONA_BLOCK, SEEDED_PERSONA_MARKER }

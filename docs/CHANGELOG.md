@@ -4,6 +4,13 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 0.23.7
+
+- **修复 persona 字段在旧版 DSH 上不兼容**。`@deepseek-ai/dsh-persona` 在提交 `40792330c0`（2026-09-06，首次随 `dsh-v0.1.3-alpha.2` 发布）把配置字段从 `text` 改名为 `prefix`/`suffix`，两个 schema 互斥：写 `prefix` 的预设会被旧版 persona 插件以 `$.text missing required value` 整份拒绝，反之亦然。0.23.6 的派生逻辑**硬编码了 `prefix`**，因此在 `dsh-v0.1.3-alpha.1` 及更早的 harness 上，`eng` 预设挂载失败、新会话无法创建。现在改为**读取源预设自己使用的字段**再照写——`standard` 就是运行中 harness 的格式权威。已用两个版本的真实 `standard` 验证：`v0.1.3-alpha.1` 产出 `text: |-`，`v0.1.6-alpha.2` 产出 `suffix` + `prefix: |-`，两者 YAML 均解析通过。
+- 顺带修复派生时的缩进：`suffix:` 此前被写到错误的层级，使新格式的 persona 段落 YAML 结构改变。新格式下同时保留源预设的 `suffix`（它声明工作目录），旧格式则不引入该字段。
+- peer 范围补上 `|| ^0.1.7-alpha.1`。DSH `0.1.7-alpha.1` 修复了 0.1.6 中导致所有工具调用失败的问题（`ctx.tools[TOOL_RUNTIME_SCHEDULER]` 为 `undefined`，社区在讨论 #7035 / #7194 报告，官方确认修复）；peer 范围需要跟着覆盖该版本。
+- `.preset-test.mjs` 增至 9 项：新增两组 persona fixture，分别断言 `text` 与 `prefix` 两种 schema 下的字段选择、`suffix` 保留与缩进正确性。已反向验证：把字段选择改回硬编码 `prefix`，两项断言立即失败。
+
 ## 0.23.6
 
 - **修复「工程化开发引擎」预设加载失败**。`seed-preset.ts` 用 `@deepseek-ai/dsh-agent-presets` 导出的 `SHIPPED_PRESET_ROOT` 常量定位源预设，而该常量是 `fileURLToPath(new URL('../presets/', import.meta.url))`——它锁在**插件自己依赖树**里的那份包上，可能和**正在运行的** DSH 不同版本。于是派生出的预设携带运行中 harness 早已替换掉的行：DSH 2026-09-13 把 `workflow-worker-thread` 换成了 `workflow-ptc`，而该包同时退出了 `apps/cli` 的依赖，预设因此报 `row "workflow-worker-thread" names a plugin that cannot be resolved`，整个预设显示「加载失败」，任何新会话都无法启用任务流程。现在改为在**调用时**用 `createRequire` 从插件自身位置解析，跟随宿主的安装图。
