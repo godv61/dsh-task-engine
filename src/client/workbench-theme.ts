@@ -6,6 +6,27 @@ export const workbenchTheme = `
 .te-workbench button:focus-visible,.te-modal button:focus-visible,.te-input:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:3px; }
 .te-workbench h2 { margin:0 0 6px; font-size:24px; letter-spacing:-.5px; }
 .te-workbench h3,.te-modal h3 { margin:0; font-size:16px; overflow-wrap:anywhere; }
+.te-workbench .te-disclosure-title { font-size:16px; font-weight:700; color:var(--dsw-alias-label-primary); }
+.te-binding-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:14px; align-items:start; }
+.te-binding-picker { min-width:0; display:flex; flex-direction:column; gap:10px; border:1px solid var(--dsw-alias-border-l2); border-radius:12px; padding:14px; background:var(--dsw-alias-bg-layer-1); }
+.te-binding-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.te-binding-heading h4 { margin:0; font-size:14px; font-weight:650; }
+.te-binding-count,.te-binding-meta { color:var(--dsw-alias-label-secondary); font-size:12px; }
+.te-binding-tools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.te-binding-tools .te-input { flex:1; width:100%; min-width:120px; padding:8px 10px; font-size:13px; }
+.te-binding-filter { display:flex; align-items:center; gap:5px; font-size:12px; white-space:nowrap; cursor:pointer; }
+.te-binding-list { max-height:280px; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:4px; scrollbar-gutter:stable; }
+.te-binding-option { display:flex; gap:9px; align-items:flex-start; padding:9px; border:1px solid transparent; border-radius:8px; cursor:pointer; }
+.te-binding-option:hover { background:var(--dsw-alias-bg-layer-2); }
+.te-binding-option.is-selected { background:var(--dsw-alias-bg-layer-2); border-color:var(--dsw-alias-border-l2); }
+.te-binding-option.is-fixed { cursor:default; }
+.te-binding-option input { flex:none; margin:3px 0 0; }
+.te-binding-picker input { accent-color:var(--dsw-alias-state-business-primary); }
+.te-binding-picker :focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:2px; }
+.te-binding-detail { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.te-binding-name { font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.te-binding-description { color:var(--dsw-alias-label-secondary); font-size:12px; line-height:1.4; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.te-binding-empty { margin:0; padding:18px 8px; font-size:13px; }
 .te-workbench p,.te-modal p { color:var(--dsw-alias-label-secondary); line-height:1.65; }
 .te-content { max-width:1120px; margin:auto; width:100%; }
 .te-resource { display:flex; flex-direction:column; gap:20px; }

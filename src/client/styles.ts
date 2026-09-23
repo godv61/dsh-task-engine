@@ -37,7 +37,7 @@ export const styles: Record<string, CSSProperties> = {
   cardBody: { padding: '4px 0 8px', display: 'flex', flexDirection: 'column', gap: 12 },
 
   row: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
-  field: { display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 220px', minWidth: 180 },
+  field: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 },
   fieldLabel: { color: textSecondary, fontSize: 13 },
   hint: { color: textTertiary, fontSize: 12, margin: 0, lineHeight: 1.4 },
 

@@ -11,15 +11,16 @@
  */
 
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
-import { createElement, useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
-  IconBranchOutline16, IconCheckOutline16, IconSettingsOutline16,
+  IconCheckOutline16, IconSettingsOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { validateWorkflow, type StageBinding, type WorkflowConfig } from '../engine.ts'
 import { FLOW_PRESETS, FLOW_OPTIONS, resolveFlow } from '../workflows.ts'
-import { styles, border } from './styles.ts'
-import { describeError, sourceLabel } from './shared.ts'
+import { styles } from './styles.ts'
+import { describeError } from './shared.ts'
+import { BindingPicker } from './BindingPicker.tsx'
 
 /** Resolve a flow id plus staged bindings into a complete config for preview (unknown ids preview the standard preset; writes still reject them). */
 function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding>): WorkflowConfig {
@@ -160,11 +161,6 @@ interface SectionProps {
   remote: TaskEngineRemote
 }
 
-const cardV: CSSProperties = {
-  display: 'flex', flexDirection: 'column', gap: 8,
-  border: `1px solid ${border}`, borderRadius: 8, padding: '10px 12px',
-}
-
 export function TaskEngineSection(props: SectionProps): ReturnType<typeof createElement> {
   const { remote, workspace } = props
 
@@ -261,7 +257,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
       </div>
 
       <div style={styles.field}>
-        <span style={styles.fieldLabel}>流程预设</span>
+        <h3>流程预设</h3>
         <div style={styles.flowGrid}>
           {FLOW_OPTIONS.map(option => {
             const active = flow === option.id
@@ -282,21 +278,10 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
             )
           })}
         </div>
-        <p style={styles.hint}>{FLOW_OPTIONS.find(option => option.id === flow)?.description}</p>
       </div>
 
-      <SectionCard icon={<IconBranchOutline16 size={16} />} title="流程节点" hint="该流程预设固定的阶段顺序；改变流程请切换上面的预设。" >
-        <div style={styles.chips}>
-          {stages.map((stage) => (
-            <Pill key={stage} active={stage === (FLOW_PRESETS[flow]?.config.start_stage ?? '')} title={stage === FLOW_PRESETS[flow]?.config.start_stage ? '起始阶段' : undefined}>
-              {stage}
-            </Pill>
-          ))}
-        </div>
-      </SectionCard>
-
-      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能 / 规则" hint="选一个节点，勾选它「用什么 skill（技能）」和「守哪条 rule（规则）」。流程自带的默认绑定不会因取消勾选而移除（只会保留并追加你新勾选的）；要新建或改正文，切到上方的「技能」/「规则」标签页。" >
-        <BindingEditor stages={stages} stageBindings={stageBindings} setStageBindings={setStageBindings} skills={skills} rules={rules} />
+      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能 / 规则" hint="选择节点，再勾选附加技能与规则。预设默认绑定固定保留；新建或编辑内容请前往上方“技能”或“规则”页。" >
+        <BindingEditor stages={stages} defaults={(FLOW_PRESETS[flow] ?? FLOW_PRESETS.standard).config.stage_bindings ?? {}} stageBindings={stageBindings} setStageBindings={setStageBindings} skills={skills} rules={rules} />
       </SectionCard>
 
       {problems.length > 0
@@ -356,8 +341,10 @@ function SectionCard({ icon, title, hint, children }: SectionCardProps): ReturnT
       <DisclosureRow
         icon={icon}
         title={title}
+        titleClassName="te-disclosure-title"
         open={open}
         expandable
+        expandOnRowClick
         onToggle={() => { setOpen(!open) }}
         keepContentWhenOpen
       >
@@ -370,8 +357,9 @@ function SectionCard({ icon, title, hint, children }: SectionCardProps): ReturnT
   )
 }
 
-function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules }: {
+function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skills, rules }: {
   stages: string[]
+  defaults: Record<string, StageBinding>
   stageBindings: Record<string, StageBinding>
   setStageBindings: (b: Record<string, StageBinding>) => void
   skills: SkillCatalogEntry[]
@@ -405,7 +393,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
     <div style={styles.section}>
       <p style={styles.hint}>绑定按名称生效；同名资源可在资源管理中按项目／个人分别查看。完成节点的技能必须在进入完成前执行，测试技能建议放在交付节点。</p>
       <div style={styles.field}>
-        <span style={styles.fieldLabel}>选择节点（改哪个节点的挂载）</span>
+        <span style={styles.bindingLabel}>选择节点</span>
         <div style={styles.chips}>
           {stages.map(s => (
             <Pill key={s} active={s === currentStage} onClick={() => { setStage(s) }}>{s}</Pill>
@@ -413,38 +401,9 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skills, rules 
         </div>
       </div>
 
-      <div style={cardV}>
-        <div style={styles.bindingStage}>
-          <span style={styles.fieldLabel}>skill（这个节点做什么）</span>
-          <div style={styles.chips}>
-            {skills.length === 0
-              ? <span style={styles.sourceBadge}>暂无可用 skill —— 切到上方「技能」标签页新建</span>
-              : skills.filter((sk, index, all) => all.findIndex(other => other.name === sk.name) === index).map(sk => (
-                <Pill key={sk.name} active={boundSkills.includes(sk.name)} onClick={() => { toggleSkill(sk.name) }} title={`${sk.description}（${sourceLabel(sk.source)}）`}>
-                  {sk.name}
-                  {sk.source !== 'bundled' ? <span style={styles.sourceBadge}>（{sourceLabel(sk.source)}）</span> : null}
-                </Pill>
-              ))}
-          </div>
-        </div>
-
-        <div style={styles.bindingStage}>
-          <span style={styles.fieldLabel}>rule（这个节点守什么）</span>
-          <div style={styles.chips}>
-            {rules.length === 0
-              ? <span style={styles.sourceBadge}>暂无可用 rule —— 切到上方「规则」标签页新建</span>
-              : rules.filter((rule, index, all) => all.findIndex(other => other.name === rule.name) === index).map(rule => (
-                <Pill key={rule.name} active={boundRules.includes(rule.name)} onClick={() => { toggleRule(rule.name) }} title={`来源：${sourceLabel(rule.source)}`}>
-                  {rule.name}
-                  {rule.source !== 'bundled' ? <span style={styles.sourceBadge}>（{sourceLabel(rule.source)}）</span> : null}
-                </Pill>
-              ))}
-          </div>
-        </div>
-
-        {boundSkills.length === 0 && boundRules.length === 0
-          ? <p style={styles.hint}>这个节点还没挂任何 skill / rule —— 点上面的名称勾选。</p>
-          : null}
+      <div className="te-binding-grid" key={currentStage}>
+        <BindingPicker title="技能" resources={skills} selected={boundSkills} defaults={defaults[currentStage]?.skills ?? []} onToggle={toggleSkill} />
+        <BindingPicker title="规则" resources={rules} selected={boundRules} defaults={defaults[currentStage]?.rules ?? []} onToggle={toggleRule} />
       </div>
     </div>
   )
