@@ -91,7 +91,7 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 | 完整操作说明 | [HTML 手册](docs/manual.html)（下载后在浏览器打开） |
 | 当前能力与常见问题 | [常见问题](docs/faq.md) |
 | 本地开发与验证 | [开发指南](docs/development.md) |
-| 真实项目回归修复 | [0.23.1 发布说明](docs/release-0.23.1.md) · [回归迭代说明](docs/workflow-regression.md) |
+| 真实项目回归修复 | [0.23.1 发布说明](docs/releases/0.23.1.md) · [回归迭代说明](docs/workflow-regression.md) |
 | 版本变化与验证记录 | [更新日志](docs/CHANGELOG.md) · [0.23.1 测试说明](docs/testing/0.23.1/测试报告.md) |
 
 ## 能力说明
