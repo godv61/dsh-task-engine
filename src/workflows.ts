@@ -50,9 +50,9 @@ export interface FlowPreset extends FlowOption {
 
 /** The selectable preset workflows (shown in the workbench flow picker). */
 export const FLOW_OPTIONS: readonly FlowOption[] = [
-  { id: 'standard', label: '标准研发', description: '需求评审 → 设计 → 开发 → 交付 → 代码审核，含产物门 + 确认门' },
-  { id: 'agile', label: '敏捷轻量', description: '需求 → 开发 → 交付 → 审查，四阶段、少产物' },
-  { id: 'minimal', label: '纯代码', description: '开发 → 交付，两阶段，只留提交门禁' },
+  { id: 'standard', label: '完整研发', description: '新功能、架构或跨模块改动、高风险任务：需求确认 → 方案确认 → 实现 → 验证 → 审核 → 提交' },
+  { id: 'agile', label: '日常迭代', description: '目标明确的常规功能与缺陷修复：目标与验收 → 实现 → 验收与审查 → 提交' },
+  { id: 'minimal', label: '快速修改', description: '局部、低风险、方案明确的改动：修改 → 检查与提交' },
 ]
 
 /** Standard review-gated delivery: the default workflow. */
@@ -184,16 +184,16 @@ function preset(
 }
 
 export const FLOW_PRESETS: Record<string, FlowPreset> = {
-  standard: preset('standard', 2, '标准研发', '需求评审 → 设计 → 开发 → 交付 → 代码审核，审核后提交', STANDARD),
+  standard: preset('standard', 2, '完整研发', '新功能、架构或跨模块改动、高风险任务：需求确认 → 方案确认 → 实现 → 验证 → 审核 → 提交', STANDARD),
   // Version 2: the closing-commit label shape was unified with the message pattern,
   // and the `review` artifact the bound code-review skill writes was declared. Tasks
   // created before this keep their frozen version 1 config and are unaffected.
-  agile: preset('agile', 2, '敏捷轻量', '需求 → 开发 → 交付 → 审查，四阶段、少产物', AGILE),
+  agile: preset('agile', 2, '日常迭代', '目标明确的常规功能与缺陷修复：目标与验收 → 实现 → 验收与审查 → 提交', AGILE),
   // Version 2: per-item review depth is declared as `single` instead of inheriting
   // the full flow's two verdicts per item. Tasks created before this keep their
   // frozen version 1 config, which has no `review_depth` and therefore reads as
   // two-stage exactly as it behaved.
-  minimal: preset('minimal', 2, '纯代码', '开发 → 交付，两阶段，每项一次检查后提交', MINIMAL),
+  minimal: preset('minimal', 2, '快速修改', '局部、低风险、方案明确的改动：修改 → 检查与提交，每项一次检查', MINIMAL),
 }
 
 /** Whether `flow` names a built-in workflow. */

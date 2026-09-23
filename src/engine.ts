@@ -241,6 +241,39 @@ export interface TaskCompletion {
   commit_hash?: string
 }
 
+/**
+ * A recorded rework: why the task went back, and exactly what that invalidated.
+ *
+ * The graph only has forward edges, but the work does not: a requirement can
+ * change after implementation started, and a defect can be found during review.
+ * Before this existed, the only way back was a hand-edited record, which left
+ * every downstream conclusion nominally intact — a confirmation, verification
+ * receipt or review verdict that described a superseded tree would still read as
+ * passing.
+ *
+ * The invalidated set is computed from the DECLARED kind rather than from a
+ * blanket rule, because the two cases differ: a changed requirement invalidates
+ * the requirement confirmation and everything downstream of it, while fixing a
+ * defect found in review invalidates the verification and review of that work but
+ * leaves the agreed requirement standing. Invalidating everything on every
+ * rework would be simpler and would also throw away conclusions that are still
+ * true, forcing work to be redone for no reason.
+ */
+export interface TaskRevision {
+  /** What kind of change this was; decides the invalidation scope. */
+  kind: 'requirement' | 'solution' | 'defect'
+  /** Why the task went back, in the author's words. */
+  reason: string
+  /** The stage the task returned to. */
+  to: string
+  /** The stage it was at when the rework was recorded. */
+  from: string
+  /** ISO-8601 timestamp. */
+  at: string
+  /** Conclusion names this rework invalidated, for audit. */
+  invalidated: string[]
+}
+
 /** Verdict of one review stage over a completed item. */
 export interface ItemReviewStage {
   outcome: 'pass' | 'fail'
@@ -328,6 +361,8 @@ export interface TaskState {
   skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt }>>
   /** Set by the `complete` operation once every configured condition holds. Absent while the task is still open. */
   completed?: TaskCompletion
+  /** Rework history, newest last. Absent when the task never went back. */
+  revisions?: TaskRevision[]
 }
 
 export interface Result {
@@ -801,6 +836,86 @@ export function completionBlockers(state: TaskState, config: WorkflowConfig): st
     if (!hasCommit) blockers.push('this flow requires a recorded commit before completion, and none is recorded')
   }
   return blockers
+}
+
+/**
+ * Which recorded conclusions a rework of the given kind invalidates.
+ *
+ * Derived from what each kind of change actually supersedes:
+ *
+ * - `requirement`: the agreed requirement changed, so its confirmation no longer
+ *   speaks for the work, and neither does the solution built on it. Verification,
+ *   review and item audits all judged a tree derived from the old requirement.
+ * - `solution`: the requirement stands, but the approach changed. Its confirmation
+ *   falls, along with everything that judged the implementation of the old one.
+ * - `defect`: a defect in the work as specified. The requirement and solution stay
+ *   agreed; what falls is the evidence that the OLD implementation was correct —
+ *   verification, review, and the per-item audits.
+ *
+ * A confirmation is always re-askable rather than silently assumed, because the
+ * human who approved it approved a different thing.
+ * @param kind - the kind of change being recorded.
+ * @returns the conclusion names to clear.
+ */
+export function invalidatedBy(kind: TaskRevision['kind']): string[] {
+  switch (kind) {
+    case 'requirement':
+      return ['requirement_confirmation', 'solution_confirmation', 'verification', 'review', 'item_reviews', 'commits']
+    case 'solution':
+      return ['solution_confirmation', 'verification', 'review', 'item_reviews', 'commits']
+    case 'defect':
+      return ['verification', 'review', 'item_reviews', 'commits']
+  }
+}
+
+/**
+ * The result of applying one rework to a task record.
+ *
+ * Kept separate from the mutation so the caller can report what changed, and so
+ * the clearing rules above are asserted directly in tests.
+ */
+export interface RevisionOutcome {
+  /** The stage the task now sits at. */
+  stage: string
+  /** The conclusions that were cleared. */
+  invalidated: string[]
+}
+
+/**
+ * Apply a rework to a task record, clearing exactly the superseded conclusions.
+ *
+ * Confirmation flags are reset rather than deleted because the engine reads them
+ * as booleans; the other conclusions are cleared by removing the record that
+ * carried them, so `status` reports them as absent instead of stale.
+ * @param state - the task state, mutated in place.
+ * @param revision - the rework to apply.
+ * @returns the stage reached and the conclusions cleared.
+ */
+export function applyRevision(state: TaskState, revision: TaskRevision): RevisionOutcome {
+  const cleared = invalidatedBy(revision.kind)
+  if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
+  if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
+  if (cleared.includes('verification')) {
+    state.verification = { passed: false, evidence: [] }
+  }
+  if (cleared.includes('review')) {
+    state.review = { outcome: 'pending' }
+  }
+  if (cleared.includes('item_reviews')) {
+    for (const item of state.items) {
+      delete item.review
+      // An item whose audit is gone is no longer proven done, so it returns to
+      // the state where its work is still outstanding.
+      if (item.status === 'done') item.status = 'doing'
+    }
+  }
+  if (cleared.includes('commits')) state.commits = []
+  // Going back means the task is open again; a completed task that reworks is a
+  // task whose completion no longer describes it.
+  delete state.completed
+  state.stage = revision.to
+  state.revisions = [...(state.revisions ?? []), { ...revision, invalidated: cleared }]
+  return { stage: revision.to, invalidated: cleared }
 }
 
 export interface FileScopeResult {

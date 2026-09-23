@@ -198,6 +198,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   const [stageBindings, setStageBindings] = useState<Record<string, StageBinding>>({})
   const [source, setSource] = useState<string>('default')
   const [savedAt, setSavedAt] = useState<string>('')
+  /** True while the in-memory bindings differ from what is on disk. */
+  const [dirty, setDirty] = useState(false)
   const [loadError, setLoadError] = useState<string>('')
   const [saving, setSaving] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -253,9 +255,22 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     [flow, stageBindings],
   )
 
+  /**
+   * Switch presets, protecting unsaved edits.
+   *
+   * Clicking the already-selected preset is a no-op: it used to re-seed the
+   * bindings from the preset defaults, so a stray click on the current card threw
+   * away every customization the user had made. Switching away from a dirty draft
+   * now asks first, because the bindings are replaced wholesale and the edit is
+   * otherwise unrecoverable.
+   */
   const selectFlow = (id: string): void => {
+    if (id === flow) return
+    if (dirty && !window.confirm('当前流程配置有未保存的修改，切换流程会丢弃它们。继续切换？')) return
     setFlow(id)
     setStageBindings({ ...(FLOW_PRESETS[id]?.config.stage_bindings ?? {}) })
+    setDirty(true)
+    setSavedAt('')
   }
 
   if (loadError !== '') {
@@ -311,7 +326,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
       </div>
 
       <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能 / 规则" hint="选择节点，再勾选附加技能与规则。预设默认绑定固定保留；新建或编辑内容请前往上方“技能”或“规则”页。" >
-        <BindingEditor stages={stages} defaults={(FLOW_PRESETS[flow] ?? FLOW_PRESETS.standard).config.stage_bindings ?? {}} stageBindings={stageBindings} setStageBindings={setStageBindings} skills={skills} rules={rules} />
+        <BindingEditor stages={stages} defaults={(FLOW_PRESETS[flow] ?? FLOW_PRESETS.standard).config.stage_bindings ?? {}} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skills={skills} rules={rules} />
       </SectionCard>
 
       {problems.length > 0
@@ -335,9 +350,9 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           size="md"
           icon={<IconCheckOutline16 size={16} />}
           disabled={problems.length > 0 || saving}
-          onClick={() => { setSaving(true); void save(remote, flow, stageBindings, workspace, setSavedAt, setSource).then(ok => { if (ok) setConfigProblems([]) }).finally(() => setSaving(false)) }}
+          onClick={() => { setSaving(true); void save(remote, flow, stageBindings, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
         >
-          {saving ? '正在保存…' : '保存到 .dsh/eng.json'}
+          {saving ? '正在保存…' : dirty ? '保存到 .dsh/eng.json' : '已保存 · 无需保存'}
         </Button>
         {savedAt !== ''
           ? (

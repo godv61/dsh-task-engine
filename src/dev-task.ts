@@ -24,8 +24,10 @@ import {
   bindingsForStage,
   checkFileScope,
   commitCheckpoint,
+  applyRevision,
   completionBlockers,
   formatResourceRef,
+  invalidatedBy,
   legalTargets,
   newTask,
   taskIdFromMessage,
@@ -34,6 +36,7 @@ import {
   validateWorkflow,
   verificationBlockers,
   type FlowSnapshot,
+  type FrozenResource,
   type GuardName,
   type ResourceRef,
   type ResourceSource,
@@ -505,6 +508,81 @@ async function readRuleAt(source: ResourceSource, name: string, fs: Fs, cwd?: st
   }
 }
 
+/** Bundled skill directory, the only layer whose bodies this process can read without the host registry. */
+const BUNDLED_SKILLS_DIR = fileURLToPath(new URL('../skills/', import.meta.url))
+
+/**
+ * Read one skill body from a layer this process can reach.
+ *
+ * Project-level skills live under the workspace and are readable through the
+ * sandboxed fs; user-level ones sit under the harness home. A skill the host
+ * registry resolves but this process cannot read yields undefined, which is
+ * reported as unfreezable rather than silently omitted — the task must not claim
+ * to have frozen something it did not read.
+ * @param ref - the skill reference from a stage binding.
+ * @param fs - sandboxed filesystem for the project-level lookup.
+ * @returns the SKILL.md body, or undefined when it cannot be read here.
+ */
+async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<string | undefined> {
+  const safe = sanitize(ref.name)
+  if (safe === '') return undefined
+  const read = (path: string): string | undefined => {
+    try {
+      return readFileSync(path, 'utf8')
+    } catch {
+      return undefined
+    }
+  }
+  switch (ref.source) {
+    case 'bundled':
+      return read(join(BUNDLED_SKILLS_DIR, safe, 'SKILL.md'))
+    case 'project':
+      return await readText(fs, '.dsh/skills/' + safe + '/SKILL.md', cwd)
+    case 'user':
+      return read(join(dshHome(), 'skills', safe, 'SKILL.md'))
+  }
+}
+
+/**
+ * Freeze every skill and rule body the config resolves to.
+ *
+ * Names alone cannot keep an in-flight task stable: editing a rule that a running
+ * task uses would silently change what that task is doing. Each resolved body is
+ * copied with its content hash, so a deleted or edited source cannot change a
+ * running task, and identical bodies are stored once per hash.
+ * @param config - the frozen workflow config.
+ * @param fs - sandboxed filesystem for project-level lookups.
+ * @returns the frozen resources plus the refs that could not be read.
+ */
+async function freezeResources(
+  config: WorkflowConfig,
+  fs: Fs,
+  cwd?: string,
+): Promise<{ resources: FrozenResource[]; unreadable: string[] }> {
+  const seen = new Set<string>()
+  const resources: FrozenResource[] = []
+  const unreadable: string[] = []
+  for (const binding of Object.values(config.stage_bindings ?? {})) {
+    for (const entry of binding.skills ?? []) {
+      const skillKey = formatResourceRef(entry.skill)
+      if (!seen.has(skillKey)) {
+        const body = await readSkillAt(entry.skill, fs, cwd)
+        if (body === undefined) unreadable.push(skillKey)
+        else { seen.add(skillKey); resources.push({ ref: entry.skill, hash: hashText(body), content: body }) }
+      }
+      for (const rule of entry.rules) {
+        const key = formatResourceRef(rule)
+        if (seen.has(key)) continue
+        const body = await readRuleAt(rule.source, rule.name, fs, cwd)
+        if (body === undefined) { unreadable.push(key); continue }
+        seen.add(key)
+        resources.push({ ref: rule, hash: hashText(body), content: body })
+      }
+    }
+  }
+  return { resources, unreadable }
+}
+
 /**
  * Resolve a bare legacy rule name to the layer that precedence selects.
  *
@@ -651,6 +729,10 @@ interface OpArgs {
   quality_outcome?: 'pass' | 'fail'
   notes?: string[]
   target_stage?: string
+  /** Why the task is going back (revise). Decides the invalidation scope. */
+  revision_kind?: 'requirement' | 'solution' | 'defect'
+  /** What changed, in the author's words (revise). */
+  revision_reason?: string
   command?: string
   passed?: boolean
   evidence?: string[]
@@ -806,7 +888,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -857,7 +939,7 @@ export function registerDevTask(ctx: Context): void {
       spec_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Specification-conformance verdict (review_item).' },
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
-      target_stage: { type: 'string', description: 'Stage to advance to, or current/upcoming terminal skill binding stage for skill_result.' },
+      target_stage: { type: 'string', description: 'Stage to advance to (advance), a bound stage for skill_result, or the stage to return to (revise). For revise it must be the stage the changed decision belongs to. Current/upcoming terminal skill binding stage for skill_result.' },
       command: { type: 'string', description: 'Real acceptance command for verify/skill_result. New tasks require command receipts. Propagate failures when composing shell commands.' },
       passed: { type: 'boolean', description: 'Legacy tasks only: verification claim when no command can be resolved. New tasks require real command receipts.' },
       evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
@@ -874,6 +956,8 @@ export function registerDevTask(ctx: Context): void {
         description: 'Repo-relative paths in scope (create/scope) or being committed (commit).',
       },
       message: { type: 'string', description: 'Commit summary to validate (commit).' },
+      revision_kind: { type: 'string', enum: ['requirement', 'solution', 'defect'], description: 'Why the task is going back (revise). Decides which conclusions are invalidated: requirement clears its confirmation and everything downstream; solution keeps the requirement agreed; defect clears only the evidence about the old implementation.' },
+      revision_reason: { type: 'string', description: 'What changed, in the author\'s words (revise).' },
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
@@ -1031,11 +1115,16 @@ export function registerDevTask(ctx: Context): void {
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
+          // Freeze the resolved skill and rule bodies now. A name alone cannot keep an
+          // in-flight task stable: editing a rule the task uses would otherwise change
+          // what the task is doing without the task saying so.
+          const frozen = await freezeResources(resolved.config, fs, cwd)
         const flow: FlowSnapshot = {
           flow: resolved.flow,
           version: resolved.version,
           config: resolved.config,
           hash: hashConfig(resolved.config),
+            resources: frozen.resources,
         }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
         const state = newTask({
@@ -1183,6 +1272,35 @@ export function registerDevTask(ctx: Context): void {
             ? `task completed at "${state.stage}"; the record stays readable for audit`
             : `task completed at "${state.stage}" (commit ${hash}); the record stays readable for audit`
         }
+          if (a.operation === 'revise') {
+            // The graph has only forward edges, but the work does not: a requirement can
+            // change after implementation started. Before this, going back meant hand-
+            // editing the record, which left every downstream conclusion looking intact
+            // even though it described a superseded tree.
+            const kind = a.revision_kind
+            if (kind !== 'requirement' && kind !== 'solution' && kind !== 'defect') {
+              throw new Error('revise requires revision_kind: one of requirement, solution, defect')
+            }
+            if (!a.revision_reason?.trim()) throw new Error('revise requires revision_reason describing what changed')
+            const target = a.target_stage
+            if (target === undefined || !workflow.stages.includes(target)) {
+              throw new Error('revise requires target_stage naming a stage of this flow: ' + workflow.stages.join(', '))
+            }
+            if (target === state.stage) throw new Error('revise target_stage is the current stage; nothing to return to')
+            // Which stages are reachable backwards is a property of the flow, not of the
+            // tool: any earlier stage is a legal place to resume from.
+            if (workflow.stages.indexOf(target) > workflow.stages.indexOf(state.stage)) {
+              throw new Error('revise goes backwards only; "' + target + '" comes after "' + state.stage + '" in this flow')
+            }
+            const outcome = applyRevision(state, {
+              kind, reason: a.revision_reason.trim(), to: target, from: state.stage,
+              at: new Date().toISOString(), invalidated: invalidatedBy(kind),
+            })
+            await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+            return 'revised (' + kind + ') back to "' + outcome.stage + '"; invalidated: ' + outcome.invalidated.join(', ')
+              + '. Re-establish these before advancing again; the history is kept in the task record.'
+          }
+
 
       let note: string | undefined
       let approvedWriteMode: 'workspace-write' | 'danger-full-access' | undefined

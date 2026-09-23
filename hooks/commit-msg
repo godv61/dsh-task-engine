@@ -273,16 +273,16 @@ function preset(id, version, label, description, config2) {
   return { id, version, label, description, capabilities: deriveCapabilities(config2), config: config2 };
 }
 var FLOW_PRESETS = {
-  standard: preset("standard", 2, "\u6807\u51C6\u7814\u53D1", "\u9700\u6C42\u8BC4\u5BA1 \u2192 \u8BBE\u8BA1 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u4EE3\u7801\u5BA1\u6838\uFF0C\u5BA1\u6838\u540E\u63D0\u4EA4", STANDARD),
+  standard: preset("standard", 2, "\u5B8C\u6574\u7814\u53D1", "\u65B0\u529F\u80FD\u3001\u67B6\u6784\u6216\u8DE8\u6A21\u5757\u6539\u52A8\u3001\u9AD8\u98CE\u9669\u4EFB\u52A1\uFF1A\u9700\u6C42\u786E\u8BA4 \u2192 \u65B9\u6848\u786E\u8BA4 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u8BC1 \u2192 \u5BA1\u6838 \u2192 \u63D0\u4EA4", STANDARD),
   // Version 2: the closing-commit label shape was unified with the message pattern,
   // and the `review` artifact the bound code-review skill writes was declared. Tasks
   // created before this keep their frozen version 1 config and are unaffected.
-  agile: preset("agile", 2, "\u654F\u6377\u8F7B\u91CF", "\u9700\u6C42 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u5BA1\u67E5\uFF0C\u56DB\u9636\u6BB5\u3001\u5C11\u4EA7\u7269", AGILE),
+  agile: preset("agile", 2, "\u65E5\u5E38\u8FED\u4EE3", "\u76EE\u6807\u660E\u786E\u7684\u5E38\u89C4\u529F\u80FD\u4E0E\u7F3A\u9677\u4FEE\u590D\uFF1A\u76EE\u6807\u4E0E\u9A8C\u6536 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u6536\u4E0E\u5BA1\u67E5 \u2192 \u63D0\u4EA4", AGILE),
   // Version 2: per-item review depth is declared as `single` instead of inheriting
   // the full flow's two verdicts per item. Tasks created before this keep their
   // frozen version 1 config, which has no `review_depth` and therefore reads as
   // two-stage exactly as it behaved.
-  minimal: preset("minimal", 2, "\u7EAF\u4EE3\u7801", "\u5F00\u53D1 \u2192 \u4EA4\u4ED8\uFF0C\u4E24\u9636\u6BB5\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5\u540E\u63D0\u4EA4", MINIMAL)
+  minimal: preset("minimal", 2, "\u5FEB\u901F\u4FEE\u6539", "\u5C40\u90E8\u3001\u4F4E\u98CE\u9669\u3001\u65B9\u6848\u660E\u786E\u7684\u6539\u52A8\uFF1A\u4FEE\u6539 \u2192 \u68C0\u67E5\u4E0E\u63D0\u4EA4\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5", MINIMAL)
 };
 function dedupe(names) {
   return [...new Set(names)];
