@@ -1,8 +1,13 @@
 # 插件收录申请
 
-**已提交：** [PR #5681](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5681)（2026-09-22）。
-`check` 与 `Submission gate` 两项 CI 均已通过，等待维护者评审。PR 只新增
-`data/plugins/godv61__dsh-task-engine.yml`（+6 行）。
+**已收录：** [PR #5681](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/5681)
+于 2026-09-22 15:45:57 UTC 被维护者 `fkysly` 合并，**无修改要求**（0 条评审评论）。
+条目已在列表的 `main` 上，中英两个 README 均已生成对应行。
+
+提交时 `check`（7m40s）与 `Submission gate` 两项 CI 全部通过。PR 只新增
+`data/plugins/godv61__dsh-task-engine.yml`（+6 行），未触碰生成出来的 README。
+
+条目页：[awesome-dsh-plugin.com](https://awesome-dsh-plugin.com)
 
 目标：[awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin)。
 
