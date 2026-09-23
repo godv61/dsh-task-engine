@@ -18,7 +18,7 @@ npm run verify:package
 
 `build` 生成 host、浏览器客户端与提交钩子；`typecheck` 检查 host 和 client 两个编译面。`verify:package` 将 tarball 安装到干净临时项目，检查包入口、客户端注册、包内测试和 CLI 语法。
 
-CI 在 Windows 的 Node 22/24 上运行。具体用例与限制见[测试报告](testing/0.23.0/测试报告.md)；每次功能修改选择相关验证，文档排版调整只需要文档、链接和渲染检查。
+CI 在 Windows 的 Node 22/24 上运行。每次功能修改选择相关验证；文档排版调整只需要文档、链接和渲染检查。测试数量随版本变化，当前值以本地 `npm test` 与 `npm run verify:package` 的输出为准，不在此处固定。
 
 ## 代码导航
 
@@ -44,10 +44,10 @@ Host 入口挂载工作台控制器，并在 eng 预设不存在时生成“工�
   name: '@godv61/dsh-task-engine/agent'
 ```
 
-已存在的 eng 预设不会被自动覆盖。手工调整前先备份；配套的 enable 脚本也会拒绝覆盖已存在的预设。
+eng 预设由插件在每次启动时**从当前 Harness 的 `standard` 预设重新派生**，因此 Harness 升级后预设会跟着更新。判断依据是文件里是否带有本插件写入的 agent 行：**插件自己生成的会被更新，手工编辑过的原样保留**。配套的 `enable` 脚本行为更保守——目标已存在时直接拒绝，不覆盖。
 
 ## 可选 host 接入
 
-0.23.0 优先使用 Harness 的 `workspaceRegistry.resolveByPath` 获取已登记工作区。旧 host 可以通过插件导出的 `registerWorkspace` 和 `enableStrictWorkspaces` 配置注册目录及严格模式，接口定义见 [src/controller.ts](../src/controller.ts)。注册范围不等于会话身份鉴权；个人本机使用不要求为此改造 Harness。
+Host 入口优先使用 Harness 的 `workspaceRegistry.resolveByPath` 获取已登记工作区。旧 host 可以通过插件导出的 `registerWorkspace` 和 `enableStrictWorkspaces` 配置注册目录及严格模式，接口定义见 [src/controller.ts](../src/controller.ts)。注册范围不等于会话身份鉴权；个人本机使用不要求为此改造 Harness。
 
 发布前保持 README、使用手册和实际代码一致；不要将规划中的功能描述为已经可用。

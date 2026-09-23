@@ -15,9 +15,11 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 如果你正在 Harness 源码目录开发，使用：
 
 ```sh
-pnpm dsh plugin --profile web add @godv61/dsh-task-engine@0.23.0
+pnpm dsh plugin --profile web add @godv61/dsh-task-engine
 pnpm dsh web --no-open
 ```
+
+不写版本号会安装 npm 上的 `latest`；需要固定版本时再追加 `@<版本>`。
 
 已有 Web 进程时，先关闭该进程再启动，避免端口冲突。通过 `dsh plugin` 安装会将插件加入对应 profile；仅在任意目录执行 `npm install` 不会完成工作台挂载。
 
