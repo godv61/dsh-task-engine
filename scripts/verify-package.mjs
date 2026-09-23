@@ -1,7 +1,7 @@
 /**
  * Black-box verification of the npm tarball before publishing: packs the
  * package, extracts it into a clean temp dir, and proves the published entry
- * points actually work â€?main import, browser client registration, the bundled
+ * points actually work â€”main import, browser client registration, the bundled
  * `.p0-test.mjs`, the CLI, and the `files` whitelist.
  *
  * Run: `npm run verify:package`
@@ -51,7 +51,7 @@ check('tarball excludes build scripts', !listing.some(line => line.endsWith('bui
 // Every `node <file>` script the manifest declares must actually ship, EXCEPT
 // the build-time ones that `prepare` needs in the source tree only. A script
 // whose target is absent from `files` installs fine and then dies with
-// MODULE_NOT_FOUND â€?which is exactly what verify:package and verify:dsh did
+// MODULE_NOT_FOUND â€”which is exactly what verify:package and verify:dsh did
 // until this assertion existed, because neither scripts/ path was published.
 {
   const manifest = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'))

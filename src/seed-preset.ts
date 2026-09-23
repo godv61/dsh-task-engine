@@ -1,11 +1,11 @@
 /**
  * Seed the `eng` preset into the user's `.agent-presets` root.
  *
- * Installing the bundle must put a pickable "工程化开发引�? preset in the preset
+ * Installing the bundle must put a pickable "工程化开发引操 preset in the preset
  * picker without anyone hand-copying a composition. The preset is the shipped
  * `standard` composition with three edits: the persona is replaced by the
  * engineering persona, `task-engine-agent` is appended, and nothing else changes
- * �?so a session on it has every tool `standard` has, plus `dev_task`.
+ * —so a session on it has every tool `standard` has, plus `dev_task`.
  *
  * The seed DERIVES the composition from the `standard` that is running, and
  * RE-DERIVES it whenever that source moves. The earlier version copied once and
@@ -64,7 +64,7 @@ function dshHome(): string {
  * time from the installed DSH rather than from a build-time constant.
  *
  * `@deepseek-ai/dsh-agent-presets` also exports `SHIPPED_PRESET_ROOT`, but that
- * is `fileURLToPath(new URL('../presets/', import.meta.url))` �?a constant baked
+ * is `fileURLToPath(new URL('../presets/', import.meta.url))` —a constant baked
  * into whichever copy of the package the *plugin* resolves. Under a real install
  * that is the plugin's own dependency tree, which can sit at a different DSH
  * version than the one running: the seed then copies an obsolete `standard`,
@@ -104,7 +104,7 @@ function personaBody(): string {
  * schemas are mutually exclusive: a preset written with `prefix` is rejected
  * outright by an older persona plugin with `$.text missing required value`, and
  * `text` is rejected by the newer one. The seed therefore cannot hardcode
- * either name �?it reads which one the source composition already uses, since
+ * either name —it reads which one the source composition already uses, since
  * that composition is what the running harness mounts.
  */
 type PersonaField = 'text' | 'prefix'
@@ -150,7 +150,7 @@ function personaFieldOf(composition: string): PersonaField {
  * Replace the persona row's config with the engineering persona, keeping the
  * field name the running harness uses.
  *
- * The persona schema has moved (`text:` �?`prefix`/`suffix`), so this rewrites
+ * The persona schema has moved (`text:` →`prefix`/`suffix`), so this rewrites
  * the whole `config:` block of the `persona` row rather than matching one
  * historical phrasing, and writes whichever field
  * {@link personaFieldOf} found in the source. A `suffix:` row is preserved when
@@ -228,7 +228,7 @@ function deriveComposition(): { text: string; personaApplied: boolean } | undefi
  *
  * Failures are swallowed: a seed that cannot write must not stop the bundle's
  * host half (its Remote controller and workbench) from loading. A preset that
- * was deleted by the user stays deleted �?re-derivation only touches a file the
+ * was deleted by the user stays deleted —re-derivation only touches a file the
  * seed itself created.
  */
 export function seedEngPreset(): void {

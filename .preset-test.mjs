@@ -26,7 +26,7 @@ import { derivedEngComposition, wasSeeded, applyPersona, personaFieldOf } from '
  * The live derivation resolves `@deepseek-ai/dsh-agent-presets`, a PEER the
  * running harness provides. In a consumer's install it may be absent or a
  * different version, so the assertions that read a real `standard` skip when it
- * is unavailable rather than failing â€?the fixture-driven cases below cover the
+ * is unavailable rather than failing â€”the fixture-driven cases below cover the
  * logic itself and always run.
  */
 const derived = derivedEngComposition()
@@ -48,7 +48,7 @@ test('the engineering persona replaces the shipped one', live, () => {
 
 test('the derived persona row is well formed and never sets complete', live, () => {
   // Which field is correct depends on the running harness, so assert the SHAPE
-  // (a block scalar under `config:`) rather than one field name â€?the field
+  // (a block scalar under `config:`) rather than one field name â€”the field
   // itself is pinned by the two fixtures below.
   assert.match(derived.text, /- id: persona\n {2}name: '@deepseek-ai\/dsh-persona'\n {2}config:\n(?: {4}suffix: .*\n)? {4}(?:text|prefix): [|>]-/u,
     'the persona row must carry a block scalar under config')

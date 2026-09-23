@@ -44,6 +44,10 @@ await build({
   loader: { '.ts': 'tsx' },
   external: BASELINE,
   sourcemap: true,
+  // Line mappings only. Inlining `sourcesContent` would publish the whole
+  // `src/client` tree inside the shipped bundle's source map, defeating both
+  // the `files` whitelist and the "tarball excludes src sources" check.
+  sourcesContent: false,
   banner: {
     js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(id)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;\n`,
   },
