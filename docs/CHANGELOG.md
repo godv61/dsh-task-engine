@@ -4,6 +4,26 @@
 
 按版本查阅功能变化。当前使用方式以[项目首页](../README.md)和使用指南为准；历史条目中的实现方式、限制与测试数量可能已被后续版本替代。
 
+## 未发布（评估改造·第三批）
+
+**规则改为只挂在技能下。** 此前 `StageBinding` 是 `{ skills: string[], rules: string[] }` 两个平级数组，于是「这个技能在什么规则下运行」这个问题，必须先把预设默认、项目追加、优先级解析全部算一遍才能回答——而且答案会随阶段变化。现在：
+
+```text
+流程 → 节点 → 技能 → 规则
+```
+
+- `StageBinding` 只保留 `skills`，每项是 `SkillBinding { skill: ResourceRef, rules: ResourceRef[] }`。**节点不再有规则列表，也不提供追加、禁用或覆盖**；打开一个技能看到的就是它完整的规则列表，挂到任何节点都是同一套。
+- 同一技能需要不同规则时**复制成另一个独立技能**，不建立隐式继承。测试里有一条断言专门锁住这一点：同一个技能引用在任何流程的任何节点都必须携带完全相同的规则集合。
+- **资源引用带来源**（`bundled:` / `project:` / `user:`）。裸名字无法区分「项目里的 coding-conventions」和「用户目录里的 coding-conventions」——过去二者只能靠优先级隐式决定，现在引用本身说明去哪一层找，解析不再走优先级遍历。
+- **规则可被多个技能引用**，正文不复制。`security-redlines` 同时被 `code-implement` 与 `code-review` 引用，就是这种共享（有断言覆盖）。同一阶段的重复引用会去重披露。
+- **内置规则的归属按正文内容逐条审查，不按文件名机械搬迁**：`coding-conventions` 给 `code-implement`（写时遵循）与 `code-review`（审的就是这些）；`commit-conventions` 只给 `code-commit`；`security-redlines` 给 `code-implement`、`code-review` 与 `requirement-analysis`——它的「服务端校验才是边界，前端校验不是」在需求阶段就要定。
+- **旧配置的节点级规则不丢弃、不猜归属**。`legacy_rules` 保留原名，**仍然生效**，同时 `status.unassigned_legacy_rules` 列出它们等待归属；阶段披露文本也会说明这是待分配规则。`validateWorkflow` 会报出未分配的旧规则，让这个迁移状态保持可见而不是沉淀成两套并存的模型。
+- `status` 新增 `unassigned_legacy_rules`，`rules[]` 现在带 `source`；`skill_obligations` 与 `skill_result` 按技能名比较（DSH 的 skill 工具按名寻址），来源只决定解析到哪一层。
+
+**界面**：节点页只列技能；勾选技能后展开「规则设置」，在**技能**上增删规则。旧的平级「技能 / 规则」双选择器（`BindingPicker`）已删除——它表达的正是被取消的双层模型。技能卡片区分预设绑定（锁定）与项目追加，并显示该技能当前携带几条规则。
+
+**关于测试**：`.p0-test.mjs` 与 `.workflow-test.mjs` 里各有一条断言依赖旧的节点级规则语义（「清空节点规则仍保留核心规则」「技能以字符串数组绑定」），已改为按新模型断言——不变量没有变（核心能力不可被覆盖取消），变的只是它落在技能上。新增 4 条第三批断言。
+
 ## 未发布（评估改造·第二批）
 
 - **完成成为显式动作，不再由「站在最后一个阶段」推定**。`minimal` 的终态恰好又是它的提交检查点，而「离开检查点前必须提交」这条规则只在**离开**阶段时触发——终态没有出口，于是该流程能在 `commits` 为空时抵达终点，**没有任何交付记录**。新增 `complete` 操作与 `TaskCompletion` 记录：三个预设统一以同一生命周期收尾，`completionBlockers()` 在完成时检查「是否处于终态」「`todos_done` 条件是否满足」「交付方式是否要求提交」。

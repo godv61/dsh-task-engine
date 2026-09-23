@@ -16,11 +16,33 @@ import {
   Button, Pill, StateDot, DisclosureRow,
   IconCheckOutline16, IconSettingsOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { validateWorkflow, type StageBinding, type WorkflowConfig } from '../engine.ts'
+import {
+  formatResourceRef,
+  parseResourceRef,
+  validateWorkflow,
+  type ResourceRef,
+  type SkillBinding,
+  type StageBinding,
+  type WorkflowConfig,
+} from '../engine.ts'
+
+/**
+ * Read a `source:name` reference produced by the catalog, falling back to the
+ * bundled layer for a bare name.
+ *
+ * Every reference the UI writes is source-qualified, because a bare name cannot
+ * say which layer was meant once project and user directories can both hold one.
+ * The fallback exists only so a hand-written config that still carries bare names
+ * can be opened without crashing, mirroring how the engine resolves legacy text.
+ * @param text - the reference text from a catalog entry.
+ * @returns the parsed reference.
+ */
+function refFromText(text: string): ResourceRef {
+  return parseResourceRef(text) ?? { source: 'bundled', name: text }
+}
 import { FLOW_PRESETS, FLOW_OPTIONS, resolveFlow } from '../workflows.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
-import { BindingPicker } from './BindingPicker.tsx'
 
 /** Resolve a flow id plus staged bindings into a complete config for preview (unknown ids preview the standard preset; writes still reject them). */
 function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding>): WorkflowConfig {
@@ -44,12 +66,20 @@ export interface SkillCatalogEntry {
   name: string
   description: string
   source: string
+  /** Source-qualified reference, so two same-named skills in different layers stay distinct. */
+  ref: ResourceRef
+  /** Localized label for `ref.source`, resolved once so the list does not re-derive it. */
+  sourceLabel: string
 }
 
 /** One rule in the mountable catalog. */
 export interface RuleCatalogEntry {
   name: string
   source: string
+  /** Source-qualified reference, so two same-named rules in different layers stay distinct. */
+  ref: ResourceRef
+  /** Localized label for `ref.source`. */
+  sourceLabel: string
 }
 
 /** Result of creating one skill or rule. */
@@ -366,32 +396,62 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
   rules: RuleCatalogEntry[]
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
+  const [expanded, setExpanded] = useState<string | null>(null)
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
-  const toggleSkill = (skill: string): void => {
-    if (currentStage === '') return
-    const current = stageBindings[currentStage]?.skills ?? []
-    const next = current.includes(skill) ? current.filter(s => s !== skill) : [...current, skill].sort()
-    setStageBindings({ ...stageBindings, [currentStage]: { ...(stageBindings[currentStage] ?? {}), skills: next } })
+  const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
+  const presetSkills = (name: string): SkillBinding[] => defaults[name]?.skills ?? []
+
+  /** A skill the preset ships cannot be unbound, so the flow keeps its core capability. */
+  const isPresetSkill = (name: string, raw: string): boolean =>
+    presetSkills(name).some(entry => formatResourceRef(entry.skill) === raw)
+
+  const setSkills = (name: string, next: SkillBinding[]): void => {
+    setStageBindings({ ...stageBindings, [name]: { ...bindingFor(name), skills: next } })
   }
 
-  const toggleRule = (rule: string): void => {
+  const toggleSkill = (raw: string): void => {
+    if (currentStage === '' || isPresetSkill(currentStage, raw)) return
+    const current = bindingFor(currentStage).skills ?? []
+    const next = current.some(entry => formatResourceRef(entry.skill) === raw)
+      ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
+      : [...current, { skill: refFromText(raw), rules: [] }].sort((a, b) =>
+        formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
+    setSkills(currentStage, next)
+  }
+
+  /**
+   * A skill's rule list is edited here, on the skill. There is no stage-level rule
+   * control: rules belong to the skill, so this list is complete wherever the
+   * skill is bound, and one skill under two rule sets means two skills.
+   */
+  const toggleRule = (skillRaw: string, ruleRaw: string): void => {
     if (currentStage === '') return
-    const current = stageBindings[currentStage]?.rules ?? []
-    const next = current.includes(rule) ? current.filter(s => s !== rule) : [...current, rule].sort()
-    setStageBindings({ ...stageBindings, [currentStage]: { ...(stageBindings[currentStage] ?? {}), rules: next } })
+    const current = bindingFor(currentStage).skills ?? []
+    setSkills(currentStage, current.map(entry => {
+      if (formatResourceRef(entry.skill) !== skillRaw) return entry
+      const has = entry.rules.some(rule => formatResourceRef(rule) === ruleRaw)
+      const next = has
+        ? entry.rules.filter(rule => formatResourceRef(rule) !== ruleRaw)
+        : [...entry.rules, refFromText(ruleRaw)].sort((a, b) => formatResourceRef(a).localeCompare(formatResourceRef(b)))
+      return { ...entry, rules: next }
+    }))
   }
 
   if (currentStage === '') {
     return <p style={styles.muted}>当前流程没有节点。</p>
   }
 
-  const boundSkills = stageBindings[currentStage]?.skills ?? []
-  const boundRules = stageBindings[currentStage]?.rules ?? []
+  const boundSkills: SkillBinding[] = bindingFor(currentStage).skills ?? []
+  const unassigned = bindingFor(currentStage).legacy_rules ?? []
+  const presetCount = presetSkills(currentStage).length
 
   return (
     <div style={styles.section}>
-      <p style={styles.hint}>绑定按名称生效；同名资源可在资源管理中按项目／个人分别查看。完成节点的技能必须在进入完成前执行，测试技能建议放在交付节点。</p>
+      <p style={styles.hint}>
+        节点只选择技能；规则属于技能——点开一个技能就能看到它完整的规则列表，挂到任何节点都是同一套规则。
+        需要同一技能用不同规则时，复制成另一个技能再分别配置。
+      </p>
       <div style={styles.field}>
         <span style={styles.bindingLabel}>选择节点</span>
         <div style={styles.chips}>
@@ -401,9 +461,74 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
         </div>
       </div>
 
+      {/* Legacy stage-level rules keep working and stay visible until assigned. */}
+      {unassigned.length > 0 ? (
+        <div className="te-alert">
+          以下规则属于<strong>节点</strong>而不是任何技能（旧配置）：{unassigned.join('、')}。
+          它们仍然生效，但需要指定归属——把每条规则加到你希望承载它的技能下，然后从这里移除；
+          若同一技能在不同节点需要不同规则，请复制该技能再分别配置。
+        </div>
+      ) : null}
+
       <div className="te-binding-grid" key={currentStage}>
-        <BindingPicker title="技能" resources={skills} selected={boundSkills} defaults={defaults[currentStage]?.skills ?? []} onToggle={toggleSkill} />
-        <BindingPicker title="规则" resources={rules} selected={boundRules} defaults={defaults[currentStage]?.rules ?? []} onToggle={toggleRule} />
+        <section className="te-binding-picker" aria-label="技能绑定">
+          <div className="te-binding-heading">
+            <h4>技能</h4>
+            <span className="te-binding-count">已选 {boundSkills.length}{presetCount > 0 ? `（含 ${presetCount} 项预设）` : ''}</span>
+          </div>
+          <div className="te-binding-list" role="group" aria-label="技能列表" tabIndex={0}>
+            {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请在上方“技能”页添加。</p> : null}
+            {skills.map(entry => {
+              const raw = formatResourceRef(entry.ref)
+              const bound = boundSkills.find(candidate => formatResourceRef(candidate.skill) === raw)
+              // Transitive preset bindings stay visible even when the catalog has
+              // not loaded, so a failed load cannot hide an existing selection.
+              const preset = isPresetSkill(currentStage, raw)
+              const open = expanded === raw
+              return (
+                <div key={raw} className={`te-binding-option${bound !== undefined ? ' is-selected' : ''}`}>
+                  <input
+                    type="checkbox"
+                    aria-label={raw}
+                    checked={bound !== undefined}
+                    disabled={preset}
+                    onChange={() => toggleSkill(raw)}
+                  />
+                  <span className="te-binding-detail">
+                    <span className="te-binding-name">
+                      {entry.name}
+                      {preset ? <span className="te-source-badge">预设</span> : null}
+                    </span>
+                    <span className="te-binding-meta">
+                      {entry.sourceLabel} · {bound === undefined ? '未绑定' : `${bound.rules.length} 条规则`}
+                    </span>
+                    {bound !== undefined ? (
+                      <button type="button" className="te-link" onClick={() => setExpanded(open ? null : raw)}>
+                        {open ? '收起规则' : '规则设置'}
+                      </button>
+                    ) : null}
+                    {open && bound !== undefined ? (
+                      <span className="te-rule-list">
+                        {rules.length === 0 ? <span className="te-binding-meta">规则库为空。</span> : null}
+                        {rules.map(rule => {
+                          const ruleRaw = formatResourceRef(rule.ref)
+                          const on = bound.rules.some(candidate => formatResourceRef(candidate) === ruleRaw)
+                          return (
+                            <label key={ruleRaw} className="te-binding-filter">
+                              <input type="checkbox" checked={on} onChange={() => toggleRule(raw, ruleRaw)} />{' '}
+                              {rule.name}
+                              <span className="te-binding-meta">（{rule.sourceLabel}）</span>
+                            </label>
+                          )
+                        })}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </section>
       </div>
     </div>
   )

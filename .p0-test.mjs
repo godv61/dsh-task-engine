@@ -108,10 +108,17 @@ const unknown = resolveFlow('nope')
 assert(unknown.ok === false && unknown.code === 'UNKNOWN_FLOW', 'unknown flow returns UNKNOWN_FLOW')
 assert(unknown.knownFlows.includes('standard'), 'known flow list is surfaced')
 
-// ── 3. core bindings cannot be cancelled by an override ────────────────────
-const merged = resolveFlow('standard', { stage_bindings: { '开发': { rules: [] } } })
-assert(merged.ok && merged.config.stage_bindings['开发'].rules.includes('coding-conventions'),
-  'emptying a stage override keeps the core rule')
+// ── 3. core skill bindings cannot be cancelled by an override ──────────────
+// Rules moved onto the skill, so the invariant is about the SKILL surviving an
+// override and that skill's own rule list staying intact. A stage has no rule
+// list left to empty.
+const merged = resolveFlow('standard', { stage_bindings: { '开发': {} } })
+assert(merged.ok
+  && merged.config.stage_bindings['开发'].skills.some(entry => entry.skill.name === 'code-implement'),
+  'an empty stage override keeps the core skill binding')
+const implementBinding = merged.config.stage_bindings['开发'].skills.find(entry => entry.skill.name === 'code-implement')
+assert(implementBinding.rules.map(rule => rule.name).includes('coding-conventions'),
+  'a skill keeps its own rules; there is no stage-level rule list for an override to empty')
 
 // ── 4. newTask freezes the snapshot ────────────────────────────────────────
 const snapshot = { flow: 'standard', version: 1, config: FLOW_PRESETS.standard.config }

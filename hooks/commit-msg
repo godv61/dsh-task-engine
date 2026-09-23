@@ -30,6 +30,9 @@ var import_node_fs = __toESM(require("node:fs"), 1);
 var import_node_path = __toESM(require("node:path"), 1);
 
 // src/engine.ts
+function formatResourceRef(ref) {
+  return `${ref.source}:${ref.name}`;
+}
 function artifactsForStage(stage, config2) {
   return config2.artifacts.filter((artifact) => artifact.stage === stage);
 }
@@ -155,6 +158,10 @@ function checkFileScope(state2, committing, config2) {
 }
 
 // src/workflows.ts
+function bundled(skill, ...rules) {
+  const ref = (name) => ({ source: "bundled", name });
+  return { skill: ref(skill), rules: rules.map(ref) };
+}
 var STANDARD = {
   stages: ["\u9700\u6C42\u8BC4\u5BA1", "\u8BBE\u8BA1", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"],
   start_stage: "\u9700\u6C42\u8BC4\u5BA1",
@@ -179,11 +186,16 @@ var STANDARD = {
   },
   high_risk_requires_verification: true,
   stage_bindings: {
-    "\u9700\u6C42\u8BC4\u5BA1": { skills: ["requirement-analysis"], rules: ["security-redlines"] },
-    "\u8BBE\u8BA1": { skills: ["solution-design"] },
-    "\u5F00\u53D1": { skills: ["code-implement"], rules: ["coding-conventions"] },
-    "\u4EA4\u4ED8": { skills: ["code-verify"], rules: ["coding-conventions"] },
-    "\u4EE3\u7801\u5BA1\u6838": { skills: ["code-review", "code-commit"], rules: ["security-redlines", "commit-conventions"] }
+    "\u9700\u6C42\u8BC4\u5BA1": { skills: [bundled("requirement-analysis", "security-redlines")] },
+    "\u8BBE\u8BA1": { skills: [bundled("solution-design")] },
+    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
+    "\u4EA4\u4ED8": { skills: [bundled("code-verify")] },
+    "\u4EE3\u7801\u5BA1\u6838": {
+      skills: [
+        bundled("code-review", "coding-conventions", "security-redlines"),
+        bundled("code-commit", "commit-conventions")
+      ]
+    }
   }
 };
 var AGILE = {
@@ -217,10 +229,10 @@ var AGILE = {
   },
   high_risk_requires_verification: false,
   stage_bindings: {
-    "\u9700\u6C42": { skills: ["requirement-analysis"] },
-    "\u5F00\u53D1": { skills: ["code-implement"], rules: ["coding-conventions"] },
-    "\u4EA4\u4ED8": { skills: ["code-verify", "code-commit"], rules: ["commit-conventions"] },
-    "\u5BA1\u67E5": { skills: ["code-review"] }
+    "\u9700\u6C42": { skills: [bundled("requirement-analysis", "security-redlines")] },
+    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
+    "\u4EA4\u4ED8": { skills: [bundled("code-verify"), bundled("code-commit", "commit-conventions")] },
+    "\u5BA1\u67E5": { skills: [bundled("code-review", "coding-conventions", "security-redlines")] }
   }
 };
 var MINIMAL = {
@@ -244,8 +256,8 @@ var MINIMAL = {
   // flow used to carry the same per-item audit burden as the full one.
   review_depth: "single",
   stage_bindings: {
-    "\u5F00\u53D1": { skills: ["code-implement"] },
-    "\u4EA4\u4ED8": { skills: ["code-commit"], rules: ["commit-conventions"] }
+    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
+    "\u4EA4\u4ED8": { skills: [bundled("code-commit", "commit-conventions")] }
   }
 };
 function deriveCapabilities(config2) {
@@ -281,11 +293,18 @@ function mergeBindings(base, override) {
   const merged = { ...base.stage_bindings };
   for (const [stage, addition] of Object.entries(override)) {
     const existing = merged[stage];
-    const skills = dedupe([...existing?.skills ?? [], ...addition.skills ?? []]);
-    const rules = dedupe([...existing?.rules ?? [], ...addition.rules ?? []]);
+    const skills = [...existing?.skills ?? []];
+    const seen = new Set(skills.map((skill) => formatResourceRef(skill.skill)));
+    for (const skill of addition.skills ?? []) {
+      const key = formatResourceRef(skill.skill);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      skills.push(skill);
+    }
+    const legacy = dedupe([...existing?.legacy_rules ?? [], ...addition.legacy_rules ?? []]);
     const binding = {};
     if (skills.length > 0) binding.skills = skills;
-    if (rules.length > 0) binding.rules = rules;
+    if (legacy.length > 0) binding.legacy_rules = legacy;
     merged[stage] = binding;
     changed = true;
   }

@@ -22,6 +22,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 // Type-only: pulls the `Context.fs` augmentation into this module.
 import type {} from '@deepseek-ai/dsh-fs'
+import type { ResourceRef, ResourceSource } from './engine.ts'
 import { validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
 import { resolveFlow } from './workflows.ts'
 
@@ -54,12 +55,20 @@ export interface SkillCatalogEntry {
   name: string
   description: string
   source: string
+  /** Source-qualified reference, so same-named skills in different layers stay distinct. */
+  ref: ResourceRef
+  /** Localized label for the source layer, so the client does not re-derive it. */
+  sourceLabel: string
 }
 
 /** One rule in the mountable catalog. */
 export interface RuleCatalogEntry {
   name: string
   source: string
+  /** Source-qualified reference, so same-named rules in different layers stay distinct. */
+  ref: ResourceRef
+  /** Localized label for the source layer. */
+  sourceLabel: string
 }
 
 /** `listSkills` result: every model-invocable skill, bundled + project + user. */
@@ -340,6 +349,29 @@ function filesystemRoots(): string[] {
   return roots
 }
 /** Scan a markdown directory, returning `{ name }` per `.md` file. */
+/**
+ * Narrow a scanned directory's source tag to a resource layer.
+ *
+ * The scanner tags project skills and rules by which directory they came from,
+ * which is not always the layer name a reference uses, so the two are mapped in
+ * one place rather than at each call site.
+ */
+function asResourceSource(source: string): ResourceSource {
+  if (source === 'bundled' || source === 'project' || source === 'user') return source
+  if (source.startsWith('project')) return 'project'
+  if (source.startsWith('user')) return 'user'
+  return 'bundled'
+}
+
+/** Localized label for one source layer, shared by skills and rules. */
+function sourceLabel(source: string): string {
+  switch (asResourceSource(source)) {
+    case 'bundled': return '内置'
+    case 'project': return '项目'
+    case 'user': return '用户'
+  }
+}
+
 function scanRuleDir(dir: string, source: string): RuleCatalogEntry[] {
   let entries: string[]
   try {
@@ -349,7 +381,10 @@ function scanRuleDir(dir: string, source: string): RuleCatalogEntry[] {
   }
   return entries
     .filter(name => name.endsWith('.md'))
-    .map(name => ({ name: name.slice(0, -'.md'.length), source }))
+    .map(name => {
+        const bare = name.slice(0, -'.md'.length)
+        return { name: bare, source, ref: { source: asResourceSource(source), name: bare }, sourceLabel: sourceLabel(source) }
+      })
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -400,7 +435,15 @@ function listSkillsFromDir(dir: string, source: string): SkillCatalogEntry[] {
     try {
       const raw = readFileSync(join(dir, entry.name, 'SKILL.md'), 'utf8')
       const parsed = parseSkillFrontmatter(raw)
-      if (parsed !== undefined) result.push({ name: parsed.name, description: parsed.description, source })
+      if (parsed !== undefined) {
+          result.push({
+            name: parsed.name,
+            description: parsed.description,
+            source,
+            ref: { source: asResourceSource(source), name: parsed.name },
+            sourceLabel: sourceLabel(source),
+          })
+        }
     } catch {
       /* skip unreadable entry */
     }

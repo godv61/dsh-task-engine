@@ -10,13 +10,29 @@
  * @module dsh-task-engine/workflows
  */
 
-import type { StageBinding, WorkflowConfig } from './engine.ts'
+import { formatResourceRef } from './engine.ts'
+import type { ResourceRef, SkillBinding, StageBinding, WorkflowConfig } from './engine.ts'
 
 /** A preset workflow a project can select by id. */
 export interface FlowOption {
   id: string
   label: string
   description: string
+}
+
+/**
+ * Build one skill binding from a bare name plus its bundled rules.
+ *
+ * The preset's own bindings are all bundled resources, so the `bundled:` prefix
+ * is applied here rather than repeated at every call site. Project and user
+ * resources enter through a project's config, where their source is explicit.
+ * @param skill - the bundled skill name.
+ * @param rules - bundled rule names that belong to this skill.
+ * @returns the binding.
+ */
+function bundled(skill: string, ...rules: string[]): SkillBinding {
+  const ref = (name: string): ResourceRef => ({ source: 'bundled', name })
+  return { skill: ref(skill), rules: rules.map(ref) }
 }
 
 /** A gate capability a flow either has or lacks; high-risk tasks require a subset. */
@@ -64,11 +80,16 @@ const STANDARD: WorkflowConfig = {
   },
   high_risk_requires_verification: true,
   stage_bindings: {
-    '需求评审': { skills: ['requirement-analysis'], rules: ['security-redlines'] },
-    '设计': { skills: ['solution-design'] },
-    '开发': { skills: ['code-implement'], rules: ['coding-conventions'] },
-    '交付': { skills: ['code-verify'], rules: ['coding-conventions'] },
-    '代码审核': { skills: ['code-review', 'code-commit'], rules: ['security-redlines', 'commit-conventions'] },
+    '需求评审': { skills: [bundled('requirement-analysis', 'security-redlines')] },
+    '设计': { skills: [bundled('solution-design')] },
+    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
+    '交付': { skills: [bundled('code-verify')] },
+    '代码审核': {
+      skills: [
+        bundled('code-review', 'coding-conventions', 'security-redlines'),
+        bundled('code-commit', 'commit-conventions'),
+      ],
+    },
   },
 }
 
@@ -104,10 +125,10 @@ const AGILE: WorkflowConfig = {
   },
   high_risk_requires_verification: false,
   stage_bindings: {
-    '需求': { skills: ['requirement-analysis'] },
-    '开发': { skills: ['code-implement'], rules: ['coding-conventions'] },
-    '交付': { skills: ['code-verify', 'code-commit'], rules: ['commit-conventions'] },
-    '审查': { skills: ['code-review'] },
+    '需求': { skills: [bundled('requirement-analysis', 'security-redlines')] },
+    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
+    '交付': { skills: [bundled('code-verify'), bundled('code-commit', 'commit-conventions')] },
+    '审查': { skills: [bundled('code-review', 'coding-conventions', 'security-redlines')] },
   },
 }
 
@@ -133,8 +154,8 @@ const MINIMAL: WorkflowConfig = {
   // flow used to carry the same per-item audit burden as the full one.
   review_depth: 'single',
   stage_bindings: {
-    '开发': { skills: ['code-implement'] },
-    '交付': { skills: ['code-commit'], rules: ['commit-conventions'] },
+    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
+    '交付': { skills: [bundled('code-commit', 'commit-conventions')] },
   },
 }
 
@@ -222,10 +243,19 @@ function dedupe(names: string[]): string[] {
 }
 
 /**
- * Merge a project's stage-binding additions into a preset's defaults without
- * ever removing a core binding. A stage's `skills`/`rules` become the preset
- * defaults followed by the project additions, de-duplicated in order; the seed
- * bindings can therefore never be cancelled by an override, only extended.
+ * Merge a project's stage bindings into a preset's defaults without ever removing
+ * a core skill. Skills are appended and de-duplicated by their source-qualified
+ * reference, so a project cannot cancel a shipped binding and two same-named
+ * skills from different layers stay distinct.
+ *
+ * Rules are NOT merged here. A rule belongs to the skill that carries it, so a
+ * project wanting a skill under a different rule set supplies its own skill
+ * binding whose `rules` list is used as given. There is no stage-level rule list
+ * to merge into and no override layer to compute — the skill's list is the answer.
+ *
+ * `legacy_rules` from a project pass through untouched: they are the stage-level
+ * rules of a pre-migration config, still enforced, awaiting a human decision
+ * about which skill owns them.
  */
 function mergeBindings(base: WorkflowConfig, override?: Record<string, StageBinding>): WorkflowConfig {
   if (override === undefined) return base
@@ -233,11 +263,18 @@ function mergeBindings(base: WorkflowConfig, override?: Record<string, StageBind
   const merged: Record<string, StageBinding> = { ...base.stage_bindings }
   for (const [stage, addition] of Object.entries(override)) {
     const existing = merged[stage]
-    const skills = dedupe([...(existing?.skills ?? []), ...(addition.skills ?? [])])
-    const rules = dedupe([...(existing?.rules ?? []), ...(addition.rules ?? [])])
+    const skills: SkillBinding[] = [...(existing?.skills ?? [])]
+    const seen = new Set(skills.map(skill => formatResourceRef(skill.skill)))
+    for (const skill of addition.skills ?? []) {
+      const key = formatResourceRef(skill.skill)
+      if (seen.has(key)) continue
+      seen.add(key)
+      skills.push(skill)
+    }
+    const legacy = dedupe([...(existing?.legacy_rules ?? []), ...(addition.legacy_rules ?? [])])
     const binding: StageBinding = {}
     if (skills.length > 0) binding.skills = skills
-    if (rules.length > 0) binding.rules = rules
+    if (legacy.length > 0) binding.legacy_rules = legacy
     merged[stage] = binding
     changed = true
   }

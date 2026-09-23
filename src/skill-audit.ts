@@ -48,7 +48,11 @@ export function needsSkillReceipt(name: string): boolean {
 export function skillBlockers(state: TaskState, workflow: WorkflowConfig, session?: SkillSession): string[] {
   if (state.execution_version !== 1) return []
   const loaded = loadedSkills(session)
-  return obligationStages(state, workflow).flatMap(stage => (workflow.stage_bindings?.[stage]?.skills ?? []).flatMap(name => {
+  return obligationStages(state, workflow).flatMap(stage => (workflow.stage_bindings?.[stage]?.skills ?? []).flatMap(entry => {
+    // A binding names its skill with a source layer; the loaded set and the
+    // skill_result keys are keyed by name, because DSH's skill tool is addressed
+    // by name. The source decides which layer to resolve, not which key to use.
+    const name = entry.skill.name
     if (!loaded.has(name)) return [`${stage}: load skill "${name}" with the skill tool before leaving this stage`]
     if (!needsSkillReceipt(name)) return []
     const result = state.skill_results?.[stage]?.[name]

@@ -11,7 +11,7 @@ import { registerShippedSkills } from './lib/shipped-skills.js'
 
 function fixture(stage = '开发', extra = {}, services = {}) {
   const cwd = resolve('test-project')
-  const config = resolveFlow('standard', { stage_bindings: { 完成: { skills: ['software-testing'] } } }).config
+  const config = resolveFlow('standard', { stage_bindings: { 完成: { skills: [{ skill: { source: 'bundled', name: 'software-testing' }, rules: [] }] } } }).config
   const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 2, config }, root: cwd })
   Object.assign(state, { stage, execution_version: 1, files: ['app.js'], requirement_confirmed: true, solution_confirmed: true, ...extra })
   const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)], [join(cwd, 'app.js'), 'source']])

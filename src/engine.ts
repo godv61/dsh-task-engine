@@ -55,12 +55,84 @@ export interface CommitRule {
   file_scope: boolean
 }
 
-/** Skills and rules a stage pins for progressive disclosure when the task enters it. */
+/**
+ * A resource reference that names where the resource lives.
+ *
+ * A bare name is ambiguous once project and user directories can both hold one:
+ * `coding-conventions` in a project and `coding-conventions` in the user home are
+ * different resources that happen to share a name, and a binding written as a
+ * plain string cannot say which was meant. Every stored reference therefore
+ * carries its source layer, and a legacy bare name is resolved by the documented
+ * precedence and recorded as the layer it resolved to.
+ */
+export interface ResourceRef {
+  /** Source layer the resource belongs to. */
+  source: ResourceSource
+  /** Resource name within that layer. */
+  name: string
+}
+
+/** Where a skill or rule came from. `bundled` ships with the plugin. */
+export type ResourceSource = 'bundled' | 'project' | 'user'
+
+/** Render a reference as `source:name`, the form used in config and status output. */
+export function formatResourceRef(ref: ResourceRef): string {
+  return `${ref.source}:${ref.name}`
+}
+
+/**
+ * Parse a `source:name` reference. Returns undefined for a bare name, which is
+ * the legacy shape and must go through precedence resolution instead.
+ * @param text - the stored reference text.
+ * @returns the parsed reference, or undefined when it carries no source.
+ */
+export function parseResourceRef(text: string): ResourceRef | undefined {
+  const match = /^(bundled|project|user):(.+)$/u.exec(text)
+  if (match === null) return undefined
+  return { source: match[1] as ResourceSource, name: match[2]! }
+}
+
+/**
+ * One skill bound to a stage, with the complete list of rules that apply to it.
+ *
+ * Rules belong to the SKILL, not to the stage. A skill has exactly one rule list:
+ * wherever that skill is bound, the same rules come with it. There is no
+ * per-stage rule list, no inheritance from a stage or a preset, and no override
+ * layer, because a stage-level list forced every reader to compute a merge before
+ * knowing what actually applied, and made "which rules is this skill running
+ * under?" unanswerable without inspecting the whole composition.
+ *
+ * To use one skill under two different rule sets, copy it into a distinct skill
+ * and configure that one separately. Explicit duplication is easier to reason
+ * about than an implicit inheritance chain, and it keeps the answer to the
+ * question above local to the skill.
+ */
+export interface SkillBinding {
+  /** The skill, named with its source layer. */
+  skill: ResourceRef
+  /** Rules this skill follows, each named with its source layer. */
+  rules: ResourceRef[]
+}
+
+/**
+ * What a stage binds for progressive disclosure when the task enters it.
+ *
+ * A stage selects skills only. Its rules are whatever those skills carry.
+ */
 export interface StageBinding {
-  /** Skill names to load for this stage (resolved through the DSH skill registry). */
-  skills?: string[]
-  /** Rule names to read for this stage (resolved under the configured rule roots). */
-  rules?: string[]
+  skills?: SkillBinding[]
+  /**
+   * Stage-level rule names from a pre-migration config, preserved verbatim.
+   *
+   * Rules used to belong to the stage, so a stage with several skills gave no
+   * indication which skill a rule was meant for. Assigning them silently would
+   * invent an answer the config never contained, and dropping them would remove a
+   * constraint the user configured. They are therefore carried here unchanged:
+   * still disclosed, still enforced — so nothing is lost — while the status output
+   * names them as unassigned so a human can decide which skill each belongs to, or
+   * split the skill if the answer differs per stage.
+   */
+  legacy_rules?: string[]
 }
 
 /**
@@ -107,6 +179,22 @@ export interface WorkflowConfig {
 }
 
 /**
+ * A frozen copy of one resource's body, taken when the task was created.
+ *
+ * Names alone cannot keep an in-flight task stable: editing a skill or rule that
+ * a running task uses would silently change what that task is doing. The body is
+ * copied, and identical bodies are stored once and shared by content hash, so two
+ * tasks using the same rule do not duplicate several kilobytes each.
+ */
+export interface FrozenResource {
+  ref: ResourceRef
+  /** SHA-256 of the body, which is also the key under which it is stored. */
+  hash: string
+  /** The body itself, so a deleted or edited source cannot change a running task. */
+  content: string
+}
+
+/**
  * A task's frozen workflow: the preset id, its version, and the complete
  * resolved config at create time. The task's `status`/`advance`/`verify`/
  * `review`/`commit` re-read this snapshot instead of re-interpreting the
@@ -119,6 +207,12 @@ export interface FlowSnapshot {
   config: WorkflowConfig
   /** SHA-256 of the canonical JSON of `config`; a mismatch proves the snapshot was edited after creation. Absent on pre-0.22 records. */
   hash?: string
+  /**
+   * The skill and rule bodies this task actually resolved, captured at creation.
+   * Absent on records written before resource freezing; those fall back to live
+   * resolution.
+   */
+  resources?: FrozenResource[]
 }
 
 /** One delegated implementation unit: a subagent fetch plus its two-stage review. */
@@ -316,15 +410,32 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
     if (!config.stages.includes(stage)) {
       problems.push(`stage_bindings: stage "${stage}" is not a stage`)
     }
-    for (const skill of binding.skills ?? []) {
-      if (typeof skill !== 'string' || skill.trim() === '') {
-        problems.push(`stage_bindings "${stage}": empty skill name`)
+    // A skill carries its own rules, so each binding is checked as a unit: an
+    // empty skill reference or a malformed rule reference is reported with the
+    // skill it belongs to, which is where the user has to fix it.
+    for (const [index, entry] of (binding.skills ?? []).entries()) {
+      if (typeof entry?.skill?.name !== 'string' || entry.skill.name.trim() === '') {
+        problems.push(`stage_bindings "${stage}": skill ${index + 1} has no name`)
+        continue
+      }
+      if (!['bundled', 'project', 'user'].includes(entry.skill.source)) {
+        problems.push(`stage_bindings "${stage}": skill "${entry.skill.name}" has unknown source "${String(entry.skill.source)}"`)
+      }
+      for (const rule of entry.rules ?? []) {
+        if (typeof rule?.name !== 'string' || rule.name.trim() === '') {
+          problems.push(`stage_bindings "${stage}": skill "${entry.skill.name}" has a rule with no name`)
+          continue
+        }
+        if (!['bundled', 'project', 'user'].includes(rule.source)) {
+          problems.push(`stage_bindings "${stage}": skill "${entry.skill.name}" rule "${rule.name}" has unknown source "${String(rule.source)}"`)
+        }
       }
     }
-    for (const rule of binding.rules ?? []) {
-      if (typeof rule !== 'string' || rule.trim() === '') {
-        problems.push(`stage_bindings "${stage}": empty rule name`)
-      }
+    // Stage-level rules exist only as a migration state: they are disclosed and
+    // enforced, but they are not a feature. Reporting them keeps the pending
+    // decision visible instead of letting it settle into a permanent dual model.
+    if ((binding.legacy_rules ?? []).length > 0) {
+      problems.push(`stage_bindings "${stage}": ${binding.legacy_rules!.length} legacy stage-level rule(s) are unassigned and still in force; assign each to the skill that should carry it`)
     }
   }
   if (!['task', 'item', 'manual'].includes(config.commit.policy)) {

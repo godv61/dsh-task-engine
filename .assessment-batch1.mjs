@@ -14,7 +14,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask, todosBlockers, completionBlockers, validateWorkflow } from './lib/engine.js'
+import { newTask, todosBlockers, completionBlockers, validateWorkflow, formatResourceRef } from './lib/engine.js'
+import { FLOW_PRESETS } from './lib/workflows.js'
 import { resolveFlow } from './lib/workflows.js'
 
 /** Build a fixture on one preset, mirroring .workflow-test.mjs's contract. */
@@ -238,20 +239,100 @@ test('P2: the three presets must not share one identical review burden', () => {
 
 // ---------------------------------------------------------------- P2: missing rule must surface
 
-test('P2: a bound rule that cannot be found must be reported, not skipped', async () => {
-  // resolveRules walks bundled -> project -> user and simply omits a name it cannot
-  // find, so a binding silently stops being disclosed.
+test('P2: a rule a skill declares but that resolves nowhere must be reported, not skipped', async () => {
+  // Resolution used to simply omit a name it could not find, so a binding silently
+  // stopped being disclosed. Rules now hang off the skill, so the reference to
+  // check lives on the skill binding.
   const f = fixture('standard', '开发', {}, {})
-  // Point the stage at a rule that exists nowhere.
   const state = f.state()
-  state.flow.config.stage_bindings = { 开发: { skills: [], rules: ['no-such-rule-anywhere'] } }
+  state.flow.config.stage_bindings = {
+    开发: {
+      skills: [
+        { skill: { source: 'bundled', name: 'code-implement' }, rules: [{ source: 'bundled', name: 'no-such-rule-anywhere' }] },
+      ],
+    },
+  }
   f.records.set(join(f.cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status' }))
   const text = JSON.stringify(status)
   assert.match(
     text,
     /no-such-rule-anywhere/u,
-    'a missing bound rule must appear in status rather than vanishing',
+    'a rule that resolves nowhere must appear in status rather than vanishing',
+  )
+})
+
+// ---------------------------------------------------------------- batch 3: rules belong to skills
+
+test('batch3: a stage selects skills only, and a skill carries its own complete rule list', () => {
+  // The whole point of the model: opening a skill tells you every rule it runs
+  // under, and binding it anywhere does not add or override any rule.
+  const config = resolveFlow('standard', {}).config
+  for (const [stage, binding] of Object.entries(config.stage_bindings ?? {})) {
+    assert.ok(
+      !('rules' in binding) || binding.rules === undefined,
+      `stage ${stage} must not carry a stage-level rule list`,
+    )
+    for (const entry of binding.skills ?? []) {
+      assert.ok(Array.isArray(entry.rules),
+        `skill ${entry.skill.name} on ${stage} must declare its own rules array`)
+      assert.ok(entry.skill.source === 'bundled',
+        `preset bindings are bundled resources; ${entry.skill.name} declares ${entry.skill.source}`)
+    }
+  }
+})
+
+test('batch3: the same skill carries identical rules wherever it is bound', () => {
+  // "Same skill, same rules" is the acceptance criterion: copying the skill is how
+  // a user gets a different rule set, so the same reference must never differ.
+  const byRef = new Map()
+  for (const [id, preset] of Object.entries(FLOW_PRESETS)) {
+    for (const [stage, binding] of Object.entries(preset.config.stage_bindings ?? {})) {
+      for (const entry of binding.skills ?? []) {
+        const key = formatResourceRef(entry.skill)
+        const rules = entry.rules.map(formatResourceRef).sort().join(',')
+        if (byRef.has(key)) {
+          assert.equal(byRef.get(key).rules, rules,
+            `${key} carries different rules in ${byRef.get(key).where} and ${id}/${stage}`)
+        } else {
+          byRef.set(key, { rules, where: `${id}/${stage}` })
+        }
+      }
+    }
+  }
+})
+
+test('batch3: a rule shared by two skills is one resource, referenced twice', () => {
+  // Reuse must not duplicate the rule body: two skills referencing one rule point
+  // at the same source-qualified reference.
+  const config = resolveFlow('standard', {}).config
+  const review = config.stage_bindings['代码审核'].skills
+  const reviewRules = review.find(entry => entry.skill.name === 'code-review').rules.map(formatResourceRef)
+  const implementRules = config.stage_bindings['开发'].skills
+    .find(entry => entry.skill.name === 'code-implement').rules.map(formatResourceRef)
+  const shared = reviewRules.filter(rule => implementRules.includes(rule))
+  assert.ok(shared.length > 0,
+    'coding-conventions and security-redlines apply to both implementing and reviewing code, so at least one rule must be shared by reference')
+  assert.ok(shared.includes('bundled:security-redlines'),
+    `security-redlines is the clear shared case; saw ${JSON.stringify(shared)}`)
+})
+
+test('batch3: legacy stage-level rules stay in force and are named as unassigned', async () => {
+  // A pre-migration config put rules on the stage. Assigning them silently would
+  // invent an answer the config never had; dropping them would lose a constraint.
+  const f = fixture('standard', '开发', {}, {})
+  const state = f.state()
+  state.flow.config.stage_bindings = { 开发: { skills: [], legacy_rules: ['security-redlines'] } }
+  f.records.set(join(f.cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state))
+  const status = JSON.parse(await f.call({ operation: 'status' }))
+  assert.ok(
+    (status.unassigned_legacy_rules ?? []).includes('security-redlines'),
+    `the legacy rule must be reported as unassigned; saw ${JSON.stringify(status.unassigned_legacy_rules)}`,
+  )
+  // Still enforced: it resolves and appears among the rules in force.
+  assert.ok(
+    (status.rules ?? []).some(rule => rule.name === 'security-redlines'),
+    `a legacy rule must keep applying; saw ${JSON.stringify(status.rules)}`,
   )
 })
 

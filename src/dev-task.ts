@@ -25,6 +25,7 @@ import {
   checkFileScope,
   commitCheckpoint,
   completionBlockers,
+  formatResourceRef,
   legalTargets,
   newTask,
   taskIdFromMessage,
@@ -34,6 +35,8 @@ import {
   verificationBlockers,
   type FlowSnapshot,
   type GuardName,
+  type ResourceRef,
+  type ResourceSource,
   type Result,
   type StageBinding,
   type TaskItem,
@@ -485,52 +488,113 @@ function builtinRulesFingerprint(): string {
 interface ResolvedRule {
   name: string
   content: string
-  source: 'bundled' | 'project' | 'user'
+  source: ResourceSource
+}
+
+/** Read one rule body from a specific layer, so a reference decides where to look. */
+async function readRuleAt(source: ResourceSource, name: string, fs: Fs, cwd?: string): Promise<string | undefined> {
+  const safe = sanitize(name)
+  if (safe === '') return undefined
+  switch (source) {
+    case 'bundled':
+      return readAbsRule(fileURLToPath(new URL(`../rules/${safe}.md`, import.meta.url)))
+    case 'project':
+      return await readText(fs, `.dsh/rules/${safe}.md`, cwd)
+    case 'user':
+      return readAbsRule(join(dshHome(), 'rules', `${safe}.md`))
+  }
 }
 
 /**
- * Resolve rule contents by name: bundled first, then user home, then project.
- * Bundled (core) rules win over user and project files of the same name, so a
- * project cannot shadow a shipped rule like `security-redlines` with a weaker
- * local copy; local additions use distinct names instead.
+ * Resolve a bare legacy rule name to the layer that precedence selects.
  *
- * A name that resolves NOWHERE is reported rather than dropped. Omitting it made
- * a deleted file indistinguishable from an unbound one: the binding still named
- * the rule, the disclosure simply stopped mentioning it, and neither the model
- * nor the user could tell that a configured constraint had gone missing.
- * @param names - rule names from the current stage binding.
+ * Precedence, unchanged from before: bundled wins over project, which wins over
+ * user. A project cannot shadow a shipped rule like `security-redlines` with a
+ * weaker local copy; local additions use distinct names instead.
+ * @param name - the bare rule name from a legacy config.
  * @param fs - sandboxed filesystem for the project-level lookup.
- * @returns the resolved rules with their bodies and sources, plus the names that
- *   could not be found anywhere.
+ * @returns the layer that holds this name, or undefined when none does.
+ */
+async function resolveLegacyRuleSource(name: string, fs: Fs, cwd?: string): Promise<ResourceSource | undefined> {
+  for (const source of ['bundled', 'project', 'user'] as const) {
+    if ((await readRuleAt(source, name, fs, cwd)) !== undefined) return source
+  }
+  return undefined
+}
+
+/**
+ * Resolve rule references to their bodies.
+ *
+ * Each reference names its own layer, so the lookup is exact: no precedence walk
+ * is involved and two same-named rules in different layers are distinct
+ * resources. A reference that resolves nowhere is reported rather than dropped —
+ * omitting it made a deleted file indistinguishable from an unbound one.
+ * @param refs - rule references, each with its source layer.
+ * @param fs - sandboxed filesystem for the project-level lookup.
+ * @returns the resolved rules with bodies and sources, plus the refs not found.
  */
 async function resolveRules(
-  names: string[],
+  refs: ResourceRef[],
   fs: Fs,
   cwd?: string,
 ): Promise<{ resolved: ResolvedRule[]; missing: string[] }> {
   const resolved: ResolvedRule[] = []
   const missing: string[] = []
-  for (const rawName of names) {
-    const name = sanitize(rawName)
-    if (name === '') continue
-    const bundled = readAbsRule(fileURLToPath(new URL(`../rules/${name}.md`, import.meta.url)))
-    if (bundled !== undefined) {
-      resolved.push({ name: rawName, content: bundled, source: 'bundled' })
+  for (const ref of refs) {
+    const content = await readRuleAt(ref.source, ref.name, fs, cwd)
+    if (content === undefined) {
+      missing.push(formatResourceRef(ref))
       continue
     }
-    const project = await readText(fs, `.dsh/rules/${name}.md`, cwd)
-    if (project !== undefined) {
-      resolved.push({ name: rawName, content: project, source: 'project' })
-      continue
-    }
-    const user = readAbsRule(join(dshHome(), 'rules', `${name}.md`))
-    if (user !== undefined) {
-      resolved.push({ name: rawName, content: user, source: 'user' })
-      continue
-    }
-    missing.push(rawName)
+    resolved.push({ name: ref.name, content, source: ref.source })
   }
   return { resolved, missing }
+}
+
+/**
+ * Every rule that applies at a stage, gathered from the skills bound to it.
+ *
+ * A stage has no rule list of its own: the rules in force are the ones its skills
+ * carry. Both shapes are collected here so a migrated config is not silently
+ * weaker than the one it came from — `legacy_rules` still apply until a human
+ * assigns them — and the two groups stay distinguishable in the return value so
+ * the caller can say which rules still need an owner.
+ * @param binding - the stage's binding, if any.
+ * @param fs - sandboxed filesystem for project-level lookups.
+ * @returns resolved rules, missing refs, and the unassigned legacy names.
+ */
+async function rulesForBinding(
+  binding: StageBinding | undefined,
+  fs: Fs,
+  cwd?: string,
+): Promise<{ resolved: ResolvedRule[]; missing: string[]; legacy: string[] }> {
+  const refs: ResourceRef[] = []
+  // Deduplicated by reference: one rule shared by two skills on the same stage is
+  // disclosed once, because it is one constraint being followed.
+  const seen = new Set<string>()
+  for (const skill of binding?.skills ?? []) {
+    for (const rule of skill.rules) {
+      const key = formatResourceRef(rule)
+      if (seen.has(key)) continue
+      seen.add(key)
+      refs.push(rule)
+    }
+  }
+  const { resolved, missing } = await resolveRules(refs, fs, cwd)
+  const legacy = binding?.legacy_rules ?? []
+  const legacyRefs: ResourceRef[] = []
+  for (const name of legacy) {
+    const source = await resolveLegacyRuleSource(name, fs, cwd)
+    // An unresolvable legacy name is reported through `missing` so it is visible
+    // rather than quietly absent.
+    if (source === undefined) { missing.push(name); continue }
+    const key = formatResourceRef({ source, name })
+    if (seen.has(key)) continue
+    seen.add(key)
+    legacyRefs.push({ source, name })
+  }
+  const legacyResolved = (await resolveRules(legacyRefs, fs, cwd)).resolved
+  return { resolved: [...resolved, ...legacyResolved], missing, legacy }
 }
 
 /**
@@ -545,25 +609,31 @@ async function resolveRules(
 async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string): Promise<string> {
   const binding = bindingsForStage(stage, workflow)
   const skills = binding?.skills ?? []
-  const ruleNames = binding?.rules ?? []
-  if (binding === undefined || (skills.length === 0 && ruleNames.length === 0)) return ''
-  const { resolved: rules, missing } = await resolveRules(ruleNames, fs, cwd)
+  if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
+  const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd)
   const skillPart = skills.length > 0
-    ? `skills to load: ${skills.join(', ')}  (use the skill tool by name)`
+    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name)`
     : 'skills to load: none'
   const rulePart = rules.length > 0
-    ? `rules for this stage:\n${rules.map(r => `### ${r.name} (${r.source})\n${r.content}`).join('\n\n')}`
+    ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${rules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
     : ''
   // A bound rule that resolves nowhere is stated explicitly. Silently dropping it
   // left the stage looking as if the constraint had never been configured.
   const missingPart = missing.length > 0
-    ? `rules bound to this stage but NOT FOUND anywhere (bundled, project, or user): ${missing.join(', ')}`
+    ? `rules in force at this stage but NOT FOUND in their declared layer: ${missing.join(', ')}`
     : ''
-  const additional = skills.filter(needsSkillReceipt)
+  // Legacy stage-level rules are disclosed (so nothing is lost) but named as
+  // unassigned, because a stage-level list never recorded which skill they were
+  // meant for and guessing would invent an answer the config did not contain.
+  const legacyPart = legacy.length > 0
+    ? `UNASSIGNED legacy stage rules: ${legacy.join(', ')} — these belong to the stage, not to any skill. ` +
+      'Assign each to the skill that should carry it (or copy the skill and give each copy its own rules) and record it in stage_bindings.'
+    : ''
+  const additional = skills.map(skill => skill.skill.name).filter(needsSkillReceipt)
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
-  return [skillPart, receiptPart, rulePart, missingPart].filter(Boolean).join('\n')
+  return [skillPart, receiptPart, rulePart, missingPart, legacyPart].filter(Boolean).join('\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -993,7 +1063,11 @@ export function registerDevTask(ctx: Context): void {
 
       if (a.operation === 'status') {
         const binding = bindingsForStage(state.stage, workflow)
-        const { resolved: rules, missing: missingRules } = await resolveRules(binding?.rules ?? [], fs, cwd)
+        const {
+          resolved: rules,
+          missing: missingRules,
+          legacy: legacyRules,
+        } = await rulesForBinding(binding, fs, cwd)
         const missingSkills = skillBlockers(state, workflow, session)
         const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
         const checkpoint = commitCheckpoint(state, workflow)
@@ -1012,17 +1086,20 @@ export function registerDevTask(ctx: Context): void {
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
-          skill_obligations: obligationStages(state, workflow).map(stage => ({
-            stage, skills: workflow.stage_bindings?.[stage]?.skills ?? [],
-            command_receipts_required: (workflow.stage_bindings?.[stage]?.skills ?? []).filter(needsSkillReceipt),
-          })),
+          skill_obligations: obligationStages(state, workflow).map(stage => {
+            const skills = (workflow.stage_bindings?.[stage]?.skills ?? []).map(skill => skill.skill.name)
+            return { stage, skills, command_receipts_required: skills.filter(needsSkillReceipt) }
+          }),
           skill_blockers: missingSkills,
           evidence_blockers: staleEvidence,
           verification_blockers: verification,
-          // Bound rules that resolved nowhere. Reported so a deleted file cannot
-          // pass for an unbound one.
+          // Rules in force here, each named with the layer it came from, plus the
+          // ones that could not be found and the legacy stage-level names still
+          // awaiting an owner. A skill's own list is the complete answer to what it
+          // runs under, and this mirrors that list for the current stage.
           missing_rules: missingRules,
           rules: rules.map(rule => ({ name: rule.name, source: rule.source })),
+          unassigned_legacy_rules: legacyRules,
           skill_results: state.skill_results ?? {},
           commits: state.commits,
           verification: state.verification,
@@ -1260,7 +1337,7 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'skill_result': {
           const stage = a.target_stage ?? state.stage
-          if (!obligationStages(state, workflow).includes(stage) || !workflow.stage_bindings?.[stage]?.skills?.includes(a.skill_name ?? '')) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
+          if (!obligationStages(state, workflow).includes(stage) || !(workflow.stage_bindings?.[stage]?.skills ?? []).some(entry => entry.skill.name === a.skill_name)) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
           const loadCall = loadedSkills(session).get(a.skill_name!)
           if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
           if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')

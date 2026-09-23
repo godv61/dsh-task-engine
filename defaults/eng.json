@@ -1,10 +1,49 @@
 {
   "flow": "standard",
   "stage_bindings": {
-    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
-    "设计": { "skills": ["solution-design"] },
-    "开发": { "skills": ["code-implement"], "rules": ["coding-conventions"] },
-    "交付": { "skills": ["code-verify"], "rules": ["coding-conventions"] },
-    "代码审核": { "skills": ["code-review", "code-commit"], "rules": ["security-redlines", "commit-conventions"] }
+    "需求评审": {
+      "skills": [
+        {
+          "skill": { "source": "bundled", "name": "requirement-analysis" },
+          "rules": [{ "source": "bundled", "name": "security-redlines" }]
+        }
+      ]
+    },
+    "设计": {
+      "skills": [
+        { "skill": { "source": "bundled", "name": "solution-design" }, "rules": [] }
+      ]
+    },
+    "开发": {
+      "skills": [
+        {
+          "skill": { "source": "bundled", "name": "code-implement" },
+          "rules": [
+            { "source": "bundled", "name": "coding-conventions" },
+            { "source": "bundled", "name": "security-redlines" }
+          ]
+        }
+      ]
+    },
+    "交付": {
+      "skills": [
+        { "skill": { "source": "bundled", "name": "code-verify" }, "rules": [] }
+      ]
+    },
+    "代码审核": {
+      "skills": [
+        {
+          "skill": { "source": "bundled", "name": "code-review" },
+          "rules": [
+            { "source": "bundled", "name": "coding-conventions" },
+            { "source": "bundled", "name": "security-redlines" }
+          ]
+        },
+        {
+          "skill": { "source": "bundled", "name": "code-commit" },
+          "rules": [{ "source": "bundled", "name": "commit-conventions" }]
+        }
+      ]
+    }
   }
 }
