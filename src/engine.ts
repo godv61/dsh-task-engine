@@ -460,6 +460,79 @@ export interface CommitCheckpoint {
 }
 
 /**
+ * Whether this task's flow ever demands a passing verification.
+ *
+ * A preset that never guards an edge on `verified` is telling the engine that
+ * verification is not one of its completion conditions, so a downstream stage
+ * must not invent the requirement.
+ * @param config - the frozen workflow config.
+ * @returns true when any configured transition requires `verified`.
+ */
+export function flowRequiresVerification(config: WorkflowConfig): boolean {
+  return config.transitions.some(transition => (transition.requires ?? []).includes('verified'))
+}
+
+/**
+ * Stages where a passing verification must still HOLD, derived from the graph.
+ *
+ * `verified` guards the edge INTO a stage, so the requirement follows the task
+ * past that edge rather than applying from the start: a task sitting at 需求评审
+ * has produced nothing to verify. Once a task has crossed a `verified` edge,
+ * though, the requirement stays with it — that is the case the old code missed,
+ * where re-verifying and failing let the task continue and commit.
+ *
+ * Computed by walking forward from every `verified` edge's target, so it is a
+ * property of the configured graph rather than a hardcoded stage name.
+ * @param config - the frozen workflow config.
+ * @returns the set of stages at or after a verification gate.
+ */
+export function verificationHeldStages(config: WorkflowConfig): Set<string> {
+  const held = new Set<string>()
+  const queue = config.transitions
+    .filter(transition => (transition.requires ?? []).includes('verified'))
+    .map(transition => transition.to)
+  while (queue.length > 0) {
+    const stage = queue.shift()!
+    if (held.has(stage)) continue
+    held.add(stage)
+    for (const transition of config.transitions) {
+      if (transition.from === stage && !held.has(transition.to)) queue.push(transition.to)
+    }
+  }
+  return held
+}
+
+/**
+ * Why the current state fails the flow's verification requirement, if it does.
+ *
+ * Applies only once the task has reached a stage that sits at or after a
+ * verification gate, so it never fires on a task that has not yet had anything
+ * to verify. Completion and commit share this rule, which is what stops a failed
+ * re-verification from being outrun by advancing to a stage whose own outgoing
+ * edge happens not to repeat the guard.
+ * @param state - the task state.
+ * @param config - the frozen workflow config.
+ * @returns human-readable blockers; empty when the requirement does not apply or holds.
+ */
+export function verificationBlockers(state: TaskState, config: WorkflowConfig): string[] {
+  if (state.execution_version !== 1) return []
+  if (!verificationHeldStages(config).has(state.stage)) return []
+  const blockers: string[] = []
+  if (!state.verification.passed) {
+    blockers.push('this flow requires a passing verification at this stage, and the current verification is not passing')
+  }
+  if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
+    const receipt = state.verification.receipt
+    if (receipt === undefined) {
+      blockers.push('a high-risk task needs a real command receipt, and none is recorded')
+    } else if (receipt.exit_code !== 0 || receipt.timed_out || receipt.aborted) {
+      blockers.push('a high-risk task needs a command that exited 0 without timing out or aborting')
+    }
+  }
+  return blockers
+}
+
+/**
  * Decide whether the current task state permits a commit and with what label.
  *
  * `manual` never auto-commits. `task` allows a single `TASK` at a checkpoint
@@ -471,6 +544,15 @@ export function commitCheckpoint(state: TaskState, config: WorkflowConfig): Comm
   const { policy, checkpoints } = config.commit
   if (policy === 'manual') {
     return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
+  }
+
+  // A flow that requires verification requires it HERE, wherever "here" is. The
+  // outgoing-guard check below only sees the current stage's edges, so a task
+  // that re-verified and failed could reach a stage whose edge does not repeat
+  // `verified` and be authorized anyway. Completion and commit share this rule.
+  const verification = verificationBlockers(state, config)
+  if (verification.length > 0) {
+    return { allowed: false, reason: verification.join('; ') }
   }
 
   if (checkpoints.includes(state.stage)) {

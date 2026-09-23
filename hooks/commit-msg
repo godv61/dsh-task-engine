@@ -87,10 +87,44 @@ function validateCommitMessage(message2, config2) {
     errors: [`commit summary "${message2}" does not match ${config2.commit.message_hint}`]
   };
 }
+function verificationHeldStages(config2) {
+  const held = /* @__PURE__ */ new Set();
+  const queue = config2.transitions.filter((transition) => (transition.requires ?? []).includes("verified")).map((transition) => transition.to);
+  while (queue.length > 0) {
+    const stage = queue.shift();
+    if (held.has(stage)) continue;
+    held.add(stage);
+    for (const transition of config2.transitions) {
+      if (transition.from === stage && !held.has(transition.to)) queue.push(transition.to);
+    }
+  }
+  return held;
+}
+function verificationBlockers(state2, config2) {
+  if (state2.execution_version !== 1) return [];
+  if (!verificationHeldStages(config2).has(state2.stage)) return [];
+  const blockers = [];
+  if (!state2.verification.passed) {
+    blockers.push("this flow requires a passing verification at this stage, and the current verification is not passing");
+  }
+  if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
+    const receipt = state2.verification.receipt;
+    if (receipt === void 0) {
+      blockers.push("a high-risk task needs a real command receipt, and none is recorded");
+    } else if (receipt.exit_code !== 0 || receipt.timed_out || receipt.aborted) {
+      blockers.push("a high-risk task needs a command that exited 0 without timing out or aborting");
+    }
+  }
+  return blockers;
+}
 function commitCheckpoint(state2, config2) {
   const { policy, checkpoints } = config2.commit;
   if (policy === "manual") {
     return { allowed: false, reason: "commit policy is manual \u2014 await an explicit user instruction" };
+  }
+  const verification = verificationBlockers(state2, config2);
+  if (verification.length > 0) {
+    return { allowed: false, reason: verification.join("; ") };
   }
   if (checkpoints.includes(state2.stage)) {
     const ready = config2.transitions.filter((transition) => transition.from === state2.stage).every((transition) => (transition.requires ?? []).every((g) => guardSatisfied(g, state2, config2)));
@@ -158,12 +192,23 @@ var AGILE = {
     { from: "\u4EA4\u4ED8", to: "\u5BA1\u67E5", requires: [] }
   ],
   artifacts: [
-    { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] }
+    { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] },
+    // The 审查 stage binds code-review, whose instructions write this artifact with
+    // `record artifact=review`. Declaring it here keeps that binding executable:
+    // the engine refuses an undeclared artifact, so a bound skill pointing at one
+    // would be a contract the preset itself made impossible to satisfy.
+    { stage: "\u5BA1\u67E5", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
   ],
   commit: {
+    // `item` policy emits two label shapes: `T<n>` for a mid-flow item commit and
+    // `TASK` for the closing commit at the checkpoint. The pattern below accepts
+    // BOTH, so the label the engine hands the model always satisfies the preset's
+    // own rule. Previously it accepted only `T\d+` while the checkpoint stage
+    // returned `TASK`, which made the closing commit impossible to phrase: the
+    // status line and the validator disagreed about the contract.
     policy: "item",
-    message_pattern: "^\u3010(\\S+)\u3011\u3010T\\d+\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id",
+    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
+    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF1B\u5B9E\u65BD\u9879\u63D0\u4EA4\u7528 T1\u3001T2\uFF0C\u6536\u5C3E\u63D0\u4EA4\u7528 TASK",
     checkpoints: ["\u4EA4\u4ED8"],
     file_scope: true
   },
@@ -209,7 +254,10 @@ function preset(id, version, label, description, config2) {
 }
 var FLOW_PRESETS = {
   standard: preset("standard", 2, "\u6807\u51C6\u7814\u53D1", "\u9700\u6C42\u8BC4\u5BA1 \u2192 \u8BBE\u8BA1 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u4EE3\u7801\u5BA1\u6838\uFF0C\u5BA1\u6838\u540E\u63D0\u4EA4", STANDARD),
-  agile: preset("agile", 1, "\u654F\u6377\u8F7B\u91CF", "\u9700\u6C42 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u5BA1\u67E5\uFF0C\u56DB\u9636\u6BB5\u3001\u5C11\u4EA7\u7269", AGILE),
+  // Version 2: the closing-commit label shape was unified with the message pattern,
+  // and the `review` artifact the bound code-review skill writes was declared. Tasks
+  // created before this keep their frozen version 1 config and are unaffected.
+  agile: preset("agile", 2, "\u654F\u6377\u8F7B\u91CF", "\u9700\u6C42 \u2192 \u5F00\u53D1 \u2192 \u4EA4\u4ED8 \u2192 \u5BA1\u67E5\uFF0C\u56DB\u9636\u6BB5\u3001\u5C11\u4EA7\u7269", AGILE),
   minimal: preset("minimal", 1, "\u7EAF\u4EE3\u7801", "\u5F00\u53D1 \u2192 \u4EA4\u4ED8\uFF0C\u4E24\u9636\u6BB5\uFF0C\u53EA\u7559\u63D0\u4EA4\u95E8\u7981", MINIMAL)
 };
 function dedupe(names) {

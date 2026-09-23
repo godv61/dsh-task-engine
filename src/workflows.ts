@@ -83,11 +83,22 @@ const AGILE: WorkflowConfig = {
   ],
   artifacts: [
     { stage: '需求', id: 'requirement', name: '需求说明', fields: ['scope'] },
+    // The 审查 stage binds code-review, whose instructions write this artifact with
+    // `record artifact=review`. Declaring it here keeps that binding executable:
+    // the engine refuses an undeclared artifact, so a bound skill pointing at one
+    // would be a contract the preset itself made impossible to satisfy.
+    { stage: '审查', id: 'review', name: '评审记录', fields: ['conclusion', 'issues'] },
   ],
   commit: {
+    // `item` policy emits two label shapes: `T<n>` for a mid-flow item commit and
+    // `TASK` for the closing commit at the checkpoint. The pattern below accepts
+    // BOTH, so the label the engine hands the model always satisfies the preset's
+    // own rule. Previously it accepted only `T\d+` while the checkpoint stage
+    // returned `TASK`, which made the closing commit impossible to phrase: the
+    // status line and the validator disagreed about the contract.
     policy: 'item',
-    message_pattern: '^【(\\S+)】【T\\d+】.+',
-    message_hint: '【<task_id>】【T1】说明 —— 第一段填本任务 id',
+    message_pattern: '^【(\\S+)】【(?:TASK|T\\d+)】.+',
+    message_hint: '【<task_id>】【TASK/T1】说明 —— 第一段填本任务 id；实施项提交用 T1、T2，收尾提交用 TASK',
     checkpoints: ['交付'],
     file_scope: true,
   },
@@ -148,7 +159,10 @@ function preset(
 
 export const FLOW_PRESETS: Record<string, FlowPreset> = {
   standard: preset('standard', 2, '标准研发', '需求评审 → 设计 → 开发 → 交付 → 代码审核，审核后提交', STANDARD),
-  agile: preset('agile', 1, '敏捷轻量', '需求 → 开发 → 交付 → 审查，四阶段、少产物', AGILE),
+  // Version 2: the closing-commit label shape was unified with the message pattern,
+  // and the `review` artifact the bound code-review skill writes was declared. Tasks
+  // created before this keep their frozen version 1 config and are unaffected.
+  agile: preset('agile', 2, '敏捷轻量', '需求 → 开发 → 交付 → 审查，四阶段、少产物', AGILE),
   minimal: preset('minimal', 1, '纯代码', '开发 → 交付，两阶段，只留提交门禁', MINIMAL),
 }
 

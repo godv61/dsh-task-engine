@@ -196,7 +196,9 @@ test('验证使用会话策略与取消信号，并明确返回失败及沙箱�
 })
 
 test('只声明已测试、或加载失败，均不能冒充执行绑定技能', async () => {
-  const f = fixture('代码审核')
+  // 代码审核坐在验证门之后，所以该阶段本就要求验证通过；
+  // 不给出验证状态会让验证阻塞先于本用例要测的技能阻塞。
+  const f = fixture('代码审核', { verification: { passed: true, evidence: ['checks passed'] } })
   f.load('code-review'); f.load('code-commit'); f.load('software-testing', false)
   await assert.rejects(f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['tested'] }), /load skill/)
   await assert.rejects(f.call({ operation: 'advance', target_stage: '完成' }), /software-testing/)

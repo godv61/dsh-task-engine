@@ -30,6 +30,7 @@ import {
   unmetGuards,
   validateCommitMessage,
   validateWorkflow,
+  verificationBlockers,
   type FlowSnapshot,
   type GuardName,
   type Result,
@@ -474,33 +475,61 @@ function builtinRulesFingerprint(): string {
 }
 
 /**
+ * A rule resolved to its body, with the layer it came from.
+ *
+ * The source matters because bundled rules deliberately win over project and user
+ * files of the same name: without recording where a body came from, a reader
+ * cannot tell which copy is in force.
+ */
+interface ResolvedRule {
+  name: string
+  content: string
+  source: 'bundled' | 'project' | 'user'
+}
+
+/**
  * Resolve rule contents by name: bundled first, then user home, then project.
  * Bundled (core) rules win over user and project files of the same name, so a
  * project cannot shadow a shipped rule like `security-redlines` with a weaker
  * local copy; local additions use distinct names instead.
+ *
+ * A name that resolves NOWHERE is reported rather than dropped. Omitting it made
+ * a deleted file indistinguishable from an unbound one: the binding still named
+ * the rule, the disclosure simply stopped mentioning it, and neither the model
+ * nor the user could tell that a configured constraint had gone missing.
  * @param names - rule names from the current stage binding.
  * @param fs - sandboxed filesystem for the project-level lookup.
- * @returns the rules that resolved, in name order, with their bodies.
+ * @returns the resolved rules with their bodies and sources, plus the names that
+ *   could not be found anywhere.
  */
-async function resolveRules(names: string[], fs: Fs, cwd?: string): Promise<{ name: string; content: string }[]> {
-  const result: { name: string; content: string }[] = []
+async function resolveRules(
+  names: string[],
+  fs: Fs,
+  cwd?: string,
+): Promise<{ resolved: ResolvedRule[]; missing: string[] }> {
+  const resolved: ResolvedRule[] = []
+  const missing: string[] = []
   for (const rawName of names) {
     const name = sanitize(rawName)
     if (name === '') continue
     const bundled = readAbsRule(fileURLToPath(new URL(`../rules/${name}.md`, import.meta.url)))
     if (bundled !== undefined) {
-      result.push({ name: rawName, content: bundled })
+      resolved.push({ name: rawName, content: bundled, source: 'bundled' })
       continue
     }
     const project = await readText(fs, `.dsh/rules/${name}.md`, cwd)
     if (project !== undefined) {
-      result.push({ name: rawName, content: project })
+      resolved.push({ name: rawName, content: project, source: 'project' })
       continue
     }
     const user = readAbsRule(join(dshHome(), 'rules', `${name}.md`))
-    if (user !== undefined) result.push({ name: rawName, content: user })
+    if (user !== undefined) {
+      resolved.push({ name: rawName, content: user, source: 'user' })
+      continue
+    }
+    missing.push(rawName)
   }
-  return result
+  return { resolved, missing }
 }
 
 /**
@@ -517,18 +546,23 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const skills = binding?.skills ?? []
   const ruleNames = binding?.rules ?? []
   if (binding === undefined || (skills.length === 0 && ruleNames.length === 0)) return ''
-  const rules = await resolveRules(ruleNames, fs, cwd)
+  const { resolved: rules, missing } = await resolveRules(ruleNames, fs, cwd)
   const skillPart = skills.length > 0
     ? `skills to load: ${skills.join(', ')}  (use the skill tool by name)`
     : 'skills to load: none'
   const rulePart = rules.length > 0
-    ? `rules for this stage:\n${rules.map(r => `### ${r.name}\n${r.content}`).join('\n\n')}`
+    ? `rules for this stage:\n${rules.map(r => `### ${r.name} (${r.source})\n${r.content}`).join('\n\n')}`
+    : ''
+  // A bound rule that resolves nowhere is stated explicitly. Silently dropping it
+  // left the stage looking as if the constraint had never been configured.
+  const missingPart = missing.length > 0
+    ? `rules bound to this stage but NOT FOUND anywhere (bundled, project, or user): ${missing.join(', ')}`
     : ''
   const additional = skills.filter(needsSkillReceipt)
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
-  return [skillPart, receiptPart, rulePart].filter(Boolean).join('\n')
+  return [skillPart, receiptPart, rulePart, missingPart].filter(Boolean).join('\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -608,8 +642,20 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   if (state.execution_version !== 1) return []
   const blockers: string[] = []
   const current = await scopeFingerprint(fs, state, cwd)
-  if (state.verification.passed && state.verification.receipt?.scope_hash !== current) {
-    blockers.push('verification is missing or stale after file/scope changes; rerun verify with a real command')
+  // Staleness is judged on the RECORDED verification, not only on a passing one.
+  // Gating this on `passed` meant a re-verification that FAILED removed its own
+  // receipt from consideration, so the failure produced no blocker at all —
+  // failing verification was strictly weaker than never verifying. A receipt that
+  // exists but no longer matches the current tree, or a verification that is not
+  // passing while the flow requires it, both belong here.
+  const receipt = state.verification.receipt
+  if (receipt !== undefined && receipt.scope_hash !== current) {
+    blockers.push('verification is stale after file/scope changes; rerun verify with a real command')
+  } else if (!state.verification.passed && verificationBlockers(state, workflow).length > 0) {
+    // Only where the flow actually holds a verification requirement: a task that
+    // has not reached a verification gate yet has nothing to re-verify, and
+    // reporting it there would block the flow from starting at all.
+    blockers.push('verification is not passing; rerun verify with a real command')
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
@@ -944,11 +990,15 @@ export function registerDevTask(ctx: Context): void {
 
       if (a.operation === 'status') {
         const binding = bindingsForStage(state.stage, workflow)
-        const rules = await resolveRules(binding?.rules ?? [], fs, cwd)
+        const { resolved: rules, missing: missingRules } = await resolveRules(binding?.rules ?? [], fs, cwd)
         const missingSkills = skillBlockers(state, workflow, session)
         const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
         const checkpoint = commitCheckpoint(state, workflow)
-        const commitBlockers = [...staleEvidence, ...missingSkills]
+        // The flow's verification requirement is reported separately from staleness:
+        // one says the receipt no longer matches the tree, the other says the flow
+        // needs a passing verification and does not have one. Callers act on both.
+        const verification = verificationBlockers(state, workflow)
+        const commitBlockers = [...staleEvidence, ...missingSkills, ...verification]
         return JSON.stringify({
           id: state.id,
           stage: state.stage,
@@ -965,6 +1015,11 @@ export function registerDevTask(ctx: Context): void {
           })),
           skill_blockers: missingSkills,
           evidence_blockers: staleEvidence,
+          verification_blockers: verification,
+          // Bound rules that resolved nowhere. Reported so a deleted file cannot
+          // pass for an unbound one.
+          missing_rules: missingRules,
+          rules: rules.map(rule => ({ name: rule.name, source: rule.source })),
           skill_results: state.skill_results ?? {},
           commits: state.commits,
           verification: state.verification,
