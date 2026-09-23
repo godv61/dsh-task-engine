@@ -24,6 +24,7 @@ import {
   bindingsForStage,
   checkFileScope,
   commitCheckpoint,
+  completionBlockers,
   legalTargets,
   newTask,
   taskIdFromMessage,
@@ -735,15 +736,17 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s subagent dispatch and two-stage (spec + quality) ' +
-  'review audit, advance one stage (rejected unless every configured guard already holds, including ' +
+  'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
   'the stage artifacts; a requirement/solution confirmation guard asks a human to approve instead of ' +
   'being satisfied by the model), record verification or review, and gate a commit on ' +
-  'stage/scope/message. The init operation manages the protected AGENTS.md in three phases ' +
+  'stage/scope/message, and mark the task complete only once its configured finish conditions ' +
+    'hold — reaching the last stage is not itself completion. The init operation manages the ' +
+    'protected AGENTS.md in three phases ' +
   '(inspect → propose → apply; overwriting an existing file requires human approval) because DSH ' +
   'injects that file into every session. The tool refuses illegal moves ' +
   'instead of degrading — treat a rejection as a fact to fix, not a prompt to retry another way.'
@@ -1084,6 +1087,25 @@ export function registerDevTask(ctx: Context): void {
         if (a.hash) return `commit recorded (${checkpoint.label ?? ''}): ${a.hash}; use status to inspect remaining gates, then advance`
         return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
       }
+
+        if (a.operation === 'complete') {
+          // Completion is recorded, not inferred from standing on the last stage.
+          // A flow whose final stage is also its commit checkpoint used to reach
+          // that stage with no delivery record at all, because the "commit before
+          // leaving a checkpoint" rule fires on the way OUT of a stage and a
+          // terminal stage has no way out.
+          await assertFreshEvidence(fs, state, workflow, cwd)
+          const blockers = completionBlockers(state, workflow)
+          if (blockers.length > 0) throw new Error(`cannot complete: ${blockers.join('; ')}`)
+          const hash = state.commits.find(commit => commit.hash !== undefined)?.hash
+          state.completed = hash === undefined
+            ? { at: new Date().toISOString() }
+            : { at: new Date().toISOString(), commit_hash: hash }
+          await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+          return hash === undefined
+            ? `task completed at "${state.stage}"; the record stays readable for audit`
+            : `task completed at "${state.stage}" (commit ${hash}); the record stays readable for audit`
+        }
 
       let note: string | undefined
       let approvedWriteMode: 'workspace-write' | 'danger-full-access' | undefined

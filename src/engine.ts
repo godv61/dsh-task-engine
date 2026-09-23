@@ -63,6 +63,17 @@ export interface StageBinding {
   rules?: string[]
 }
 
+/**
+ * How thoroughly a flow audits each implementation item.
+ *
+ * `two-stage` requires both a specification-conformance and a quality verdict per
+ * item, which suits a full-development flow. `single` requires one combined
+ * verdict, which is what a fast-change flow needs: the work still has to be
+ * checked before it counts as done, but the same change is not re-reviewed twice
+ * under two headings that a short change rarely distinguishes.
+ */
+export type ReviewDepth = 'two-stage' | 'single'
+
 export interface WorkflowConfig {
   stages: string[]
   start_stage: string
@@ -74,6 +85,25 @@ export interface WorkflowConfig {
   high_risk_requires_verification: boolean
   /** Per-stage skill/rule bindings disclosed when the task enters the stage. */
   stage_bindings?: Record<string, StageBinding>
+  /**
+   * How much per-item review this flow demands before `todos_done` passes.
+   *
+   * The three presets differ in task complexity, not in how seriously they take
+   * safety, so a lighter flow must be able to ask for a lighter audit rather than
+   * inheriting the heaviest one. Omitting the field keeps the historical
+   * behaviour (`two-stage`), so configs and frozen snapshots written before this
+   * field existed read exactly as they did.
+   */
+  review_depth?: ReviewDepth
+  /**
+   * Whether finishing the task must include a recorded Git commit.
+   *
+   * A Git commit is one delivery mode, not a universal completion condition: a
+   * non-code task or a project outside version control has nothing to commit.
+   * Omitting the field keeps the historical behaviour (`true`), so existing
+   * configs and frozen snapshots are unaffected.
+   */
+  commit_required?: boolean
 }
 
 /**
@@ -97,6 +127,24 @@ export interface ItemDispatch {
   description: string
   /** ISO-8601 timestamp when the subagent was dispatched. */
   at: string
+}
+
+/**
+ * Explicit task completion, recorded once every configured condition holds.
+ *
+ * Reaching the last configured stage is not the same fact as finishing the work,
+ * and conflating them let a flow whose final stage is also its commit checkpoint
+ * arrive at that stage with no delivery record at all: the "commit before leaving
+ * a checkpoint" rule fires on the way OUT of a stage, and a terminal stage has no
+ * way out. Completion is therefore its own recorded event, checked by the engine,
+ * so every preset ends through the same lifecycle regardless of how few working
+ * stages it has.
+ */
+export interface TaskCompletion {
+  /** ISO-8601 timestamp of the completion call. */
+  at: string
+  /** The commit recorded at completion, when the flow's delivery mode requires one. */
+  commit_hash?: string
 }
 
 /** Verdict of one review stage over a completed item. */
@@ -184,6 +232,8 @@ export interface TaskState {
   /** New tasks enforce skill evidence and checkpoint completion; old snapshots remain readable. */
   execution_version?: 1
   skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt }>>
+  /** Set by the `complete` operation once every configured condition holds. Absent while the task is still open. */
+  completed?: TaskCompletion
 }
 
 export interface Result {
@@ -292,6 +342,11 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
       problems.push('commit.message_pattern is not a valid regular expression')
     }
   }
+  // An unrecognised depth would silently fall back to the heaviest one, hiding a
+  // typo behind stricter-than-intended behaviour.
+  if (config.review_depth !== undefined && config.review_depth !== 'two-stage' && config.review_depth !== 'single') {
+    problems.push(`review_depth "${String(config.review_depth)}" is not one of: two-stage, single`)
+  }
   return problems
 }
 
@@ -330,8 +385,9 @@ export function findTransition(from: string, to: string, config: WorkflowConfig)
  * two-stage review whose both stages passed, so the implementation and its
  * audit trail are completed together.
  */
-export function todosBlockers(state: TaskState): string[] {
+export function todosBlockers(state: TaskState, config?: WorkflowConfig): string[] {
   if (state.items.length === 0) return ['no implementation items']
+  const depth = config?.review_depth ?? 'two-stage'
   const blockers: string[] = []
   for (const item of state.items) {
     if (item.status !== 'done') {
@@ -339,11 +395,19 @@ export function todosBlockers(state: TaskState): string[] {
       continue
     }
     if (item.review === undefined) {
-      blockers.push(`item "${item.id}" is done but has no two-stage review`)
+      // Every depth still requires the item to have been reviewed: a lighter flow
+      // checks less per change, it does not skip checking. Only the number of
+      // required verdicts differs.
+      blockers.push(`item "${item.id}" is done but has no review`)
       continue
     }
-    if (item.review.spec.outcome !== 'pass') blockers.push(`item "${item.id}" spec review is not pass`)
-    if (item.review.quality.outcome !== 'pass') blockers.push(`item "${item.id}" quality review is not pass`)
+    if (item.review.spec?.outcome !== 'pass') blockers.push(`item "${item.id}" spec review is not pass`)
+    // `quality` is read defensively: a record written under a lighter depth, or an
+    // older snapshot, may carry only the specification verdict. Requiring the
+    // field to exist would crash on such a record instead of reporting it.
+    if (depth === 'two-stage' && item.review.quality?.outcome !== 'pass') {
+      blockers.push(`item "${item.id}" quality review is not pass`)
+    }
   }
   return blockers
 }
@@ -355,7 +419,7 @@ function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConf
     case 'solution_confirmation':
       return state.solution_confirmed
     case 'todos_done':
-      return todosBlockers(state).length === 0
+      return todosBlockers(state, config).length === 0
     case 'verified': {
       if (!state.verification.passed) return false
       if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
@@ -403,7 +467,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
   const unmet = (transition.requires ?? []).filter(guard => !guardSatisfied(guard, state, config))
   if (unmet.length > 0) {
     const details = unmet.map(guard => {
-      if (guard === 'todos_done') return `todos_done (${todosBlockers(state).join('; ')})`
+      if (guard === 'todos_done') return `todos_done (${todosBlockers(state, config).join('; ')})`
       return guard
     })
     return { ok: false, errors: [`guards unmet: ${details.join(', ')}`] }
@@ -573,6 +637,59 @@ export function commitCheckpoint(state: TaskState, config: WorkflowConfig): Comm
   }
 
   return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
+}
+
+/**
+ * Whether a stage is terminal in the configured graph (no outgoing transition).
+ * @param stage - the stage to test.
+ * @param config - the frozen workflow config.
+ * @returns true when nothing follows this stage.
+ */
+export function isTerminalStage(stage: string, config: WorkflowConfig): boolean {
+  return !config.transitions.some(transition => transition.from === stage)
+}
+
+/**
+ * Whether the delivery mode requires a recorded commit before completion.
+ * @param config - the frozen workflow config.
+ * @returns true when a commit must be recorded (the historical default).
+ */
+export function commitRequired(config: WorkflowConfig): boolean {
+  return config.commit_required ?? true
+}
+
+/**
+ * Every reason the task may not be marked complete.
+ *
+ * Completion is its own fact, checked here rather than inferred from standing on
+ * the last stage. Three things can hold it back: the task has not reached a
+ * terminal stage, the flow's own `todos_done` conditions are unmet, or the
+ * delivery mode wants a commit that is not recorded. Deliberately NOT included:
+ * a blanket demand for a commit on every flow, because a commit is one delivery
+ * mode rather than a universal finish line.
+ * @param state - the task state.
+ * @param config - the frozen workflow config.
+ * @returns human-readable blockers; empty when the task may complete.
+ */
+export function completionBlockers(state: TaskState, config: WorkflowConfig): string[] {
+  const blockers: string[] = []
+  if (state.completed !== undefined) return []
+  if (!isTerminalStage(state.stage, config)) {
+    blockers.push(`task is at "${state.stage}", which is not a final stage; advance to one of: ${config.stages.filter(s => isTerminalStage(s, config)).join(', ')}`)
+  }
+  for (const guard of new Set(config.transitions.flatMap(transition => transition.requires ?? []))) {
+    // Only conditions that describe the finished work. Confirmation guards are
+    // per-edge approvals and are already enforced on the way through.
+    if (guard === 'todos_done') {
+      const unmet = todosBlockers(state, config)
+      if (unmet.length > 0) blockers.push(`implementation items are not finished: ${unmet.join('; ')}`)
+    }
+  }
+  if (commitRequired(config)) {
+    const hasCommit = state.commits.some(commit => commit.hash !== undefined)
+    if (!hasCommit) blockers.push('this flow requires a recorded commit before completion, and none is recorded')
+  }
+  return blockers
 }
 
 export interface FileScopeResult {

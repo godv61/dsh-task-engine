@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask } from './lib/engine.js'
+import { newTask, todosBlockers, completionBlockers, validateWorkflow } from './lib/engine.js'
 import { resolveFlow } from './lib/workflows.js'
 
 /** Build a fixture on one preset, mirroring .workflow-test.mjs's contract. */
@@ -197,16 +197,42 @@ test('P1: every skill bound by a preset must be able to record what it is told t
 
 // ---------------------------------------------------------------- P2: minimal must be light
 
-test('P2: the minimal preset must not demand a two-stage review per item', async () => {
-  // todosBlockers is shared by all three presets and hard-requires
-  // item.review.spec.outcome === 'pass' && item.review.quality.outcome === 'pass'.
-  const f = fixture('minimal', '开发', {
-    items: [{ id: 'A', title: 'a', status: 'done' }],
-  })
-  const status = JSON.parse(await f.call({ operation: 'status' }))
+test('P2: the minimal preset reviews each item once, and still reviews it', () => {
+  // This earlier asserted on status.skill_blockers/commit_blockers, which never
+  // contain todosBlockers output, so it passed against a completely unfixed
+  // engine. Call the function under test directly instead.
+  const minimal = resolveFlow('minimal', {}).config
+  const standard = resolveFlow('standard', {}).config
+  const specPassQualityFail = {
+    items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'fail' } } }],
+  }
+  assert.deepEqual(todosBlockers(specPassQualityFail, minimal), [],
+    'minimal asks for one verdict, so a missing quality verdict must not block')
+  assert.ok(todosBlockers(specPassQualityFail, standard).length > 0,
+    'the full flow still requires both verdicts')
+
+  // "Lighter" must mean fewer verdicts, never fewer checks.
+  const noReview = { items: [{ id: 'A', title: 'a', status: 'done' }] }
+  assert.ok(todosBlockers(noReview, minimal).length > 0,
+    'an unreviewed item must still block the lightest flow')
+  const specFail = {
+    items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'fail' }, quality: { outcome: 'pass' } } }],
+  }
+  assert.ok(todosBlockers(specFail, minimal).length > 0,
+    'a failing verdict must still block the lightest flow')
+})
+
+test('P2: the three presets must not share one identical review burden', () => {
+  // The presets differ by task complexity, so their audit weight must differ too.
+  // Before this change all three returned byte-identical blockers for one state.
+  const state = {
+    items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'fail' } } }],
+  }
+  const byDepth = ['standard', 'agile', 'minimal'].map(id =>
+    todosBlockers(state, resolveFlow(id, {}).config).length)
   assert.ok(
-    !(status.skill_blockers ?? []).concat(status.commit_blockers ?? []).some(b => /two-stage review/u.test(b)),
-    `minimal must not require a two-stage review; blockers: ${JSON.stringify(status.commit_blockers)}`,
+    byDepth[2] < byDepth[0],
+    `the fast-change flow must audit less per item than the full one; got ${JSON.stringify(byDepth)}`,
   )
 })
 
@@ -227,4 +253,70 @@ test('P2: a bound rule that cannot be found must be reported, not skipped', asyn
     /no-such-rule-anywhere/u,
     'a missing bound rule must appear in status rather than vanishing',
   )
+})
+
+// ---------------------------------------------------------------- batch 2: completion
+
+test('P2: reaching the last stage is not completion for any preset', () => {
+  // minimal's final stage is also its commit checkpoint, and the "commit before
+  // leaving a checkpoint" rule only fires on the way OUT of a stage — so that
+  // flow could stand on its last stage with no delivery record at all. Completion
+  // is now its own checked event, shared by all three presets.
+  for (const [preset, stage] of [['standard', '完成'], ['agile', '审查'], ['minimal', '交付']]) {
+    const config = resolveFlow(preset, {}).config
+    const state = {
+      stage,
+      execution_version: 1,
+      items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }],
+      verification: { passed: true, evidence: [] },
+      commits: [],
+    }
+    assert.ok(
+      completionBlockers(state, config).length > 0,
+      `${preset} must not complete without its delivery record`,
+    )
+    const committed = { ...state, commits: [{ label: 'TASK', hash: 'abc1234' }] }
+    assert.deepEqual(
+      completionBlockers(committed, config), [],
+      `${preset} must complete once the delivery record exists`,
+    )
+  }
+})
+
+test('P2: completion refuses a task that has not reached a final stage', () => {
+  const config = resolveFlow('standard', {}).config
+  const state = {
+    stage: '开发',
+    execution_version: 1,
+    items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }],
+    verification: { passed: true, evidence: [] },
+    commits: [{ label: 'TASK', hash: 'abc1234' }],
+  }
+  const blockers = completionBlockers(state, config)
+  assert.ok(blockers.some(b => /not a final stage/u.test(b)),
+    `an unfinished flow must not be completable; saw ${JSON.stringify(blockers)}`)
+})
+
+test('P2: a flow may declare that its delivery mode needs no commit', () => {
+  // A Git commit is one delivery mode, not a universal finish line: a non-code
+  // task or a project outside version control has nothing to commit.
+  const withoutCommit = { ...resolveFlow('minimal', {}).config, commit_required: false }
+  const state = {
+    stage: '交付',
+    execution_version: 1,
+    items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' } } }],
+    verification: { passed: true, evidence: [] },
+    commits: [],
+  }
+  assert.deepEqual(
+    completionBlockers(state, withoutCommit), [],
+    'a flow that does not require a commit must be completable without one',
+  )
+})
+
+test('P2: an unknown review_depth is a configuration error, not a silent downgrade', () => {
+  const config = { ...resolveFlow('minimal', {}).config, review_depth: 'thorough' }
+  const problems = validateWorkflow(config)
+  assert.ok(problems.some(p => /review_depth/u.test(p)),
+    `a typo must be reported; saw ${JSON.stringify(problems)}`)
 })

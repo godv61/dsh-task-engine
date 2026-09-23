@@ -127,6 +127,11 @@ const MINIMAL: WorkflowConfig = {
     file_scope: false,
   },
   high_risk_requires_verification: false,
+  // A fast-change flow checks each change once, not twice under two headings a
+  // short change rarely distinguishes. The item still has to be reviewed — what
+  // drops is the duplicated verdict, which is where the weight actually was: this
+  // flow used to carry the same per-item audit burden as the full one.
+  review_depth: 'single',
   stage_bindings: {
     '开发': { skills: ['code-implement'] },
     '交付': { skills: ['code-commit'], rules: ['commit-conventions'] },
@@ -163,7 +168,11 @@ export const FLOW_PRESETS: Record<string, FlowPreset> = {
   // and the `review` artifact the bound code-review skill writes was declared. Tasks
   // created before this keep their frozen version 1 config and are unaffected.
   agile: preset('agile', 2, '敏捷轻量', '需求 → 开发 → 交付 → 审查，四阶段、少产物', AGILE),
-  minimal: preset('minimal', 1, '纯代码', '开发 → 交付，两阶段，只留提交门禁', MINIMAL),
+  // Version 2: per-item review depth is declared as `single` instead of inheriting
+  // the full flow's two verdicts per item. Tasks created before this keep their
+  // frozen version 1 config, which has no `review_depth` and therefore reads as
+  // two-stage exactly as it behaved.
+  minimal: preset('minimal', 2, '纯代码', '开发 → 交付，两阶段，每项一次检查后提交', MINIMAL),
 }
 
 /** Whether `flow` names a built-in workflow. */
