@@ -16,6 +16,14 @@ export const workbenchTheme = `
 .te-binding-tools .te-input { flex:1; width:100%; min-width:120px; padding:8px 10px; font-size:13px; }
 .te-binding-filter { display:flex; align-items:center; gap:5px; font-size:12px; white-space:nowrap; cursor:pointer; }
 .te-binding-list { max-height:280px; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:4px; scrollbar-gutter:stable; }
+/* Search + filter row. The catalog grows with every install, so finding one skill
+   has to be a lookup rather than a scroll. */
+.te-binding-controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:0 0 6px; }
+.te-binding-search { flex:1; min-width:120px; padding:6px 9px; font-size:12px; color:var(--dsw-alias-label-primary); background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l2); border-radius:7px; }
+.te-binding-search:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:1px; }
+/* Only the open skill's rules render, and inside a bounded region: expanding a
+   second skill must not push the first off screen or grow the page without limit. */
+.te-rule-list { display:flex; flex-direction:column; gap:4px; margin-top:6px; padding:8px; max-height:240px; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--dsw-alias-border-l2); border-radius:8px; background:var(--dsw-alias-bg-layer-1); scrollbar-gutter:stable; }
 .te-binding-option { display:flex; gap:9px; align-items:flex-start; padding:9px; border:1px solid transparent; border-radius:8px; cursor:pointer; }
 .te-binding-option:hover { background:var(--dsw-alias-bg-layer-2); }
 .te-binding-option.is-selected { background:var(--dsw-alias-bg-layer-2); border-color:var(--dsw-alias-border-l2); }

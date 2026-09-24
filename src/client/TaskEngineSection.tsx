@@ -467,6 +467,13 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
   const [expanded, setExpanded] = useState<string | null>(null)
+  // Search and filter state for the two lists. Both grow with use — the skill
+  // catalog by installs, the rule catalog by every rule a user writes — and an
+  // unfiltered list stops being usable well before it stops rendering.
+  const [query, setQuery] = useState('')
+  const [onlySelected, setOnlySelected] = useState(false)
+  const [ruleQuery, setRuleQuery] = useState('')
+  const [ruleOnlySelected, setRuleOnlySelected] = useState(false)
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
   const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
@@ -475,6 +482,51 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
   /** A skill the preset ships cannot be unbound, so the flow keeps its core capability. */
   const isPresetSkill = (name: string, raw: string): boolean =>
     presetSkills(name).some(entry => formatResourceRef(entry.skill) === raw)
+
+  /**
+   * The skills to render, after the search box and the selection filter.
+   *
+   * A skill that is bound or preset-shipped always matches, whatever the filters
+   * say: hiding a skill that is currently in force would make the panel disagree
+   * with the configuration it is showing.
+   * @returns the skills to display, in catalog order.
+   */
+  const visibleSkills = (): SkillCatalogEntry[] => {
+    const bound = bindingFor(currentStage).skills ?? []
+    const boundKeys = new Set(bound.map(entry => formatResourceRef(entry.skill)))
+    const needle = query.trim().toLowerCase()
+    return skills.filter(entry => {
+      const raw = formatResourceRef(entry.ref)
+      const inForce = boundKeys.has(raw) || isPresetSkill(currentStage, raw)
+      if (onlySelected && !inForce) return false
+      if (needle === '') return true
+      return inForce
+        || entry.name.toLowerCase().includes(needle)
+        || entry.description.toLowerCase().includes(needle)
+        || entry.sourceLabel.toLowerCase().includes(needle)
+    })
+  }
+
+  /**
+   * The rules to render for one skill, after the rule filters.
+   *
+   * A rule already on the skill always matches, for the same reason: the list must
+   * not hide what is currently configured.
+   * @param bound - the skill binding whose rules are being shown.
+   * @returns the rules to display.
+   */
+  const visibleRulesFor = (bound: SkillBinding): RuleCatalogEntry[] => {
+    const chosen = new Set(bound.rules.map(rule => formatResourceRef(rule)))
+    const needle = ruleQuery.trim().toLowerCase()
+    return rules.filter(rule => {
+      const raw = formatResourceRef(rule.ref)
+      if (ruleOnlySelected && !chosen.has(raw)) return false
+      if (needle === '') return true
+      return chosen.has(raw)
+        || rule.name.toLowerCase().includes(needle)
+        || rule.sourceLabel.toLowerCase().includes(needle)
+    })
+  }
 
   const setSkills = (name: string, next: SkillBinding[]): void => {
     setStageBindings({ ...stageBindings, [name]: { ...bindingFor(name), skills: next } })
@@ -544,15 +596,40 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
         <section className="te-binding-picker" aria-label="技能绑定">
           <div className="te-binding-heading">
             <h4>技能</h4>
-            <span className="te-binding-count">已选 {boundSkills.length}{presetCount > 0 ? `（含 ${presetCount} 项预设）` : ''}</span>
+            <span className="te-binding-count">
+              已选 {boundSkills.length}
+              {presetCount > 0 ? `（含 ${presetCount} 项预设）` : ''}
+              {visibleSkills().length !== skills.length ? ` · 显示 ${visibleSkills().length}/${skills.length}` : ''}
+            </span>
+          </div>
+          {/*
+            Search and a source filter, because the list grows without bound. With
+            a few dozen skills, scrolling to find one is the whole interaction, and a
+            flat list that only gets longer stops being usable rather than merely
+            becoming long.
+          */}
+          <div className="te-binding-controls">
+            <input
+              className="te-binding-search"
+              type="search"
+              value={query}
+              placeholder="搜索技能名或说明…"
+              aria-label="搜索技能"
+              onChange={event => setQuery(event.target.value)}
+            />
+            <label className="te-binding-filter">
+              <input type="checkbox" checked={onlySelected} onChange={() => setOnlySelected(value => !value)} />
+              {' '}仅看已选
+            </label>
           </div>
           <div className="te-binding-list" role="group" aria-label="技能列表" tabIndex={0}>
             {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请在上方“技能”页添加。</p> : null}
-            {skills.map(entry => {
+            {skills.length > 0 && visibleSkills().length === 0
+              ? <p className="te-binding-empty">没有匹配的技能。</p>
+              : null}
+            {visibleSkills().map(entry => {
               const raw = formatResourceRef(entry.ref)
               const bound = boundSkills.find(candidate => formatResourceRef(candidate.skill) === raw)
-              // Transitive preset bindings stay visible even when the catalog has
-              // not loaded, so a failed load cannot hide an existing selection.
               const preset = isPresetSkill(currentStage, raw)
               const open = expanded === raw
               return (
@@ -577,10 +654,33 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
                         {open ? '收起规则' : '规则设置'}
                       </button>
                     ) : null}
+                    {/*
+                      Only the OPEN skill's rules are rendered, and inside a bounded
+                      region. Expanding a second skill used to push the first off
+                      screen and the page kept growing with no way to see the total.
+                    */}
                     {open && bound !== undefined ? (
                       <span className="te-rule-list">
+                        {ruleQuery !== '' || ruleOnlySelected ? null : (
+                          <span className="te-binding-meta">{rules.length} 条可用规则</span>
+                        )}
+                        <input
+                          className="te-binding-search"
+                          type="search"
+                          value={ruleQuery}
+                          placeholder="过滤规则…"
+                          aria-label={`过滤 ${entry.name} 的规则`}
+                          onChange={event => setRuleQuery(event.target.value)}
+                        />
+                        <label className="te-binding-filter">
+                          <input type="checkbox" checked={ruleOnlySelected} onChange={() => setRuleOnlySelected(value => !value)} />
+                          {' '}仅看已选
+                        </label>
                         {rules.length === 0 ? <span className="te-binding-meta">规则库为空。</span> : null}
-                        {rules.map(rule => {
+                        {rules.length > 0 && visibleRulesFor(bound).length === 0
+                          ? <span className="te-binding-meta">没有匹配的规则。</span>
+                          : null}
+                        {visibleRulesFor(bound).map(rule => {
                           const ruleRaw = formatResourceRef(rule.ref)
                           const on = bound.rules.some(candidate => formatResourceRef(candidate) === ruleRaw)
                           return (
