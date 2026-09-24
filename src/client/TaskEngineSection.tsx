@@ -44,7 +44,7 @@ import {
 function refFromText(text: string): ResourceRef {
   return parseResourceRef(text) ?? { source: 'bundled', name: text }
 }
-import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow, type ProjectConfig } from '../workflows.ts'
+import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow, retainStageBindings, type ProjectConfig } from '../workflows.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import { SkillRuleDialog } from './SkillRuleDialog.tsx'
@@ -73,6 +73,7 @@ interface EngConfigView {
   flow: string
   config: WorkflowConfig
   problems: string[]
+  adoption?: { created: string[]; reused: string[] }
 }
 
 /** One skill in the mountable catalog. */
@@ -182,13 +183,14 @@ export interface TaskEngineRemote {
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   importResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   read(path: string): Promise<RemoteResult<EngConfigView>>
-  write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile> }): Promise<RemoteResult<EngConfigView>>
+  write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile>; materialize_bundled?: 'project' | 'user' }): Promise<RemoteResult<EngConfigView>>
   listSkills(path: string): Promise<RemoteResult<{ skills: SkillCatalogEntry[] }>>
   listRules(path: string): Promise<RemoteResult<{ rules: RuleCatalogEntry[] }>>
   writeSkill(request: { name: string; description: string; whenToUse?: string; content: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   installSkill(request: { sourceDir: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   listDirs(request: { path: string }): Promise<RemoteResult<{ ok: boolean; path: string; entries: { name: string; hasSkill: boolean }[]; roots: string[]; currentHasSkill: boolean; error?: string }>>
   writeRule(request: { name: string; content: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
+  writeUserSkillProfile(request: { name: string; profile: SkillProfile }): Promise<RemoteResult<{ ok: boolean; error?: string }>>
   readSkill(request: { name: string; level: 'project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadSkillResult>>
   readRule(request: { name: string; level: 'project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadRuleResult>>
   deleteSkill(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
@@ -228,6 +230,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   const [loading, setLoading] = useState(true)
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [configProblems, setConfigProblems] = useState<string[]>([])
+  const [flowNotice, setFlowNotice] = useState('')
+  const [pendingAdoption, setPendingAdoption] = useState(false)
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([])
   const [rules, setRules] = useState<RuleCatalogEntry[]>([])
   const [configuringSkill, setConfiguringSkill] = useState<ResourceRef | null>(null)
@@ -250,6 +254,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         setCommitRequired(result.value.config.commit_required)
         setSource(result.value.source)
         setConfigProblems(result.value.problems)
+        setFlowNotice('')
+        setPendingAdoption(false)
         setSavedAt('')
       } else {
         setLoadError('读取配置失败：' + describeError(result.error))
@@ -283,6 +289,14 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     () => validateWorkflow(resolvedConfig(flow, stageBindings, skillProfiles)),
     [flow, stageBindings, skillProfiles],
   )
+  const hasBundledReferences = useMemo(() =>
+    Object.values(stageBindings).some(binding =>
+      (binding.skills ?? []).some(entry => entry.skill.source === 'bundled'
+        || (entry.skill.source !== 'user' && entry.rules.some(rule => rule.source === 'bundled')))
+      || (binding.skill_refs ?? []).some(ref => ref.source === 'bundled'))
+    || Object.entries(skillProfiles).some(([key, profile]) =>
+      key.startsWith('bundled:') || (!key.startsWith('user:') && profile.rules.some(rule => rule.source === 'bundled'))),
+  [stageBindings, skillProfiles])
 
   /**
    * Switch flow skeletons, protecting unsaved edits.
@@ -298,9 +312,16 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
    */
   const selectFlow = (id: string): void => {
     if (id === flow) return
-    if (dirty && !window.confirm('当前流程配置有未保存的修改，切换流程会丢弃它们。继续切换？')) return
+    const { bindings, dropped } = retainStageBindings(id, stageBindings)
+    if (dirty && dropped.length > 0 && !window.confirm(`切换后将移除不属于新流程的节点绑定：${dropped.join('、')}。继续？`)) return
+    setStageBindings(bindings)
+    setFlowNotice(dropped.length > 0
+      ? `已移除不属于「${FLOW_PRESETS[id]?.label ?? id}」的节点绑定：${dropped.join('、')}。保存后才会写入项目配置。`
+      : '')
     setFlow(id)
-    // The bindings are the user's own and are not touched by choosing a skeleton.
+    setPendingAdoption(false)
+    // Shared stages keep their bindings; a removed stage cannot be saved against
+    // the new state graph and must not silently remain as an invalid hidden key.
     setDirty(true)
     setSavedAt('')
   }
@@ -318,6 +339,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     if (adopted === undefined) return
     if (dirty && !window.confirm('采用推荐配置会替换当前的技能与规则设置。继续？')) return
     setStageBindings({ ...(adopted.stage_bindings ?? {}) })
+    setPendingAdoption(true)
+    setFlowNotice('')
     const adoptedFlow = resolveFlow(flow, adopted)
     setSkillProfiles(adoptedFlow.ok ? adoptedFlow.config.skill_profiles ?? {} : {})
     setCommitRule(adopted.commit)
@@ -329,6 +352,10 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
 
   const updateSkillProfile = async (profile: SkillProfile): Promise<void> => {
     if (!configuringSkill) return
+    if (configuringSkill.source === 'user') {
+      const result = await remote.writeUserSkillProfile({ name: configuringSkill.name, profile })
+      if (!result.ok || !result.value.ok) throw new Error(result.ok ? result.value.error : '保存用户级技能规则失败，请重试。')
+    }
     const key = formatResourceRef(configuringSkill)
     const bindings: Record<string, StageBinding> = {}
     for (const [name, binding] of Object.entries(stageBindings)) {
@@ -360,22 +387,33 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   if (loading) return <p role="status">正在读取流程配置…</p>
 
   return (
-    <div style={styles.wrap}>
+    <div className={`te-config-layout${configuringSkill ? ' is-open' : ''}`}>
+    <div className="te-config-main" style={styles.wrap}>
       {configProblems.length > 0 && <p role="alert" style={styles.problems}>原配置有问题：{configProblems.join('；')}。请选择有效预设并保存修复。</p>}
+      {flowNotice && <p role="status" className="te-flow-notice">{flowNotice}</p>}
       <div style={styles.head}>
         <h2 style={styles.title}>工程流程配置</h2>
         <p style={styles.muted}>
           流程决定工作怎么流转（阶段与门禁）；技能、规则、提交格式和产物字段由你自己配置。
-          需要一份现成的起点时，可以「采用推荐配置」——采用后这些就完全属于你，可随意修改或删除。
+          需要一份现成的起点时，可以「采用推荐配置」；保存时会把内置样本复制到当前项目，再由你的项目资源承载这些规则。
         </p>
       </div>
 
       <div style={styles.adoptRow}>
         <Button size="sm" onClick={adopt}>采用「{FLOW_PRESETS[flow]?.label ?? flow}」的推荐配置</Button>
         <span style={styles.muted}>
-          写入推荐技能、提交信息格式与产物字段。仅在你点击时发生一次；删除后不会自动补回。
+          保存后复制推荐技能与共享规则各一份到项目；已有项目副本不会被覆盖，之后插件升级也不会改写它们。
         </span>
       </div>
+      {hasBundledReferences && <div style={styles.adoptRow}>
+        <Button size="sm" onClick={() => {
+          setPendingAdoption(true)
+          setDirty(true)
+          setSavedAt('')
+          setFlowNotice('保存后会把当前配置中的内置引用复制到项目，保留已有项目副本及其他配置。')
+        }}>把当前内置引用迁移到项目</Button>
+        <span style={styles.muted}>旧项目可单独迁移，不必重新采用推荐配置。</span>
+      </div>}
 
       <div style={styles.sourceRow}>
         <StateDot state={source === 'project' ? 'done' : source === 'invalid' ? 'warning' : 'ongoing'} />
@@ -431,7 +469,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           size="md"
           icon={<IconCheckOutline16 size={16} />}
           disabled={problems.length > 0 || saving}
-          onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, skill_profiles: skillProfiles, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}), ...(commitRequired !== undefined ? { commit_required: commitRequired } : {}) }, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
+          onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, skill_profiles: skillProfiles, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}), ...(commitRequired !== undefined ? { commit_required: commitRequired } : {}), ...(pendingAdoption ? { materialize_bundled: 'project' as const } : {}) }, workspace, setSavedAt, setSource).then(view => { if (view) { setConfigProblems([]); setDirty(false); setPendingAdoption(false); setStageBindings(view.config.stage_bindings ?? {}); setSkillProfiles(view.config.skill_profiles ?? {}); refreshCatalogs() } }).finally(() => setSaving(false)) }}
         >
           {saving ? '正在保存…' : dirty ? '保存到 .dsh/eng.json' : '已保存 · 无需保存'}
         </Button>
@@ -441,10 +479,15 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           )
           : null}
       </div>
+    </div>
       {configuringSkill ? <SkillRuleDialog key={formatResourceRef(configuringSkill)} skill={configuringSkill}
-        profile={skillProfiles[formatResourceRef(configuringSkill)]} rules={rules}
-        description="规则属于技能，所有引用此技能的节点都会同步。应用后请点击页面底部保存。"
-        saveLabel="应用到当前配置" onSave={updateSkillProfile} onClose={() => setConfiguringSkill(null)} /> : null}
+        profile={skillProfiles[formatResourceRef(configuringSkill)]}
+        rules={configuringSkill.source === 'user' ? rules.filter(rule => rule.ref.source !== 'project') : rules}
+        description={configuringSkill.source === 'user'
+          ? '用户级技能的规则配置立即保存到用户目录，所有项目与会话共用；节点选择仍需在页面底部保存。'
+          : '规则属于技能，所有引用此技能的节点都会同步。应用后请点击页面底部保存。'}
+        saveLabel={configuringSkill.source === 'user' ? '保存用户级规则' : '应用到当前配置'}
+        onSave={updateSkillProfile} onClose={() => setConfiguringSkill(null)} /> : null}
     </div>
   )
 }
@@ -602,17 +645,18 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
  */
 async function save(
   remote: TaskEngineRemote,
-  config: ProjectConfig,
+  config: ProjectConfig & { materialize_bundled?: 'project' | 'user' },
   workspace: string,
   setSavedAt: (s: string) => void,
   setSource: (s: string) => void,
-): Promise<boolean> {
+): Promise<EngConfigView | undefined> {
   try {
     const result = await remote.write({ path: workspace, ...config })
-    if (!result.ok) { setSavedAt('保存失败：' + describeError(result.error)); return false }
-    if (!result.value.ok) { setSavedAt('保存失败：' + result.value.problems.join('；')); return false }
+    if (!result.ok) { setSavedAt('保存失败：' + describeError(result.error)); return undefined }
+    if (!result.value.ok) { setSavedAt('保存失败：' + result.value.problems.join('；')); return undefined }
     setSource(result.value.source)
-    setSavedAt('已保存')
-    return true
-  } catch (error) { setSavedAt('保存失败：' + describeError(error)); return false }
+    const reused = result.value.adoption?.reused.length ?? 0
+    setSavedAt(reused > 0 ? `已保存；保留了 ${reused} 份已有项目资源` : '已保存')
+    return result.value
+  } catch (error) { setSavedAt('保存失败：' + describeError(error)); return undefined }
 }

@@ -278,6 +278,21 @@ export function isKnownFlow(flow: string): boolean {
   return Object.prototype.hasOwnProperty.call(FLOW_PRESETS, flow)
 }
 
+/** Keep bindings for stages shared with a newly selected flow. */
+export function retainStageBindings(
+  flow: string,
+  bindings: Record<string, StageBinding>,
+): { bindings: Record<string, StageBinding>; dropped: string[] } {
+  const stages = new Set(FLOW_PRESETS[flow]?.config.stages ?? [])
+  const kept: Record<string, StageBinding> = {}
+  const dropped: string[] = []
+  for (const [stage, binding] of Object.entries(bindings)) {
+    if (stages.has(stage)) kept[stage] = binding
+    else dropped.push(stage)
+  }
+  return { bindings: kept, dropped }
+}
+
 /**
  * The capabilities a high-risk task must have from its flow. A `high_risk`
  * task therefore cannot be created on a flow that lacks a verification gate,
@@ -496,6 +511,58 @@ export function compactProjectConfig(project: ProjectConfig): ProjectConfig {
     }
   }
   return { ...project, stage_bindings: bindings, skill_profiles: profiles }
+}
+
+/** A single bundled body to copy when adopting a recommendation. */
+export interface RecommendedResourceCopy {
+  kind: 'skill' | 'rule'
+  name: string
+  targetName: string
+}
+
+/**
+ * Turn source-qualified bundled references into editable project/user references.
+ * Repeated rule references share one target and therefore one physical file.
+ * This is invoked only for an explicit adoption save; existing configurations
+ * are never migrated or rewritten merely because they are opened.
+ */
+export function materializeBundledReferences(
+  project: ProjectConfig,
+  level: 'project' | 'user',
+): { config: ProjectConfig; copies: RecommendedResourceCopy[] } {
+  const compact = compactProjectConfig(project)
+  const copies = new Map<string, RecommendedResourceCopy>()
+  const remap = (ref: ResourceRef, kind: 'skill' | 'rule'): ResourceRef => {
+    if (ref.source !== 'bundled') return ref
+    const targetName = `${ref.name}-copy`
+    copies.set(`${kind}:${ref.name}`, { kind, name: ref.name, targetName })
+    return { source: level, name: targetName }
+  }
+  const stage_bindings: Record<string, StageBinding> = {}
+  for (const [stage, binding] of Object.entries(compact.stage_bindings ?? {})) {
+    stage_bindings[stage] = {
+      ...binding,
+      ...(binding.skill_refs ? { skill_refs: binding.skill_refs.map(ref => remap(ref, 'skill')) } : {}),
+    }
+  }
+  const skill_profiles: Record<string, SkillProfile> = {}
+  for (const [key, profile] of Object.entries(compact.skill_profiles ?? {})) {
+    // A user-level skill's profile is globally owned and may legitimately use
+    // bundled rules. A project adoption must never rewrite that global method.
+    if (key.startsWith('user:')) {
+      skill_profiles[key] = profile
+      continue
+    }
+    const colon = key.indexOf(':')
+    const ref = colon < 0 ? undefined : { source: key.slice(0, colon), name: key.slice(colon + 1) } as ResourceRef
+    const mapped = ref?.source === 'bundled' ? remap(ref, 'skill') : ref
+    const mappedKey = mapped ? formatResourceRef(mapped) : key
+    if (skill_profiles[mappedKey] !== undefined) {
+      throw new Error(`采用推荐配置后技能档案重复：${mappedKey}`)
+    }
+    skill_profiles[mappedKey] = { ...profile, rules: profile.rules.map(rule => remap(rule, 'rule')) }
+  }
+  return { config: { ...compact, stage_bindings, skill_profiles }, copies: [...copies.values()] }
 }
 
 /**

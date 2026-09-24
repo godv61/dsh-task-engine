@@ -55,6 +55,7 @@ import {
   resolveFlow,
 } from './workflows.ts'
 import { hashConfig, hashText } from './snapshot.ts'
+import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
@@ -308,9 +309,9 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
       source: 'invalid',
     }
   }
-  const resolved = resolveFlow(
-    parsed.flow,
-      {
+  let project
+  try {
+    project = withUserSkillProfiles({
         flow: parsed.flow,
         ...(parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : {}),
         ...(parsed.skill_profiles !== undefined ? { skill_profiles: parsed.skill_profiles } : {}),
@@ -318,8 +319,12 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
         ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
         ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
         ...(parsed.commit_required !== undefined ? { commit_required: parsed.commit_required } : {}),
-      },
-  )
+      })
+  } catch (error) {
+    const standard = standardWorkflow()
+    return { ...standard, problems: [`用户级技能规则档案无法读取：${error instanceof Error ? error.message : String(error)}`], source: 'invalid' }
+  }
+  const resolved = resolveFlow(parsed.flow, project)
   if (!resolved.ok) {
     const standard = standardWorkflow()
     return {
@@ -476,13 +481,12 @@ function readAbsRule(file: string): string | undefined {
   }
 }
 
-/** The bundled rule files whose contents the frozen tasks' bindings reference. */
+/** The bundled rule files whose changes can be reported to existing tasks. */
 const BUILTIN_RULE_FILES = ['commit-conventions', 'coding-conventions', 'security-redlines'] as const
 
 /**
- * Fingerprint of the bundled rules this package ships. A task created now
- * freezes this value; when a later package version ships changed rules, the
- * disclosure reports the drift instead of silently applying new content.
+ * Fingerprint of the bundled rules this package ships. Existing tasks record
+ * the creation-time value so changes can be reported while live bodies apply.
  */
 function builtinRulesFingerprint(): string {
   const contents = BUILTIN_RULE_FILES
@@ -554,12 +558,11 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
 }
 
 /**
- * Freeze every skill and rule body the config resolves to.
+ * Capture every skill and rule body the config resolves to at task creation.
  *
- * Names alone cannot keep an in-flight task stable: editing a rule that a running
- * task uses would silently change what that task is doing. Each resolved body is
- * copied with its content hash, so a deleted or edited source cannot change a
- * running task, and identical bodies are stored once per hash.
+ * The copy is an audit baseline, not the runtime authority: task interactions
+ * always read the latest body at the same source-qualified reference. Capturing
+ * hashes makes changes visible and rejects an unreadable binding at creation.
  * @param config - the frozen workflow config.
  * @param fs - sandboxed filesystem for project-level lookups.
  * @returns the frozen resources plus the refs that could not be read.
@@ -640,10 +643,8 @@ async function resolveRules(
 ): Promise<{ resolved: ResolvedRule[]; missing: string[]; stale: string[] }> {
   const resolved: ResolvedRule[] = []
   const missing: string[] = []
-  // A frozen body is the authority for a task that has one. Freezing used to only
-  // ARCHIVE the content: status and the stage disclosure still read the live files,
-  // so editing a rule silently changed what a running task was told to follow —
-  // the exact instability the snapshot exists to prevent.
+  // Creation-time copies are an audit baseline. The source-qualified reference
+  // remains stable, while its body is read afresh on each interaction.
   const frozenByRef = new Map<string, FrozenResource>()
   // Pre-0.26 snapshots have no kind. If such a snapshot reused a skill's ref
   // for a rule, its rule was never frozen; fail closed instead of reading the
@@ -658,23 +659,13 @@ async function resolveRules(
   for (const ref of refs) {
     const key = formatResourceRef(ref)
     const snapshot = frozenByRef.get(key)
-    if (snapshot !== undefined) {
-      resolved.push({ name: ref.name, content: snapshot.content, source: ref.source })
-      // Report when the source no longer matches what was frozen, so drift is
-      // visible instead of looking like the frozen text was simply current.
-      const live = await readRuleAt(ref.source, ref.name, fs, cwd)
-      if (live === undefined) stale.push(key + ' (source deleted)')
-      else if (hashText(live) !== snapshot.hash) stale.push(key + ' (source edited)')
-      continue
-    }
-    // No snapshot (a pre-freezing task) or this ref was not frozen: read live, and
-    // report a rule that resolves nowhere rather than dropping it, because omitting
-    // it made a deleted file indistinguishable from an unbound one.
     const content = await readRuleAt(ref.source, ref.name, fs, cwd)
     if (content === undefined) {
       missing.push(key)
+      if (snapshot !== undefined) stale.push(key + ' (source deleted)')
       continue
     }
+    if (snapshot !== undefined && hashText(content) !== snapshot.hash) stale.push(key + ' (source edited)')
     resolved.push({ name: ref.name, content, source: ref.source })
   }
   return { resolved, missing, stale }
@@ -732,23 +723,47 @@ async function rulesForBinding(
   }
 }
 
-/** Return the task's frozen skill instructions, falling back to live bodies for old tasks. */
+/** Return current skill instructions at each stable source-qualified reference. */
 async function skillBodiesForBinding(
   binding: StageBinding | undefined,
   fs: Fs,
   cwd?: string,
-  frozen?: FrozenResource[],
 ): Promise<{ name: string; source: ResourceSource; content: string }[]> {
   const result: { name: string; source: ResourceSource; content: string }[] = []
   for (const entry of binding?.skills ?? []) {
-    const key = formatResourceRef(entry.skill)
-    const archived = frozen?.find(resource => (resource.kind === 'skill'
-      || (resource.kind === undefined && resource.content.startsWith('---')))
-      && formatResourceRef(resource.ref) === key)
-    const content = archived?.content ?? await readSkillAt(entry.skill, fs, cwd)
+    const content = await readSkillAt(entry.skill, fs, cwd)
     if (content !== undefined) result.push({ name: entry.skill.name, source: entry.skill.source, content })
   }
   return result
+}
+
+/** Missing live skill files cannot be satisfied by the creation-time archive. */
+async function missingSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd?: string): Promise<string[]> {
+  const missing: string[] = []
+  for (const entry of binding?.skills ?? []) {
+    if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) missing.push(formatResourceRef(entry.skill))
+  }
+  return missing
+}
+
+function skillResourceBlockers(missing: string[], stage: string): string[] {
+  return missing.map(ref => `${stage}: bound skill ${ref} resolves nowhere; restore the file or remove the binding for a new task`)
+}
+
+async function changedSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd: string | undefined,
+  baseline?: FrozenResource[]): Promise<string[]> {
+  const changed: string[] = []
+  for (const entry of binding?.skills ?? []) {
+    const key = formatResourceRef(entry.skill)
+    const original = baseline?.find(resource => (resource.kind === 'skill'
+      || (resource.kind === undefined && resource.content.startsWith('---')))
+      && formatResourceRef(resource.ref) === key)
+    if (original === undefined) continue
+    const live = await readSkillAt(entry.skill, fs, cwd)
+    if (live === undefined) changed.push(key + ' (source deleted)')
+    else if (hashText(live) !== original.hash) changed.push(key + ' (source edited)')
+  }
+  return changed
 }
 
 /**
@@ -768,9 +783,9 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const skillPart = skills.length > 0
     ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name)`
     : 'skills to load: none'
-  const frozenSkills = await skillBodiesForBinding(binding, fs, cwd, frozen)
-  const skillInstructions = frozenSkills.length > 0
-    ? `skill instructions for this task (frozen at creation when available; these are authoritative if the live skill changed):\n${frozenSkills.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
+  const currentSkills = await skillBodiesForBinding(binding, fs, cwd)
+  const skillInstructions = currentSkills.length > 0
+    ? `current skill instructions for this task (read at this interaction):\n${currentSkills.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
     : ''
   const rulePart = rules.length > 0
     ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${rules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
@@ -779,6 +794,9 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   // left the stage looking as if the constraint had never been configured.
   const missingPart = missing.length > 0
     ? `rules in force at this stage but NOT FOUND in their declared layer: ${missing.join(', ')}`
+    : ''
+  const missingSkillPart = skills.length > currentSkills.length
+    ? `bound skills NOT FOUND in their declared layer: ${(await missingSkillRefs(binding, fs, cwd)).join(', ')}`
     : ''
   // Legacy stage-level rules are disclosed (so nothing is lost) but named as
   // unassigned, because a stage-level list never recorded which skill they were
@@ -798,7 +816,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'no command skill_result receipt required for this stage; other evidence kinds follow their configured stage operations'
-  return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, legacyPart].filter(Boolean).join('\n')
+  return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, missingSkillPart, legacyPart].filter(Boolean).join('\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -1254,6 +1272,8 @@ export function registerDevTask(ctx: Context): void {
           legacy: legacyRules,
           stale: staleRules,
         } = await rulesForBinding(binding, fs, cwd, state.flow?.resources)
+        const missingSkillFiles = await missingSkillRefs(binding, fs, cwd)
+        const changedSkillFiles = await changedSkillRefs(binding, fs, cwd, state.flow?.resources)
         const missingSkills = skillBlockers(state, workflow, session)
         const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
         const checkpoint = commitCheckpoint(state, workflow)
@@ -1261,9 +1281,12 @@ export function registerDevTask(ctx: Context): void {
         // one says the receipt no longer matches the tree, the other says the flow
         // needs a passing verification and does not have one. Callers act on both.
         const verification = verificationBlockers(state, workflow)
-        const commitBlockers = [...staleEvidence, ...missingSkills, ...verification]
+        const commitBlockers = [...staleEvidence, ...missingSkills,
+          ...skillResourceBlockers(missingSkillFiles, state.stage), ...verification]
         const completionIssues = state.completed === undefined
-          ? [...completionBlockers(state, workflow), ...missingSkills, ...resourceBlockers(missingRules, state.stage), ...staleEvidence]
+          ? [...completionBlockers(state, workflow), ...missingSkills,
+            ...skillResourceBlockers(missingSkillFiles, state.stage),
+            ...resourceBlockers(missingRules, state.stage), ...staleEvidence]
           : []
         return JSON.stringify({
           id: state.id,
@@ -1296,12 +1319,15 @@ export function registerDevTask(ctx: Context): void {
           // awaiting an owner. A skill's own list is the complete answer to what it
           // runs under, and this mirrors that list for the current stage.
           missing_rules: missingRules,
+          missing_skills: missingSkillFiles,
+          changed_source_skills: changedSkillFiles,
           rules: rules.map(rule => ({ name: rule.name, source: rule.source })),
-          // Rules whose SOURCE no longer matches what the task froze. The task keeps
-          // following the frozen text — that is what freezing is for — and this reports
-          // the drift, so a rule edited or deleted underneath a running task is visible
-          // instead of silently authoritative.
+          // Rules that differ from the creation-time audit copy. Edited bodies
+          // are already in force; deleted sources are reported as missing.
           stale_source_rules: staleRules,
+          resource_update_notice: changedSkillFiles.length || staleRules.length
+            ? 'Skill/Rule source changed since task creation; the current source body is in force. Recheck prior evidence against the updated instructions.'
+            : undefined,
           unassigned_legacy_rules: legacyRules,
           skill_results: state.skill_results ?? {},
           commits: state.commits,
@@ -1319,7 +1345,7 @@ export function registerDevTask(ctx: Context): void {
             : checkpoint,
           bindings: {
             skills: binding?.skills ?? [],
-            skill_contents: await skillBodiesForBinding(binding, fs, cwd, state.flow?.resources),
+            skill_contents: await skillBodiesForBinding(binding, fs, cwd),
             // The layer is disclosed with each rule, because two same-named rules in
             // different layers are distinct resources and the caller needs to know
             // which one is actually in force. Reporting only the name made them
@@ -1327,7 +1353,7 @@ export function registerDevTask(ctx: Context): void {
             rules: rules.map(r => ({ name: r.name, source: r.source, content: r.content })),
           },
           bindings_drift: state.bindings_fingerprint !== undefined && state.bindings_fingerprint !== builtinRulesFingerprint()
-            ? 'bundled rules changed since this task froze — the frozen fingerprint no longer matches the shipped rules'
+            ? 'bundled rules changed since task creation — current bundled bodies are now in force'
             : undefined,
           risk_downgrades: state.risk_downgrades ?? [],
         }, null, 2)
@@ -1381,10 +1407,13 @@ export function registerDevTask(ctx: Context): void {
           // terminal stage has no way out.
           await assertFreshEvidence(fs, state, workflow, cwd)
           const missingSkills = skillBlockers(state, workflow, session)
-          const unresolvedRules = (await rulesForBinding(bindingsForStage(state.stage, workflow), fs, cwd, state.flow?.resources)).missing
+          const currentBinding = bindingsForStage(state.stage, workflow)
+          const missingSkillFiles = await missingSkillRefs(currentBinding, fs, cwd)
+          const unresolvedRules = (await rulesForBinding(currentBinding, fs, cwd, state.flow?.resources)).missing
           const blockers = [
             ...completionBlockers(state, workflow),
             ...missingSkills,
+            ...skillResourceBlockers(missingSkillFiles, state.stage),
             ...resourceBlockers(unresolvedRules, state.stage),
           ]
           if (blockers.length > 0) throw new Error(`cannot complete: ${blockers.join('; ')}`)
@@ -1487,6 +1516,9 @@ export function registerDevTask(ctx: Context): void {
           await assertFreshEvidence(fs, state, workflow, cwd)
           const missingSkills = skillBlockers(state, workflow, session)
           if (missingSkills.length) throw new Error(missingSkills.join('; '))
+          const missingSkillFiles = await missingSkillRefs(bindingsForStage(state.stage, workflow), fs, cwd)
+          const missingSkillIssues = skillResourceBlockers(missingSkillFiles, state.stage)
+          if (missingSkillIssues.length) throw new Error(missingSkillIssues.join('; '))
           // A stage whose rules cannot be resolved must not be passable. This was
           // reported in status and never enforced, so deleting a bound rule still let the
           // task advance — the stage ran without the constraints it was configured with
@@ -1589,6 +1621,13 @@ export function registerDevTask(ctx: Context): void {
           const stage = a.target_stage ?? state.stage
           const entry = (workflow.stage_bindings?.[stage]?.skills ?? []).find(binding => binding.skill.name === a.skill_name)
           if (!obligationStages(state, workflow).includes(stage) || !entry) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
+          if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) {
+            throw new Error(`bound skill ${formatResourceRef(entry.skill)} resolves nowhere; restore its source before recording a result`)
+          }
+          const unresolvedForSkill = (await resolveRules(entry.rules, fs, cwd, state.flow?.resources)).missing
+          if (unresolvedForSkill.length > 0) {
+            throw new Error(`bound rule for ${formatResourceRef(entry.skill)} resolves nowhere: ${unresolvedForSkill.join(', ')}`)
+          }
           const loadCall = loadedSkills(session).get(a.skill_name!)
           if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
           if (entry.evidence === 'manual') {

@@ -4,10 +4,20 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask } from './lib/engine.js'
-import { adoptRecommendation, resolveFlow } from './lib/workflows.js'
+import { newTask, validateWorkflow } from './lib/engine.js'
+import { adoptRecommendation, resolveFlow, retainStageBindings } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
+
+test('switching to minimal drops only stages outside its graph', () => {
+  const requirement = { skills: [{ skill: { source: 'project', name: 'requirements' }, rules: [] }] }
+  const development = { skills: [{ skill: { source: 'project', name: 'implement' }, rules: [] }] }
+  const result = retainStageBindings('minimal', { '需求': requirement, '开发': development })
+  assert.deepEqual(result.dropped, ['需求'])
+  assert.deepEqual(result.bindings, { '开发': development })
+  const resolved = resolveFlow('minimal', { flow: 'minimal', stage_bindings: result.bindings })
+  assert.deepEqual(validateWorkflow(resolved.config), [])
+})
 
 /**
  * The preset as a project would actually run it: the skeleton plus the shipped
@@ -36,12 +46,15 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     ...adopted,
     stage_bindings: {
       ...adopted.stage_bindings,
-      完成: { skills: [{ skill: { source: 'bundled', name: 'software-testing' }, rules: [] }] },
+      完成: { skills: [{ skill: { source: 'project', name: 'software-testing' }, rules: [] }] },
     },
   }).config
   const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 3, config }, root: cwd })
   Object.assign(state, { stage, execution_version: 1, files: ['app.js'], requirement_confirmed: true, solution_confirmed: true, ...extra })
-  const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)], [join(cwd, 'app.js'), 'source']])
+  const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)],
+    [join(cwd, 'app.js'), 'source'],
+    [join(cwd, '.dsh/skills/software-testing/SKILL.md'), 'test instructions'],
+    [join(cwd, '.dsh/skills/human-check/SKILL.md'), 'manual check instructions']])
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }
@@ -126,7 +139,13 @@ test('same-named skill and rule freeze separately and disclose the rule body', a
   assert.deepEqual(resources.map(resource => resource.kind).sort(), ['rule', 'skill'])
   assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'CHANGED SKILL')
-  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.skill_contents[0].content, 'SKILL BODY')
+  const status = JSON.parse(await f.call({ operation: 'status' }))
+  assert.equal(status.bindings.skill_contents[0].content, 'CHANGED SKILL')
+  assert.ok(status.changed_source_skills.some(ref => ref.includes('project:custom')))
+  f.records.delete(join(f.cwd, '.dsh/skills/custom/SKILL.md'))
+  const missing = JSON.parse(await f.call({ operation: 'status' }))
+  assert.ok(missing.missing_skills.includes('project:custom'))
+  assert.equal(missing.bindings.skill_contents.length, 0)
 })
 
 test('task creation applies skill_profiles rules even when legacy inline bindings are empty', async () => {

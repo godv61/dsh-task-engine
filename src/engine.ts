@@ -230,12 +230,10 @@ export interface WorkflowConfig {
 }
 
 /**
- * A frozen copy of one resource's body, taken when the task was created.
+ * An audit copy of one resource's body, taken when the task was created.
  *
- * Names alone cannot keep an in-flight task stable: editing a skill or rule that
- * a running task uses would silently change what that task is doing. The body is
- * copied, and identical bodies are stored once and shared by content hash, so two
- * tasks using the same rule do not duplicate several kilobytes each.
+ * The runtime reads the latest body at the same reference. This copy records
+ * what was present at creation so later edits can be reported explicitly.
  */
 export interface FrozenResource {
   /** Resource type is part of its identity: a skill and a rule may share a name. */
@@ -243,7 +241,7 @@ export interface FrozenResource {
   ref: ResourceRef
   /** SHA-256 of the body, which is also the key under which it is stored. */
   hash: string
-  /** The body itself, so a deleted or edited source cannot change a running task. */
+  /** Creation-time body for drift reporting; the source is authoritative at runtime. */
   content: string
 }
 
@@ -261,9 +259,9 @@ export interface FlowSnapshot {
   /** SHA-256 of the canonical JSON of `config`; a mismatch proves the snapshot was edited after creation. Absent on pre-0.22 records. */
   hash?: string
   /**
-   * The skill and rule bodies this task actually resolved, captured at creation.
-   * Absent on records written before resource freezing; those fall back to live
-   * resolution.
+   * Creation-time audit copies of the skill and rule bodies. Runtime interactions
+   * always resolve the current source text, including on older records without
+   * these copies.
    */
   resources?: FrozenResource[]
 }
@@ -403,7 +401,7 @@ export interface TaskState {
   project_type?: ProjectType
   /** Audit trail of risk changes; a high_risk → standard downgrade only appears here after human approval. Absent on pre-0.22 records. */
   risk_downgrades?: { from: string; to: string; at: string }[]
-  /** Fingerprint of the bundled rules at create time; a drift on disclosure means the shipped rules changed since this task froze. Absent on pre-0.22 records. */
+  /** Fingerprint of bundled rules at create time; reports later changes. Absent on pre-0.22 records. */
   bindings_fingerprint?: string
   /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
   revision?: number
@@ -903,7 +901,7 @@ export function commitRequired(config: WorkflowConfig): boolean {
 export function resourceBlockers(unresolved: readonly string[], stage: string): string[] {
   return unresolved.map(name =>
     `${stage}: "${name}" is bound here but resolves nowhere — a stage cannot be completed without the rules it was configured with. `
-    + 'Restore the file, point the binding at the right layer, or remove the binding. If this task was created before resource freezing, its snapshot is absent and it must read live files.')
+    + 'Restore the file, or recreate the task with a corrected binding. All tasks read live resource bodies.')
 }
 
 /**

@@ -7,12 +7,142 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveFlow, adoptRecommendation, compactProjectConfig } from './lib/workflows.js'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve, sep } from 'node:path'
+import { resolveFlow, adoptRecommendation, compactProjectConfig, materializeBundledReferences } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { assertAdvance, validateWorkflow } from './lib/engine.js'
+import { TYPERT_REMOTE } from './src/client/remote.ts'
 
 /** The fields a project config can carry, so a round-trip is checked on all of them. */
 const FIELDS = ['flow', 'stage_bindings', 'commit', 'artifacts', 'review_depth', 'commit_required']
+
+test('browser remote codec retains source-qualified bindings and all saved fields', () => {
+  const write = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'write')
+  const read = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'read')
+  const adopted = compactProjectConfig(adoptRecommendation('minimal'))
+  const request = { path: 'project', ...adopted, review_depth: 'single', commit_required: false,
+    materialize_bundled: 'project' }
+  assert.deepEqual(write.parameters[0].codec.schema.parse(request), request)
+  const resolved = resolveFlow('minimal', request).config
+  const view = { ok: true, source: 'project', flow: 'minimal', config: resolved, problems: [] }
+  assert.deepEqual(read.result.schema.parse(view), view)
+  const catalog = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'listSkills')
+  const skill = { name: 'mine', description: 'test', source: 'project',
+    ref: { source: 'project', name: 'mine' }, sourceLabel: '项目' }
+  assert.deepEqual(catalog.result.schema.parse({ skills: [skill] }), { skills: [skill] })
+  const saveUserProfile = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'writeUserSkillProfile')
+  const profileRequest = { name: 'mine', profile: { rules: [{ source: 'user', name: 'my-rule' }], evidence: 'manual' } }
+  assert.deepEqual(saveUserProfile.parameters[0].codec.schema.parse(profileRequest), profileRequest)
+})
+
+test('one user skill profile is shared across workspaces and cannot depend on a project rule', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-user-profile-'))
+  assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))
+  const priorHome = process.env.DSH_HOME
+  const userHome = join(root, 'user-home')
+  process.env.DSH_HOME = userHome
+  const skill = { source: 'user', name: 'my-skill' }
+  const config = { flow: 'minimal', stage_bindings: {
+    '开发': { skill_refs: [skill] }, '交付': { skill_refs: [skill] },
+  } }
+  const fs = {
+    resolve: async (path, { cwd }) => join(cwd, path),
+    readText: async path => { try { return readFileSync(path, 'utf8') } catch { return undefined } },
+    writeText: async (path, body) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, body) },
+  }
+  const receiver = { authorizedPath: async path => path, fs: () => fs }
+  try {
+    const skillDir = join(userHome, 'skills', skill.name)
+    mkdirSync(skillDir, { recursive: true })
+    writeFileSync(join(skillDir, 'SKILL.md'), '---\nname: my-skill\ndescription: test\n---\nbody\n')
+    const profile = { rules: [{ source: 'user', name: 'my-rule' }], evidence: 'manual' }
+    const saved = await Controller.prototype.writeUserSkillProfile.call(receiver, { name: skill.name, profile })
+    assert.equal(saved.ok, true)
+    for (const projectName of ['one', 'two']) {
+      const project = join(root, projectName)
+      mkdirSync(join(project, '.dsh'), { recursive: true })
+      writeFileSync(join(project, '.dsh', 'eng.json'), JSON.stringify(config))
+      const loaded = await Controller.prototype.read.call(receiver, project)
+      assert.equal(loaded.ok, true)
+      assert.deepEqual(loaded.config.stage_bindings['开发'].skills[0].rules, profile.rules)
+    }
+    const bad = await Controller.prototype.writeUserSkillProfile.call(receiver, { name: skill.name,
+      profile: { rules: [{ source: 'project', name: 'local-rule' }] } })
+    assert.equal(bad.ok, false)
+    assert.deepEqual(JSON.parse(readFileSync(join(skillDir, 'profile.json'), 'utf8')), profile)
+  } finally {
+    if (priorHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = priorHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('recommendation adoption copies each shared bundled rule once and rewrites every reference', () => {
+  const { config, copies } = materializeBundledReferences(adoptRecommendation('standard'), 'project')
+  assert.equal(copies.filter(copy => copy.kind === 'skill').length, 6)
+  assert.equal(copies.filter(copy => copy.kind === 'rule').length, 3)
+  const refs = Object.values(config.stage_bindings).flatMap(binding => binding.skill_refs)
+  assert.ok(refs.every(ref => ref.source === 'project'))
+  const rules = Object.values(config.skill_profiles).flatMap(profile => profile.rules)
+  assert.ok(rules.every(ref => ref.source === 'project'))
+  const shared = rules.filter(ref => ref.name === 'security-redlines-copy')
+  assert.equal(shared.length, 3)
+  assert.equal(copies.filter(copy => copy.kind === 'rule' && copy.name === 'security-redlines').length, 1)
+  assert.deepEqual(validateWorkflow(resolveFlow('standard', config).config), [])
+})
+
+test('project migration leaves a global user skill profile and its bundled rules untouched', () => {
+  const userSkill = { source: 'user', name: 'global-check' }
+  const bundledRule = { source: 'bundled', name: 'security-redlines' }
+  const project = { flow: 'minimal', stage_bindings: { '开发': { skill_refs: [userSkill] } },
+    skill_profiles: { 'user:global-check': { rules: [bundledRule] } } }
+  const { config, copies } = materializeBundledReferences(project, 'project')
+  assert.deepEqual(config.skill_profiles['user:global-check'].rules, [bundledRule])
+  assert.deepEqual(copies, [])
+})
+
+test('adoption saves editable project copies, preserves edited files on repeat, and leaves legacy bundled configs alone', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-adopt-'))
+  assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))
+  const fs = {
+    resolve: async (path, { cwd }) => join(cwd, path),
+    readText: async path => { try { return readFileSync(path, 'utf8') } catch { return undefined } },
+    writeText: async (path, text) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text) },
+  }
+  const receiver = { authorizedPath: async path => path, fs: () => fs }
+  try {
+    const recommended = adoptRecommendation('standard')
+    const first = await Controller.prototype.write.call(receiver,
+      { path: root, ...recommended, materialize_bundled: 'project' })
+    assert.equal(first.ok, true)
+    assert.equal(first.adoption.created.length, 9)
+    const file = join(root, '.dsh', 'eng.json')
+    const saved = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(JSON.stringify(saved).includes('"bundled"'), false)
+    const shared = join(root, '.dsh', 'rules', 'security-redlines-copy.md')
+    assert.ok(readFileSync(shared, 'utf8').length > 0)
+    writeFileSync(shared, 'user edited shared rule\n')
+    const second = await Controller.prototype.write.call(receiver,
+      { path: root, ...recommended, materialize_bundled: 'project' })
+    assert.equal(second.ok, true)
+    assert.equal(second.adoption.created.length, 0)
+    assert.equal(second.adoption.reused.length, 9)
+    assert.equal(readFileSync(shared, 'utf8'), 'user edited shared rule\n')
+    const loaded = await Controller.prototype.read.call(receiver, root)
+    assert.equal(loaded.ok, true)
+    const sharedRefs = Object.values(loaded.config.skill_profiles).flatMap(profile => profile.rules)
+      .filter(rule => rule.name === 'security-redlines-copy')
+    assert.equal(sharedRefs.length, 3)
+    writeFileSync(file, JSON.stringify(compactProjectConfig(recommended)))
+    const legacy = await Controller.prototype.read.call(receiver, root)
+    assert.equal(legacy.ok, true)
+    assert.ok(JSON.stringify(legacy.config).includes('"bundled"'))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('round-trip: stages store references while skill rules have one owner', () => {
   const adopted = adoptRecommendation('standard')

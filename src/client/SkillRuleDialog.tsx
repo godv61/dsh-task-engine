@@ -58,7 +58,7 @@ export function SkillRuleDialog({ skill, profile, rules, description, saveLabel,
   const missingRules = draftRules.filter(rule => !catalogKeys.has(formatResourceRef(rule)))
 
   return <ResourceModal
-    placement="right"
+    placement="inline"
     title={`配置规则 · ${skill.name}`}
     description={description ?? '规则属于技能；此处的配置会用于所有绑定该技能的节点。'}
     onClose={close}

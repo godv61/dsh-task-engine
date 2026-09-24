@@ -36,18 +36,29 @@ export function SkillManager({ workspace, remote }: { workspace: string; remote:
     if (!config || !selected) throw new Error('配置尚未加载，请稍后重试。')
     const key = formatResourceRef(selected)
     const next = { ...config, skill_profiles: { ...config.skill_profiles, [key]: profile } }
-    const result = await remote.write({ path: workspace, ...next })
-    if (!result.ok || !result.value.ok) throw new Error(result.ok ? result.value.problems.join('；') : '保存失败，请重试。')
+    if (selected.source === 'user') {
+      const result = await remote.writeUserSkillProfile({ name: selected.name, profile })
+      if (!result.ok || !result.value.ok) throw new Error(result.ok ? result.value.error : '保存失败，请重试。')
+    } else {
+      const result = await remote.write({ path: workspace, ...next })
+      if (!result.ok || !result.value.ok) throw new Error(result.ok ? result.value.problems.join('；') : '保存失败，请重试。')
+    }
     setConfig(next)
     setMessage(`已保存 ${selected.name} 的规则配置。`)
     setSelected(null)
   }
 
-  return <div>
-    <ResourceManager workspace={workspace} remote={remote} kind="skill" onConfigureSkill={config ? ref => { setMessage(''); setSelected(ref) } : undefined} />
-    {selected === null && message ? <p role="status" className="te-success">{message}</p> : null}
+  return <div className={`te-config-layout${selected ? ' is-open' : ''}`}>
+    <div className="te-config-main">
+      <ResourceManager workspace={workspace} remote={remote} kind="skill" onConfigureSkill={config ? ref => { setMessage(''); setSelected(ref) } : undefined} />
+      {selected === null && message ? <p role="status" className="te-success">{message}</p> : null}
+    </div>
     {selected !== null ? <SkillRuleDialog key={formatResourceRef(selected)} skill={selected}
-      profile={config?.skill_profiles?.[formatResourceRef(selected)]} rules={rules}
+      profile={config?.skill_profiles?.[formatResourceRef(selected)]}
+      rules={selected.source === 'user' ? rules.filter(rule => rule.ref.source !== 'project') : rules}
+      description={selected.source === 'user'
+        ? '用户级技能的规则配置保存在用户目录，所有项目与会话共用；只能选择用户级或内置规则。'
+        : '规则属于技能；此处的配置会用于所有绑定该技能的节点。'}
       onSave={saveProfile} onClose={() => setSelected(null)} /> : null}
   </div>
 }

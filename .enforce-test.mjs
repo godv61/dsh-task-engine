@@ -86,16 +86,12 @@ test('enforce: a task WITHOUT a snapshot cannot advance while a bound rule is un
   )
 })
 
-test('enforce: a task WITH a snapshot still advances after its source rule is deleted', async () => {
-  // The other side of the same rule: the frozen copy IS the constraint, so a
-  // deleted source is drift to report, not a reason to block. Without this the
-  // freeze would be pointless — the task would be blocked by a file it no longer
-  // needs.
+test('enforce: a task WITH a snapshot blocks when its live source rule is deleted', async () => {
   const f = await project()
   await satistfyDevelopment(f)
   f.records.delete(f.rule())
-  await f.call({ operation: 'advance', target_stage: '交付' })
-  assert.equal(f.current().stage, '交付', 'the frozen task advances on its own copy')
+  await assert.rejects(() => f.call({ operation: 'advance', target_stage: '交付' }), /resolves nowhere/u)
+  assert.equal(f.current().stage, '开发')
 })
 
 test('enforce: completion requires the review and verification the flow declared', async () => {

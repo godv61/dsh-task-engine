@@ -6,6 +6,11 @@ export const workbenchTheme = `
 .te-workbench button:focus-visible,.te-modal button:focus-visible,.te-input:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); outline-offset:3px; }
 .te-workbench h2 { margin:0 0 6px; font-size:24px; letter-spacing:-.5px; }
 .te-workbench h3,.te-modal h3 { margin:0; font-size:16px; overflow-wrap:anywhere; }
+.te-config-layout { display:grid; grid-template-columns:minmax(0,1fr); gap:16px; align-items:start; width:100%; }
+.te-config-layout.is-open { grid-template-columns:minmax(0,1fr) minmax(320px,420px); }
+.te-config-main { min-width:0; }
+.te-inline-panel { position:sticky !important; top:12px; min-width:0; }
+.te-flow-notice { margin:0; padding:10px 12px; border:1px solid var(--dsw-alias-state-warn-primary); border-radius:8px; font-size:13px; }
 .te-workbench .te-disclosure-title { font-size:16px; font-weight:700; color:var(--dsw-alias-label-primary); }
 .te-binding-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr)); gap:14px; align-items:start; }
 .te-binding-picker { min-width:0; display:flex; flex-direction:column; gap:10px; border:1px solid var(--dsw-alias-border-l2); border-radius:12px; padding:14px; background:var(--dsw-alias-bg-layer-1); }
@@ -103,5 +108,6 @@ export const workbenchTheme = `
 .te-form label { display:flex; flex-direction:column; gap:8px; font-size:13px; }
 .te-editor { min-height:260px; resize:vertical; line-height:1.6; font-family:monospace; }
 @media(max-width:760px) { .te-transfer {grid-template-columns:1fr;} .te-transfer-arrow {transform:rotate(90deg); height:20px;} .te-transfer-list {max-height:210px;} }
+@media(max-width:1000px) { .te-config-layout.is-open { grid-template-columns:minmax(0,1fr); } .te-inline-panel { position:static !important; height:min(600px,calc(100vh - 32px)) !important; } }
 @media(max-width:640px) { .te-targets {grid-template-columns:1fr;} .te-resource {gap:14px;} .te-section-heading h2 {font-size:21px;} .te-modal:not(.te-drawer) {padding:10px !important;} .te-drawer [role=dialog] {border-radius:0 !important;} .te-skill-evidence {align-items:stretch; flex-direction:column;} .te-skill-evidence .te-input {min-width:0;} }
 `

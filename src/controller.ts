@@ -23,8 +23,9 @@ import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typer
 // Type-only: pulls the `Context.fs` augmentation into this module.
 import type {} from '@deepseek-ai/dsh-fs'
 import type { ArtifactDef, CommitRule, ParsedProjectConfig, ResourceRef, ResourceSource, ReviewDepth, SkillProfile } from './engine.ts'
-import { validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
-import { compactProjectConfig, resolveFlow } from './workflows.ts'
+import { formatResourceRef, validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
+import { compactProjectConfig, materializeBundledReferences, resolveFlow, type ProjectConfig, type RecommendedResourceCopy } from './workflows.ts'
+import { saveUserSkillProfile, userSkillProfilePath, withUserSkillProfiles } from './user-skill-profiles.ts'
 
 /** Merged workflow plus its validation state, returned by both config methods. */
 export interface EngConfigView {
@@ -38,6 +39,8 @@ export interface EngConfigView {
   config: WorkflowConfig
   /** Human-readable defects; empty means valid. */
   problems: string[]
+  /** Files created or deliberately reused by an explicit recommendation adoption. */
+  adoption?: { created: string[]; reused: string[] }
 }
 
 /** A `write` request: the workspace directory and the flow selection to persist. */
@@ -57,6 +60,8 @@ export interface EngWriteRequest {
   review_depth?: ReviewDepth
   /** Whether a recorded commit is required before completion. */
   commit_required?: boolean
+  /** Explicit adoption only: vendor bundled bodies into one editable resource layer. */
+  materialize_bundled?: 'project' | 'user'
 }
 
 /** One skill in the mountable catalog. */
@@ -517,7 +522,9 @@ export default class TaskEngineController extends TypertRemoteService {
     const fs = this.fs()
     const raw = await readEngText(fs, path)
     if (raw === undefined) {
-      return { ok: true, source: 'default', flow: 'standard', config: standardConfig(), problems: [] }
+      const config = resolveFlow('standard', withUserSkillProfiles({ flow: 'standard' }))
+      return { ok: true, source: 'default', flow: 'standard',
+        config: config.ok ? config.config : standardConfig(), problems: [] }
     }
     let parsed: ParsedProjectConfig
     try {
@@ -542,6 +549,7 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     const resolved = resolveFlow(
       parsed.flow,
+      withUserSkillProfiles(
         // The project's whole config is forwarded: skills, commit rule, artifacts and
         // review depth all belong to the user, so nothing is narrowed to bindings.
         {
@@ -552,7 +560,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
           ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
           ...(parsed.commit_required !== undefined ? { commit_required: parsed.commit_required } : {}),
-        },
+        }),
     )
     if (!resolved.ok) {
       return {
@@ -582,18 +590,28 @@ export default class TaskEngineController extends TypertRemoteService {
   @Remote
   async write(request: EngWriteRequest): Promise<EngConfigView> {
     request.path = await this.authorizedPath(request.path)
-    const resolved = resolveFlow(
-      request.flow,
-        {
-          flow: request.flow,
-          ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
-          ...(request.skill_profiles !== undefined ? { skill_profiles: request.skill_profiles } : {}),
-          ...(request.commit !== undefined ? { commit: request.commit } : {}),
-          ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
-          ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
-          ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
-        },
-    )
+    let project: ProjectConfig = {
+      flow: request.flow,
+      ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+      ...(request.skill_profiles !== undefined ? { skill_profiles: request.skill_profiles } : {}),
+      ...(request.commit !== undefined ? { commit: request.commit } : {}),
+      ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
+      ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
+      ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
+    }
+    let copies: RecommendedResourceCopy[] = []
+    if (request.materialize_bundled !== undefined) {
+      try {
+        const materialized = materializeBundledReferences(project, request.materialize_bundled)
+        project = materialized.config
+        copies = materialized.copies
+      } catch (error) {
+        return { ok: false, source: 'invalid', flow: request.flow, config: standardConfig(),
+          problems: [error instanceof Error ? error.message : String(error)] }
+      }
+    }
+    project = withUserSkillProfiles(project)
+    const resolved = resolveFlow(request.flow, project)
     if (!resolved.ok) {
       return {
         ok: false,
@@ -611,22 +629,44 @@ export default class TaskEngineController extends TypertRemoteService {
     // `flow` and `stage_bindings`, so a commit rule, artifact declarations or a
     // review depth that had been resolved and previewed were silently dropped on
     // save — the workbench showed one config and the file held another.
-    const payload = compactProjectConfig({
-      flow: request.flow,
-      ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
-      ...(request.skill_profiles !== undefined ? { skill_profiles: request.skill_profiles } : {}),
-      ...(request.commit !== undefined ? { commit: request.commit } : {}),
-      ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
-      ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
-      ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
-    })
+    const payload = compactProjectConfig(project)
     const fs = this.fs()
-    const target = await fs.resolve(ENGFILE, { cwd: request.path })
-    await fs.writeText(target, JSON.stringify(payload, null, 2), undefined, undefined, {
-      mode: 'workspace-write',
-      workspaceRoot: request.path,
-    })
-    return { ok: true, source: 'project', flow: request.flow, config: resolved.config, problems: [] }
+    const createdFiles: string[] = []
+    try {
+      const adoption = request.materialize_bundled === undefined ? undefined
+        : copyRecommendedResources(request.path, request.materialize_bundled, copies, createdFiles)
+      // A user skill has one profile for every workspace. Seed a profile only
+      // when it has never had one; later project saves must not replace it.
+      for (const binding of Object.values(payload.stage_bindings ?? {})) {
+        for (const ref of binding.skill_refs ?? []) {
+          if (ref.source !== 'user') continue
+          const profile = payload.skill_profiles?.[formatResourceRef(ref)]
+          if (profile === undefined) continue
+          const file = userSkillProfilePath(ref.name)
+          if (!existsSync(file)) {
+            saveUserSkillProfile(ref.name, profile)
+            createdFiles.push(file)
+          }
+        }
+      }
+      if (payload.skill_profiles) {
+        payload.skill_profiles = Object.fromEntries(Object.entries(payload.skill_profiles)
+          .filter(([key]) => !key.startsWith('user:') || !existsSync(userSkillProfilePath(key.slice(5)))))
+      }
+      const target = await fs.resolve(ENGFILE, { cwd: request.path })
+      await fs.writeText(target, JSON.stringify(payload, null, 2), undefined, undefined, {
+        mode: 'workspace-write',
+        workspaceRoot: request.path,
+      })
+      return { ok: true, source: 'project', flow: request.flow, config: resolved.config, problems: [],
+        ...(adoption ? { adoption } : {}) }
+    } catch (error) {
+      for (const file of createdFiles.reverse()) {
+        try { rmSync(file, { force: true }) } catch { /* Keep the original failure. */ }
+      }
+      return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config,
+        problems: [`采用推荐资源失败，配置未保存：${error instanceof Error ? error.message : String(error)}`] }
+    }
   }
 
   /**
@@ -922,6 +962,17 @@ export default class TaskEngineController extends TypertRemoteService {
     return writeResourceFile(file, request.content.trimEnd() + '\n', name)
   }
 
+  /** Save the one rule/evidence profile owned by a user-level skill. */
+  @Remote
+  async writeUserSkillProfile(request: { name: string; profile: SkillProfile }): Promise<{ ok: boolean; error?: string }> {
+    try {
+      saveUserSkillProfile(request.name, request.profile)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   /**
    * Read a project-, user-, or bundled-level skill's full content for inline
    * viewing/editing. Bundled reads expose the shipped catalog read-only.
@@ -1013,6 +1064,50 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     return fs
   }
+}
+
+/** Copy each recommended body once; an existing editable copy is always preserved. */
+function copyRecommendedResources(
+  workspace: string,
+  level: 'project' | 'user',
+  copies: RecommendedResourceCopy[],
+  createdFiles: string[],
+): { created: string[]; reused: string[] } {
+  const root = level === 'project' ? join(workspace, '.dsh') : dshHome()
+  const created: string[] = []
+  const reused: string[] = []
+  for (const copy of copies) {
+    if (sanitizeName(copy.name) !== copy.name || sanitizeName(copy.targetName) !== copy.targetName) {
+      throw new Error(`内置资源名称无效：${copy.name}`)
+    }
+    const source = copy.kind === 'skill'
+      ? join(BUNDLED_SKILLS_DIR, copy.name, 'SKILL.md')
+      : join(BUNDLED_RULES_DIR, `${copy.name}.md`)
+    const target = copy.kind === 'skill'
+      ? join(root, 'skills', copy.targetName, 'SKILL.md')
+      : join(root, 'rules', `${copy.targetName}.md`)
+    const label = `${level}:${copy.targetName}`
+    const raw = readResourceFile(source)
+    if (raw === undefined) throw new Error(`内置资源无法读取：${copy.kind}:${copy.name}`)
+    const parsed = copy.kind === 'skill' ? parseSkillFile(raw) : undefined
+    if (copy.kind === 'skill' && parsed === undefined) throw new Error(`内置技能格式无效：${copy.name}`)
+    if (existsSync(target)) {
+      const existing = readResourceFile(target)
+      if (existing === undefined || (copy.kind === 'skill' ? parseSkillFile(existing) === undefined : existing.trim() === '')) {
+        throw new Error(`已存在的${copy.kind === 'skill' ? '技能' : '规则'}无法读取：${target}`)
+      }
+      reused.push(label)
+      continue
+    }
+    mkdirSync(dirname(target), { recursive: true })
+    const content = parsed
+      ? renderSkillFile(copy.targetName, parsed.description, parsed.whenToUse, parsed.content)
+      : raw.trimEnd() + '\n'
+    writeFileSync(target, content, { encoding: 'utf8', flag: 'wx' })
+    createdFiles.push(target)
+    created.push(label)
+  }
+  return { created, reused }
 }
 
 /** Write a resource file, creating parent directories; never throws to the wire. */

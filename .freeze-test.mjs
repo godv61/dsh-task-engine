@@ -150,33 +150,28 @@ async function atDevelopmentWithProjectRule() {
   }
 }
 
-test('freeze: a running task follows the FROZEN body after its source is edited', async () => {
-  // Freezing that only archives the content is not freezing: status and the stage
-  // disclosure used to read the live files, so editing a rule silently changed what
-  // a running task was told to follow — the instability the snapshot exists to stop.
+test('live: a running task reads the latest rule body at the same reference', async () => {
   const f = await atDevelopmentWithProjectRule()
   const before = await f.disclosed()
-  assert.equal(before.mine?.content, 'ORIGINAL RULE', 'the frozen body is what gets disclosed')
+  assert.equal(before.mine?.content, 'ORIGINAL RULE')
 
   f.records.set(f.rule(), 'CHANGED RULE')
   const after = await f.disclosed()
-  assert.equal(after.mine?.content, 'ORIGINAL RULE',
-    'an edit to the source must not change what the running task is told to follow')
+  assert.equal(after.mine?.content, 'CHANGED RULE',
+    'the next interaction must disclose the edited body')
   assert.ok((after.status.stale_source_rules ?? []).some(r => r.includes('edited')),
-    'the drift is reported so it is visible rather than silently authoritative')
+    'the difference from the creation-time audit copy must be visible')
+  assert.match(after.status.resource_update_notice, /current source body is in force/u)
 })
 
-test('freeze: a running task survives its source rule being deleted', async () => {
-  // The frozen copy exists precisely so a deleted file is not a missing
-  // constraint. Reporting it as missing would be wrong: the task has the body.
+test('live: deleting a source rule makes the binding unresolved', async () => {
   const f = await atDevelopmentWithProjectRule()
   f.records.delete(f.rule())
   const { status, mine } = await f.disclosed()
-  assert.equal(mine?.content, 'ORIGINAL RULE', 'the frozen body is still in force')
-  assert.deepEqual(status.missing_rules, [],
-    'a frozen rule is not missing; the task already holds its content')
+  assert.equal(mine, undefined)
+  assert.ok(status.missing_rules.includes('project:mine'))
   assert.ok((status.stale_source_rules ?? []).some(r => r.includes('deleted')),
-    'the deletion is reported as drift')
+    'the deletion is also reported against the creation-time audit copy')
 })
 
 test('freeze: an unfrozen task falls back to live resolution and reports a missing file', async () => {

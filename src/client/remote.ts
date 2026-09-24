@@ -37,17 +37,28 @@ const artifactSchema = z.object({
 
 /** Browser-safe shape of the commit rule. */
 const commitSchema = z.object({
-  policy: z.string(),
+  policy: z.enum(['task', 'item', 'manual']),
   message_pattern: z.string(),
   message_hint: z.string(),
   checkpoints: z.array(z.string()),
   file_scope: z.boolean(),
 })
 
-/** Browser-safe shape of one stage's skill/rule binding. */
+/** Preserve source-qualified identities across the browser/host boundary. */
+const resourceRefSchema = z.object({ source: z.enum(['bundled', 'project', 'user']), name: z.string() })
+const evidenceSchema = z.enum(['command', 'artifact', 'review', 'manual', 'none'])
+const skillProfileSchema = z.object({ rules: z.array(resourceRefSchema), evidence: evidenceSchema.optional() })
+const skillBindingSchema = z.object({
+  skill: resourceRefSchema,
+  rules: z.array(resourceRefSchema),
+  evidence: evidenceSchema.optional(),
+})
+
+/** Browser-safe shape of one stage's skill references and legacy bindings. */
 const stageBindingSchema = z.object({
-  skills: z.array(z.string()).optional(),
-  rules: z.array(z.string()).optional(),
+  skills: z.array(skillBindingSchema).optional(),
+  skill_refs: z.array(resourceRefSchema).optional(),
+  legacy_rules: z.array(z.string()).optional(),
 })
 
 /** The complete workflow config. Structural only: semantic checks live in `validateWorkflow`. */
@@ -59,6 +70,11 @@ const configSchema = z.object({
   commit: commitSchema,
   high_risk_requires_verification: z.boolean(),
   stage_bindings: z.record(z.string(), stageBindingSchema).optional(),
+  skill_profiles: z.record(z.string(), skillProfileSchema).optional(),
+  configuration_errors: z.array(z.string()).optional(),
+  review_depth: z.enum(['two-stage', 'single']).optional(),
+  commit_required: z.boolean().optional(),
+  completion_guards: z.array(z.string()).optional(),
 })
 
 /** `read`/`write` result: preset flow, resolved workflow, plus validation state. */
@@ -68,6 +84,7 @@ const viewSchema = z.object({
   flow: z.string(),
   config: configSchema,
   problems: z.array(z.string()),
+  adoption: z.object({ created: z.array(z.string()), reused: z.array(z.string()) }).optional(),
 })
 
 /** `write` request: workspace directory + the flow selection. */
@@ -75,6 +92,12 @@ const writeRequestSchema = z.object({
   path: z.string(),
   flow: z.string(),
   stage_bindings: z.record(z.string(), stageBindingSchema).optional(),
+  skill_profiles: z.record(z.string(), skillProfileSchema).optional(),
+  commit: commitSchema.optional(),
+  artifacts: z.array(artifactSchema).optional(),
+  review_depth: z.enum(['two-stage', 'single']).optional(),
+  commit_required: z.boolean().optional(),
+  materialize_bundled: z.enum(['project', 'user']).optional(),
 })
 
 /** `listSkills` result: one entry per mountable skill. */
@@ -83,6 +106,8 @@ const skillCatalogSchema = z.object({
     name: z.string(),
     description: z.string(),
     source: z.string(),
+    ref: resourceRefSchema,
+    sourceLabel: z.string(),
   })),
 })
 
@@ -91,6 +116,8 @@ const ruleCatalogSchema = z.object({
   rules: z.array(z.object({
     name: z.string(),
     source: z.string(),
+    ref: resourceRefSchema,
+    sourceLabel: z.string(),
   })),
 })
 
@@ -129,6 +156,8 @@ const writeRuleRequestSchema = z.object({
   level: z.enum(['project', 'user']),
   path: z.string().optional(),
 })
+const writeUserSkillProfileRequestSchema = z.object({ name: z.string(), profile: skillProfileSchema })
+const writeUserSkillProfileResultSchema = z.object({ ok: z.boolean(), error: z.string().optional() })
 
 /** `writeSkill`/`writeRule` result. */
 const writeResourceResultSchema = z.object({
@@ -396,6 +425,16 @@ export const TYPERT_REMOTE = {
         },
       ],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteResourceResult`, create: () => writeResourceResultSchema, schema: writeResourceResultSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/writeUserSkillProfile`,
+      service: 'taskEngineController',
+      namespace: 'task-engine',
+      method: 'writeUserSkillProfile',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteUserSkillProfileRequest`, create: () => writeUserSkillProfileRequestSchema, schema: writeUserSkillProfileRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#WriteUserSkillProfileResult`, create: () => writeUserSkillProfileResultSchema, schema: writeUserSkillProfileResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readSkill`,

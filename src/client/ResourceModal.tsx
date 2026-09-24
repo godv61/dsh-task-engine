@@ -1,6 +1,6 @@
 /**
- * A centered resource dialog or right-side configuration drawer. Both keep
- * the editor scrollable and trap keyboard focus while open.
+ * A centered resource dialog or an in-layout configuration panel. Dialogs trap
+ * focus; the in-layout panel pushes the workbench instead of masking it.
  *
  * @module dsh-task-engine/ResourceModal
  */
@@ -34,6 +34,13 @@ const drawerStyle: CSSProperties = {
   ...dialogStyle,
   width: 'min(560px, 100%)', height: '100%', maxHeight: '100%',
   borderRadius: '16px 0 0 16px',
+}
+
+const inlineStyle: CSSProperties = {
+  ...dialogStyle,
+  width: '100%', height: 'min(720px, calc(100vh - 32px))', maxHeight: 'calc(100vh - 32px)',
+  borderRadius: 12, border: '1px solid var(--dsw-alias-border-l2)',
+  boxShadow: 'none',
 }
 
 const headerStyle: CSSProperties = {
@@ -83,17 +90,18 @@ export function ResourceModal({ title, description, onClose, footer, children, p
   onClose: () => void
   footer?: ReactNode
   children?: ReactNode
-  placement?: 'center' | 'right'
+  placement?: 'center' | 'right' | 'inline'
 }): ReactNode {
   const dialog = useRef<HTMLDivElement>(null)
   const closer = useRef(onClose)
   closer.current = onClose
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null
-    dialog.current?.focus()
+    if (placement !== 'inline') dialog.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (!dialog.current?.contains(document.activeElement)) return
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closer.current(); return }
+      if (placement === 'inline') return
       if (e.key !== 'Tab') return
       const nodes = Array.from(dialog.current.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled):not([hidden]),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')).filter(el => el.getClientRects().length)
       const first = nodes[0], last = nodes[nodes.length - 1]
@@ -103,24 +111,30 @@ export function ResourceModal({ title, description, onClose, footer, children, p
     }
     document.addEventListener('keydown', onKey)
     return () => { document.removeEventListener('keydown', onKey); if (previous?.isConnected) previous.focus() }
-  }, [])
+  }, [placement])
+
+  const panel = createElement('div', { style: placement === 'inline' ? inlineStyle : placement === 'right' ? drawerStyle : dialogStyle,
+    className: placement === 'inline' ? 'te-inline-panel' : undefined,
+    ref: dialog, tabIndex: -1, role: placement === 'inline' ? 'complementary' : 'dialog',
+    ...(placement === 'inline' ? {} : { 'aria-modal': true }), 'aria-label': title },
+    createElement('div', { style: headerStyle },
+      createElement('h2', { style: titleStyle }, title),
+      createElement('button', { type: 'button', style: closeBtnStyle, 'aria-label': '关闭', onClick: onClose },
+        createElement(IconCloseOutline16, { size: 14 }),
+      ),
+    ),
+    description !== undefined && description !== ''
+      ? createElement('p', { style: descStyle }, description)
+      : null,
+    createElement('div', { style: bodyStyle }, children),
+    footer !== undefined ? createElement('div', { style: footerStyle }, footer) : null,
+  )
+  if (placement === 'inline') return panel
 
   return createPortal(
     createElement('div', { style: placement === 'right' ? { ...rootStyle, justifyContent: 'flex-end', padding: 0 } : rootStyle, className: `te-modal${placement === 'right' ? ' te-drawer' : ''}`, role: 'presentation' },
       createElement('div', { style: placement === 'right' ? { ...maskStyle, background: 'rgba(0, 0, 0, 0.18)' } : maskStyle, 'aria-hidden': true, onClick: onClose }),
-      createElement('div', { style: placement === 'right' ? drawerStyle : dialogStyle, ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': true, 'aria-label': title },
-        createElement('div', { style: headerStyle },
-          createElement('h2', { style: titleStyle }, title),
-          createElement('button', { type: 'button', style: closeBtnStyle, 'aria-label': '关闭', onClick: onClose },
-            createElement(IconCloseOutline16, { size: 14 }),
-          ),
-        ),
-        description !== undefined && description !== ''
-          ? createElement('p', { style: descStyle }, description)
-          : null,
-        createElement('div', { style: bodyStyle }, children),
-        footer !== undefined ? createElement('div', { style: footerStyle }, footer) : null,
-      ),
+      panel,
     ),
     document.body,
   )
