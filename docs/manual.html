@@ -200,7 +200,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li><strong>选流程预设</strong>：standard / agile / minimal；如需现成起点，可单独点击「采用推荐配置」。</li>
           <li><strong>给节点选技能</strong>：先选节点，再用双栏选择器挑选技能；点技能的规则配置，在右侧栏绑定规则与证据类型，最后保存。</li>
         </ol>
-        <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源只读。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
+        <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源是只读样本，可点「以此为模板新建」预填可编辑副本；副本的完成凭证、规则与阶段绑定需另行配置。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
         <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
         <p>资源删除前会显示名称与实际目标路径，确认后永久删除；可点击「保留」取消。任务台账支持搜索、风险与阶段筛选，并显示验证、审核和更新时间。流程配置读取与保存失败时显示错误，损坏任务记录不会被静默视为没有任务。</p>
         <pre><code>// .dsh/eng.json 等价内容
@@ -390,7 +390,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <p>状态查询中的 <code>evidence_blockers</code> 列出过期验证和附加技能回执；<code>commit.allowed</code> 同时检查这些阻塞及技能执行义务。<code>legal_next</code> 是流程定义的候选去向，不表示所有门禁已通过。</p>
         <details><summary>记录需求时提示字段不存在怎么办？</summary><div>先读取 <code>status.artifact_requirements</code>，按当前阶段列出的字段填写。标准需求为 <code>scope</code> 和 <code>acceptance_criteria</code>，敏捷流程只有 <code>scope</code>。疑问、假设或待确认取舍写入字段正文，不新增字段名。错误输入整次不保存，修正后再提交；不需要修改流程配置或历史任务记录。</div></details>
         <details><summary>验证命令被沙箱阻止怎么办？</summary><div><code>verify</code> 与 <code>skill_result</code> 默认使用会话权限。原命令被沙箱阻止后，用相同命令和 <code>sandbox_permissions: "danger-full-access"</code>、<code>justification</code> 申请单次重试。审批显示命令，批准后才执行；拒绝、取消或审批不可用时不执行、不写回执。授权只对本次调用生效，不改变会话权限。以本次回执的实际模式和退出码判断结果。</div></details>
-        <p class="stamp">适用于插件 0.26.0 · 最后更新：2026-09-24</p>
+        <p class="stamp">适用于插件 0.26.1 · 最后更新：2026-09-24</p>
       </section>
     </main>
   </div>

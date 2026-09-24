@@ -785,7 +785,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   // meant for and guessing would invent an answer the config did not contain.
   const legacyPart = legacy.length > 0
     ? `UNASSIGNED legacy stage rules: ${legacy.join(', ')} — these belong to the stage, not to any skill. ` +
-      'Assign each to the skill that should carry it (or copy the skill and give each copy its own rules) and record it in stage_bindings.'
+      'Assign each to the skill that should carry it (or copy the skill and give each copy its own rules) and record it in skill_profiles.'
     : ''
   // The disclosure names the skills that owe a command receipt, honouring each
     // binding's declared evidence kind — a document-producing skill owes an
@@ -797,7 +797,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
       .filter(name => needsSkillReceipt(name))
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
-    : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
+    : 'no command skill_result receipt required for this stage; other evidence kinds follow their configured stage operations'
   return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, legacyPart].filter(Boolean).join('\n')
 }
 
@@ -1003,7 +1003,7 @@ export function registerDevTask(ctx: Context): void {
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
       task_id: { type: 'string', description: 'Task id. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
-      skill_name: { type: 'string', description: 'Bound skill to record after executing it (skill_result): requires prior successful skill load, evidence and a real validation command. target_stage may name the upcoming terminal stage.' },
+      skill_name: { type: 'string', description: 'Bound skill to record after executing it (skill_result): requires prior successful skill load. Command evidence needs a real validation command; manual evidence needs human approval. target_stage may name the upcoming terminal stage.' },
       branch: { type: 'string', description: 'Current git branch (recorded on create).' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Workload tier (create).' },
@@ -1027,7 +1027,7 @@ export function registerDevTask(ctx: Context): void {
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
       target_stage: { type: 'string', description: 'Stage to advance to (advance), a bound stage for skill_result, or the stage to return to (revise). For revise it must be the stage the changed decision belongs to. Current/upcoming terminal skill binding stage for skill_result.' },
-      command: { type: 'string', description: 'Real acceptance command for verify/skill_result. New tasks require command receipts. Propagate failures when composing shell commands.' },
+      command: { type: 'string', description: 'Real acceptance command for verify or a command-evidence skill_result. New task verification requires a command receipt; other skills follow their configured evidence kind. Propagate failures when composing shell commands.' },
       passed: { type: 'boolean', description: 'Legacy tasks only: verification claim when no command can be resolved. New tasks require real command receipts.' },
       evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
       outcome: { type: 'string', enum: ['pass', 'blocked'], description: 'Review outcome (review).' },

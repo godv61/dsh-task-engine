@@ -40,6 +40,7 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
   const [description, setDescription] = useState('')
   const [whenToUse, setWhenToUse] = useState('')
   const [body, setBody] = useState('')
+  const [templateSource, setTemplateSource] = useState<Row | null>(null)
   const [deleting, setDeleting] = useState<Row | null>(null)
   const input = useRef<HTMLInputElement>(null)
   const fileEpoch = useRef(0)
@@ -77,7 +78,7 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
     return () => { active = false }
   }, [request, level, workspace, remote])
 
-  const close = () => { if (busy) return; fileEpoch.current++; setImporting(false); setEditing(null); setDeleting(null); setRequest(null); setError('') }
+  const close = () => { if (busy) return; fileEpoch.current++; setImporting(false); setEditing(null); setTemplateSource(null); setDeleting(null); setRequest(null); setError('') }
   const choose = () => { setError(''); if (input.current) { input.current.value = ''; input.current.click() } }
   const selected = async (files: File[]) => {
     if (!files.length) return
@@ -121,6 +122,7 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
     } catch (e) { if (epoch === browseEpoch.current) setError(describeError(e)) }
   }
   const edit = async (row: Row | 'new', view = false) => {
+    setTemplateSource(null)
     setEditing(row); setViewing(view); setName(row === 'new' ? '' : row.name); setDescription(''); setWhenToUse(''); setBody(''); setError('')
     if (row === 'new') { setLevel('project'); return }
     const lvl = levelOf(row); setLevel(lvl === 'user' ? 'user' : 'project'); setBusy(true)
@@ -133,6 +135,24 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
     } catch (e) { setError(describeError(e)) }
     finally { setBusy(false) }
   }
+  const copyTemplate = async (row: Row) => {
+    if (busy || levelOf(row) !== 'bundled') return
+    setBusy(true); setError('')
+    try {
+      const r = kind === 'skill' ? await remote.readSkill({ name: row.name, level: 'bundled', path: workspace }) : await remote.readRule({ name: row.name, level: 'bundled', path: workspace })
+      if (!r.ok) throw new Error(fail(r))
+      if (!r.value.ok) throw new Error(r.value.error ?? '读取内置样本失败')
+      const used = new Set(rows.map(item => item.name))
+      const base = `${row.name}-copy`
+      let candidate = base
+      for (let index = 2; used.has(candidate); index++) candidate = `${base}-${index}`
+      setName(candidate); setBody(r.value.content); setLevel('project'); setViewing(false)
+      if (kind === 'skill') { const skill = r.value as ReadSkillResult; setDescription(skill.description); setWhenToUse(skill.whenToUse) }
+      else { setDescription(''); setWhenToUse('') }
+      setTemplateSource(row); setEditing('new'); setNotice('')
+    } catch (e) { setError('复制样本失败：' + describeError(e)) }
+    finally { setBusy(false) }
+  }
   const save = async () => {
     if (busy) return
     setBusy(true); setError('')
@@ -141,7 +161,9 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
       const r = kind === 'skill' ? await remote.writeSkill({ name, description, whenToUse, content: body, level, path: workspace }) : await remote.writeRule({ name, content: body, level, path: workspace })
       if (!r.ok) throw new Error(fail(r))
       if (!r.value.ok) throw new Error(r.value.error ?? '保存失败')
-      setNotice(`已保存${noun} · ${r.value.path}`); setEditing(null); refresh(n => n + 1)
+      const copied = templateSource !== null
+      setNotice(`已保存${noun} · ${r.value.path}${copied ? '；请按需配置完成凭证、规则与阶段绑定' : ''}`); setEditing(null); setTemplateSource(null); refresh(n => n + 1)
+      if (copied && kind === 'skill') onConfigureSkill?.({ source: level, name: r.value.name })
     } catch (e) { setError(describeError(e)) }
     finally { setBusy(false) }
   }
@@ -173,15 +195,15 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
     loading ? h('div', { className: 'te-empty', role: 'status' }, '正在加载…') : visible.length === 0 ? h('div', { className: 'te-empty' }, h('h3', null, query || filter !== 'all' ? '没有匹配的结果' : `还没有${noun}`), h('p', null, '调整筛选，或使用右上角按钮添加。')) : h('div', { className: 'te-resource-grid' }, ...visible.map(row => h('article', { className: 'te-resource-card', key: row.source + '/' + row.name },
       h('div', { className: 'te-card-top' }, h('span', { className: 'te-resource-icon', 'aria-hidden': true }, kind === 'skill' ? '◇' : '≡'), h('span', { className: 'te-badge' }, sourceText(row.source))),
       h('h3', null, row.name), h('p', null, row.description || '项目约定与执行规则'),
-      h('div', { className: 'te-actions' }, kind === 'skill' && onConfigureSkill ? h(Button, { variant: 'primary', size: 'sm', onClick: () => onConfigureSkill({ source: levelOf(row), name: row.name }) }, '配置规则') : null, h(Button, { variant: 'outline', size: 'sm', onClick: () => { void edit(row, true) } }, '查看'), levelOf(row) !== 'bundled' ? h(Button, { variant: 'ghost', size: 'sm', onClick: () => { void edit(row) } }, '编辑') : null, levelOf(row) !== 'bundled' ? h('button', { className: 'te-delete', onClick: () => { setDeleting(row); setError('') } }, '删除') : null)))),
+      h('div', { className: 'te-actions' }, kind === 'skill' && onConfigureSkill ? h(Button, { variant: 'primary', size: 'sm', onClick: () => onConfigureSkill({ source: levelOf(row), name: row.name }) }, '配置规则') : null, h(Button, { variant: 'outline', size: 'sm', onClick: () => { void edit(row, true) } }, '查看'), levelOf(row) === 'bundled' ? h(Button, { variant: 'ghost', size: 'sm', disabled: busy, onClick: () => { void copyTemplate(row) } }, '以此为模板新建') : h(Button, { variant: 'ghost', size: 'sm', onClick: () => { void edit(row) } }, '编辑'), levelOf(row) !== 'bundled' ? h('button', { className: 'te-delete', onClick: () => { setDeleting(row); setError('') } }, '删除') : null)))),
     kind === 'skill' ? h('button', { className: 'te-link', onClick: () => { setImporting(true); setManual(true); setError('') } }, '高级：从 Harness 主机路径安装') : null,
     importing ? h(ResourceModal, { title: `安装${noun}`, description: '先检查内容和安装位置，确认后才会写入。', onClose: close, footer: h('div', { className: 'te-actions' }, h(Button, { variant: 'ghost', disabled: busy, onClick: close }, '取消'), h(Button, { variant: 'primary', disabled: busy || !preview || preview.conflict, onClick: () => { void install() } }, busy ? '处理中…' : '确认安装')) },
       targets(), h('div', { className: 'te-actions' }, h(Button, { variant: 'outline', disabled: busy, onClick: choose }, '重新选择'), kind === 'skill' ? h(Button, { variant: 'ghost', disabled: busy, onClick: () => setManual(!manual) }, manual ? '收起高级方式' : '主机路径') : null),
       manual ? h('div', { className: 'te-advanced' }, h('p', null, '此路径位于 Harness 主机；浏览器选择器读取的是你当前电脑。'), h('div', { className: 'te-toolbar' }, h('input', { className: 'te-input', 'aria-label': '主机技能目录', value: sourceDir, onChange: (e: ChangeEvent<HTMLInputElement>) => { setSourceDir(e.target.value); setRequest(null) } }), h(Button, { variant: 'outline', onClick: () => { void browse(sourceDir) } }, '浏览'), h(Button, { variant: 'outline', disabled: busy || !sourceDir.trim(), onClick: () => setRequest({ kind, level, path: workspace, files: [], sourceDir }) }, '预览目录')), h('div', { className: 'te-dir-list' }, browsePath ? h('button', { onClick: () => { void browse(browsePath.replace(/[\\/][^\\/]+[\\/]?$/u, '') || '/') } }, '↑ 上级目录') : null, ...dirs.map(d => h('button', { key: d.name, onClick: () => { setRequest(null); void browse(browsePath.replace(/[\\/]+$/u, '') + '/' + d.name) } }, d.name + (d.hasSkill ? ' · SKILL.md' : ''))))) : null,
       busy ? h('p', { role: 'status' }, '正在校验文件，请稍候…') : null, status(),
       preview ? h('div', { className: 'te-preview' }, h('h3', null, preview.name), h('p', null, preview.description), h('div', { className: 'te-actions' }, h('span', { className: 'te-badge' }, `${preview.files} 个文件`), h('span', { className: 'te-badge' }, sizeText(preview.bytes))), h('code', { className: 'te-path' }, preview.target), preview.conflict ? h('div', { className: 'te-alert', role: 'alert' }, '已有同名资源。请取消并检查现有内容，安装不会覆盖它。') : null, h('div', { className: 'te-markdown' }, h(MarkdownText, { text: preview.content, labels }))) : null) : null,
-    editing ? h(ResourceModal, { title: editing === 'new' ? `新建${noun}` : `${viewing ? '查看' : '编辑'}${noun} · ${name}`, onClose: close, footer: h('div', { className: 'te-actions' }, h(Button, { variant: 'ghost', disabled: busy, onClick: close }, '关闭'), !readonly ? h(Button, { variant: 'outline', disabled: busy, onClick: () => setViewing(!viewing) }, viewing ? '编辑内容' : '预览') : null, !readonly ? h(Button, { variant: 'primary', disabled: busy || !name.trim() || !body.trim() || (kind === 'skill' && !description.trim()), onClick: () => { void save() } }, busy ? '处理中…' : '保存') : null) },
-      !readonly ? targets() : h('p', { className: 'te-badge' }, '内置资源 · 只读'), status(),
+    editing ? h(ResourceModal, { title: editing === 'new' ? `新建${noun}` : `${viewing ? '查看' : '编辑'}${noun} · ${name}`, onClose: close, footer: h('div', { className: 'te-actions' }, h(Button, { variant: 'ghost', disabled: busy, onClick: close }, '关闭'), readonly ? h(Button, { variant: 'outline', disabled: busy, onClick: () => { void copyTemplate(editing as Row) } }, '以此为模板新建') : null, !readonly ? h(Button, { variant: 'outline', disabled: busy, onClick: () => setViewing(!viewing) }, viewing ? '编辑内容' : '预览') : null, !readonly ? h(Button, { variant: 'primary', disabled: busy || !name.trim() || !body.trim() || (kind === 'skill' && !description.trim()), onClick: () => { void save() } }, busy ? '处理中…' : '保存') : null) },
+      !readonly ? targets() : h('p', { className: 'te-badge' }, '内置样本 · 只读'), templateSource ? h('p', null, `以「${templateSource.name}」为模板复制正文。新资源的完成凭证、规则和阶段绑定需单独配置，保存本身不会启用它。`) : null, status(),
       viewing ? h('div', { className: 'te-markdown' }, h(MarkdownText, { text: body, labels })) : h('div', { className: 'te-form' }, h('label', null, '名称', h('input', { className: 'te-input', value: name, disabled: editing !== 'new' || busy, onChange: (e: ChangeEvent<HTMLInputElement>) => setName(e.target.value), placeholder: '小写字母、数字和连字符' })), kind === 'skill' ? h('label', null, '描述', h('input', { className: 'te-input', value: description, disabled: busy, onChange: (e: ChangeEvent<HTMLInputElement>) => setDescription(e.target.value) })) : null, kind === 'skill' ? h('label', null, '使用时机（可选）', h('input', { className: 'te-input', value: whenToUse, disabled: busy, onChange: (e: ChangeEvent<HTMLInputElement>) => setWhenToUse(e.target.value) })) : null, h('label', null, 'Markdown 正文', h('textarea', { className: 'te-input te-editor', value: body, disabled: busy, onChange: (e: ChangeEvent<HTMLTextAreaElement>) => setBody(e.target.value) })))) : null,
     deleting ? h(ResourceModal, { title: `删除${noun}「${deleting.name}」？`, description: levelOf(deleting) === 'user' ? '这是个人全局资源，删除会影响此主机上的所有项目。' : '删除将影响当前项目。', onClose: close, footer: h('div', { className: 'te-actions' }, h(Button, { variant: 'outline', disabled: busy, onClick: close }, '保留'), h('button', { className: 'te-danger-button', disabled: busy, onClick: () => { void remove() } }, busy ? '删除中…' : '确认永久删除')) }, h('code', { className: 'te-path' }, `${roots?.[levelOf(deleting) === 'user' ? 'user' : 'project'] ?? '资源目录'}/${deleting.name}${kind === 'rule' ? '.md' : ''}`), h('p', null, '此操作不会进入回收站，请确认已有备份。'), status()) : null)
 }
