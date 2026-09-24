@@ -12,7 +12,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { resolveFlow, FLOW_PRESETS, adoptRecommendation } from './lib/workflows.js'
-import { validateWorkflow, formatResourceRef, completionBlockers, invalidatedBy } from './lib/engine.js'
+import { validateWorkflow, formatResourceRef, completionBlockers, terminalRequirements, invalidatedBy } from './lib/engine.js'
 
 let failures = 0
 const check = (label, ok, detail = '') => {
@@ -111,17 +111,31 @@ if (merged.ok) {
 }
 
 console.log('')
-console.log('=== 8. 三预设都以 completed 收尾 ===')
+console.log('=== 8. 三预设都以 completed 收尾，且检查各自声明的节点结果 ===')
 for (const id of ['standard', 'agile', 'minimal']) {
   const cfg = resolveFlow(id, adoptRecommendation(id)).config
   const terminals = cfg.stages.filter(s => !cfg.transitions.some(t => t.from === s))
-  const state = {
+  // Every conclusion a flow could ask for, so each preset is judged on what IT
+  // declared rather than on what one preset happens to need.
+  const satisfied = {
     stage: terminals[0], execution_version: 1,
     items: [{ id: 'A', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }],
-    verification: { passed: true, evidence: [] }, commits: [],
+    verification: { passed: true, evidence: [] },
+    review: { outcome: 'pass' },
+    commits: [{ label: 'TASK', hash: 'abc1234' }],
   }
-  check(`${id} 未提交不可完成`, completionBlockers(state, cfg).length > 0)
-  check(`${id} 提交后可完成`, completionBlockers({ ...state, commits: [{ label: 'TASK', hash: 'abc1234' }] }, cfg).length === 0)
+  check(`${id} 未提交不可完成`, completionBlockers({ ...satisfied, commits: [] }, cfg).length > 0)
+  check(`${id} 齐全后可完成`, completionBlockers(satisfied, cfg).length === 0,
+    JSON.stringify(completionBlockers(satisfied, cfg)))
+
+  // The result the assessment found could be missing: a flow that declares a review
+  // must not complete with the review blocked, and a flow that declares none must
+  // not be made to demand one.
+  const wantsReview = terminalRequirements(cfg).includes('review_passed')
+  const blocked = completionBlockers({ ...satisfied, review: { outcome: 'blocked' } }, cfg)
+  check(`${id} ${wantsReview ? '审核未通过不可完成' : '不发明审核要求'}`,
+    wantsReview ? blocked.some(b => b.includes('passing review')) : blocked.length === 0,
+    JSON.stringify(blocked))
 }
 
 console.log('')

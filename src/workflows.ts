@@ -161,11 +161,21 @@ const AGILE: WorkflowConfig = {
   transitions: [
     { from: '需求', to: '开发', requires: ['requirement_confirmation'] },
     { from: '开发', to: '交付', requires: ['todos_done'] },
+    // Entering 审查 is unconditional. A review guard on this edge would be
+    // circular — it would demand the verdict BEFORE the stage that produces it —
+    // and it would also block the commit at 交付, since a commit requires its
+    // stage's outgoing guards. What 审查 requires is declared as completion_guards
+    // instead, because a terminal stage has no outgoing edge to carry it.
     { from: '交付', to: '审查', requires: [] },
   ],
   artifacts: [],
   commit: { policy: 'item', message_pattern: '', message_hint: '无格式要求', checkpoints: ['交付'], file_scope: true },
   high_risk_requires_verification: false,
+  // 审查 is terminal and IS the review, so there is no outgoing edge to carry
+  // the guard. Declaring it here is what makes a blocked review prevent
+  // completion; without it the stage could be reached and finished with the
+  // review failing, which is what the assessment found.
+  completion_guards: ['review_passed'],
 }
 
 /** One ready-made setup for the agile flow, offered for explicit adoption. */
@@ -250,11 +260,15 @@ function preset(
 
 export const FLOW_PRESETS: Record<string, FlowPreset> = {
   standard: preset('standard', 3, '完整研发', '新功能、架构或跨模块改动、高风险任务：需求确认 → 方案确认 → 实现 → 验证 → 审核 → 提交', STANDARD, STANDARD_RECOMMENDATION),
+  // Version 4 for agile: 交付 → 审查 now requires review_passed, where it previously
+  // required nothing. That is a gate-semantics change, so a task created before it
+  // keeps its frozen version 3 config and behaves exactly as it did.
+  //
   // Version 3 across all three: the preset is now a bare skeleton and its former
   // built-in bindings, commit rule and artifacts are a separate recommendation a
   // user adopts explicitly. Tasks created before this keep their frozen config and
   // are unaffected; a project's existing config is likewise left exactly as it is.
-  agile: preset('agile', 3, '日常迭代', '目标明确的常规功能与缺陷修复：目标与验收 → 实现 → 验收与审查 → 提交', AGILE, AGILE_RECOMMENDATION),
+  agile: preset('agile', 4, '日常迭代', '目标明确的常规功能与缺陷修复：目标与验收 → 实现 → 验收与审查 → 提交', AGILE, AGILE_RECOMMENDATION),
   minimal: preset('minimal', 3, '快速修改', '局部、低风险、方案明确的改动：修改 → 检查与提交，每项一次检查', MINIMAL, MINIMAL_RECOMMENDATION),
 }
 

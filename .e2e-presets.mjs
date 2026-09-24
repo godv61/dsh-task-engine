@@ -177,7 +177,25 @@ async function runPreset(preset) {
   }
   // The terminal stage's own obligations are checked before it can be left, and
   // completion is the operation that leaves it.
+  //
+  // A flow may declare its final requirements as `completion_guards` rather than on
+  // an edge, because a terminal stage has no edge to carry them — the agile flow's
+  // 审查 IS the review. They are satisfied here, at the last stage, rather than
+  // during the loop: they describe what completion means, not how a stage is entered.
   for (const binding of config.stage_bindings?.[current().stage]?.skills ?? []) load(binding.skill.name)
+  const terminalGuards = new Set(config.completion_guards ?? [])
+  if (terminalGuards.has('todos_done') && !current().items.some(item => item.status === 'done')) {
+    await call({ operation: 'items', items: [{ id: 'A', title: 'a', status: 'doing' }] })
+    await call({ operation: 'dispatch', item_id: 'A', description: 'implemented by a worker' })
+    await call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' })
+    await call({ operation: 'items', items: [{ id: 'A', status: 'done' }] })
+  }
+  if (terminalGuards.has('verified')) {
+    await call({ operation: 'verify', command: 'npm test', description: 'run the suite' })
+  }
+  if (terminalGuards.has('review_passed')) {
+    await call({ operation: 'review', outcome: 'pass' })
+  }
   if (config.commit.checkpoints.includes(current().stage)) {
     const status = await call({ operation: 'status' })
     await call({

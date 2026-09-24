@@ -123,7 +123,12 @@ assert(!flowSatisfies('minimal', HIGH_RISK_REQUIRED_CAPABILITIES), 'minimal lack
 // separate recommendation a user adopts. The version number is what makes an
 // already-created task keep its frozen config instead of silently changing.
 assert(FLOW_PRESETS.standard.version === 3, 'standard preset carries the skeleton/recommendation version')
-assert(FLOW_PRESETS.agile.version === 3 && FLOW_PRESETS.minimal.version === 3, 'every preset moved together')
+// Versions are per-preset because they record per-preset changes: agile moved
+// again when 审查 gained a completion guard, and a task created before that
+// keeps its frozen version and behaves exactly as it did.
+assert(FLOW_PRESETS.standard.version === 3, 'standard carries the skeleton/recommendation version')
+assert(FLOW_PRESETS.minimal.version === 3, 'minimal carries the skeleton/recommendation version')
+assert(FLOW_PRESETS.agile.version === 4, 'agile moved again for the completion guard')
 
 // ── 2. unknown flow fails closed ───────────────────────────────────────────
 // `resolveFlow` is called directly here: this test is about the fail-closed

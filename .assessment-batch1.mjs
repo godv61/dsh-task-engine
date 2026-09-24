@@ -365,6 +365,11 @@ test('P2: reaching the last stage is not completion for any preset', () => {
       execution_version: 1,
       items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }],
       verification: { passed: true, evidence: [] },
+      // The flows that declare a review guard need a recorded verdict. That is the
+      // point of deriving terminal requirements from the flow: standard and agile ask
+      // for one, minimal does not, so this supplies what is asked for rather than
+      // what one flow happens to need.
+      review: { outcome: 'pass' },
       commits: [],
     }
     assert.ok(

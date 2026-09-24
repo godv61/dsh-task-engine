@@ -176,6 +176,21 @@ export interface WorkflowConfig {
    * configs and frozen snapshots are unaffected.
    */
   commit_required?: boolean
+  /**
+   * Guards a flow requires to hold at COMPLETION, for stages that have no way out.
+   *
+   * A guard normally rides an edge: `代码审核 → 完成` requiring `review_passed` is how
+   * the standard flow states that the review must pass before the end. But a flow
+   * whose final stage is where the work happens has no such edge — the agile flow's
+   * `审查` IS the review, and it is terminal. Hanging a review guard on `交付 → 审查`
+   * would be circular (demanding the verdict before the stage that produces it) and
+   * would also block the commit at `交付`, because a commit requires its stage's
+   * outgoing guards.
+   *
+   * Declaring the requirement here lets completion check it directly and keeps the
+   * statement next to the stage it describes, rather than hidden in edge order.
+   */
+  completion_guards?: GuardName[]
 }
 
 /**
@@ -817,6 +832,52 @@ export function commitRequired(config: WorkflowConfig): boolean {
  * @param config - the frozen workflow config.
  * @returns human-readable blockers; empty when the task may complete.
  */
+/**
+ * Configurations a stage needs but that cannot be resolved.
+ *
+ * Disclosure is not enforcement. `missing_rules` was reported in status and never
+ * blocked anything, so deleting a rule a stage was bound to still let the task
+ * advance — leaving a stage running without the constraints it was configured
+ * with, while the record looked fine.
+ *
+ * This is a pure decision over names, so the tool and the hook reach the same
+ * verdict from the same inputs. It takes the unresolved names rather than reading
+ * anything, because resolution needs a filesystem and this must stay callable from
+ * both planes.
+ * @param unresolved - references that resolved nowhere, as `source:name` or a bare legacy name.
+ * @param stage - the stage whose configuration is being checked.
+ * @returns one blocker per unresolved resource, empty when the stage is complete.
+ */
+export function resourceBlockers(unresolved: readonly string[], stage: string): string[] {
+  return unresolved.map(name =>
+    `${stage}: "${name}" is bound here but resolves nowhere — a stage cannot be completed without the rules it was configured with. `
+    + 'Restore the file, point the binding at the right layer, or remove the binding. If this task was created before resource freezing, its snapshot is absent and it must read live files.')
+}
+
+/**
+ * The outcomes a flow's FINAL stage is required to have, derived from its guards.
+ *
+ * Completion used to check only standing-on-a-final-stage, unfinished items and
+ * whether a commit existed. A flow that declares `review_passed` or `verified` on
+ * its way into the terminal stage was therefore satisfiable by ARRIVING there: the
+ * agile flow's review verdict and the standard flow's verification could both be
+ * failing while `complete` succeeded.
+ *
+ * Derived rather than hardcoded, because a flow that declares no verification gate
+ * must not be made to demand one — the requirement is whatever the flow said.
+ * @param config - the effective workflow.
+ * @returns the guard names the final stage's incoming edges require.
+ */
+export function terminalRequirements(config: WorkflowConfig): GuardName[] {
+  const terminals = new Set(config.stages.filter(stage => isTerminalStage(stage, config)))
+  const required = new Set<GuardName>(config.completion_guards ?? [])
+  for (const transition of config.transitions) {
+    if (!terminals.has(transition.to)) continue
+    for (const guard of transition.requires ?? []) required.add(guard)
+  }
+  return [...required]
+}
+
 export function completionBlockers(state: TaskState, config: WorkflowConfig): string[] {
   const blockers: string[] = []
   if (state.completed !== undefined) return []
@@ -830,6 +891,25 @@ export function completionBlockers(state: TaskState, config: WorkflowConfig): st
       const unmet = todosBlockers(state, config)
       if (unmet.length > 0) blockers.push(`implementation items are not finished: ${unmet.join('; ')}`)
     }
+  }
+  // The final stage's own incoming guards. Reaching the last stage is not the same
+  // as having satisfied what the flow said that stage means: a declared review or
+  // verification must actually hold, not merely have been arrived at. Derived from
+  // the flow, so a flow that declares no verification gate is not made to demand
+  // one. Confirmation guards are excluded — they are per-edge human approvals
+  // already recorded on the way through, and re-asking would demand a second
+  // approval for the same decision.
+  const requirements = terminalRequirements(config).filter(guard => guard !== 'requirement_confirmation' && guard !== 'solution_confirmation')
+  // Read defensively: a record written before this field existed, or built by a
+// caller that never ran a review, has no verdict to read — which is not a passing
+// one. Treating "no review recorded" as absent rather than crashing keeps the gate
+// honest and the function total.
+  const reviewOutcome = state.review?.outcome
+  if (requirements.includes('review_passed') && reviewOutcome !== 'pass') {
+    blockers.push(`this flow requires a passing review before completion, and the recorded review is "${reviewOutcome ?? 'none'}"`)
+  }
+  if (requirements.includes('verified') && state.verification?.passed !== true) {
+    blockers.push('this flow requires a passing verification before completion, and the recorded verification is not passing')
   }
   if (commitRequired(config)) {
     const hasCommit = state.commits.some(commit => commit.hash !== undefined)

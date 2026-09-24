@@ -29,6 +29,7 @@ import {
   formatResourceRef,
   invalidatedBy,
   legalTargets,
+  resourceBlockers,
   newTask,
   taskIdFromMessage,
   unmetGuards,
@@ -1419,6 +1420,13 @@ export function registerDevTask(ctx: Context): void {
           await assertFreshEvidence(fs, state, workflow, cwd)
           const missingSkills = skillBlockers(state, workflow, session)
           if (missingSkills.length) throw new Error(missingSkills.join('; '))
+          // A stage whose rules cannot be resolved must not be passable. This was
+          // reported in status and never enforced, so deleting a bound rule still let the
+          // task advance — the stage ran without the constraints it was configured with
+          // while the record looked fine.
+          const unresolvedRules = (await rulesForBinding(bindingsForStage(state.stage, workflow), fs, cwd, state.flow?.resources)).missing
+          const resourceIssues = resourceBlockers(unresolvedRules, state.stage)
+          if (resourceIssues.length) throw new Error(resourceIssues.join('; '))
           let result = assertAdvance(state, target, workflow)
           if (!result.ok) {
             const unmet = unmetGuards(state, target, workflow)

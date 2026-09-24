@@ -44,7 +44,8 @@
     ".assessment-batch1.mjs",
     ".e2e-presets.mjs",
     ".revision-test.mjs",
-    ".freeze-test.mjs",
+    ".freeze-test.mjs .enforce-test.mjs",
+    ".enforce-test.mjs",
     ".acceptance.mjs",
     ".hook-consistency.mjs"
   ],
@@ -67,7 +68,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-client.mjs && node build-hook.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs",
+    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs .enforce-test.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:dsh": "node scripts/verify-dsh-compat.mjs",
     "prepare": "npm run build"
