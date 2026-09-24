@@ -35,9 +35,9 @@
   <header class="hero">
     <p class="eyebrow">DSH · ENGINEERING DELIVERY ENGINE</p>
     <h1>工程化交付引擎 使用手册</h1>
-    <p class="lead">这是一套装在 DeepSeek Harness 里的工程流程约束。它把「需求评审 → 设计 → 开发 → 交付 → 代码审核」做成硬门槛：阶段不能跳、关键节点必须人来拍板、验证和提交都被机械检查。在个人工作台里选一套流程，再给每个节点挂上合适的技能和规则。</p>
+    <p class="lead">这是一套装在 DeepSeek Harness 里的工程流程约束。流程预设规定阶段与门禁；技能、规则、提交文本和产物字段由使用者配置。在个人工作台里选择流程，把规则配置在技能下，再把技能挂到相应阶段。</p>
     <div class="badges">
-      <span class="badge">选流程预设即可</span>
+      <span class="badge">流程与工作方法分离</span>
       <span class="badge">standard / agile / minimal</span>
       <span class="badge">需求、方案人工确认</span>
       <span class="badge">范围受控本地提交</span>
@@ -80,9 +80,9 @@
         <div class="callout">
           <p><strong>它不是常驻程序。</strong>只有你在「工程化开发引擎」预设的会话里提出开发请求时，才触发 <code>dev_task</code> 和这套门禁；换到别的预设，流程完全不介入。</p>
         </div>
-        <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 决定「这一站守什么」。任务状态单独落盘，负责「跨会话恢复到哪一步」。</p>
+        <p>三样东西分工明确：<strong>流程预设</strong>决定「走哪条流水线、有哪些守卫」，<strong>Skill</strong> 决定「这一站做什么」，<strong>Rule</strong> 归属技能，决定该技能遵守什么。任务状态单独落盘，负责「跨会话恢复到哪一步」。推荐配置需要显式采用；采用后完全由使用者增删修改。</p>
         <div class="callout warn">
-          <p><strong>诚实边界：</strong>阶段流转、提交格式、文件范围、消息里的任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>（不匹配直接拒绝）；<b>高风险任务的「验证通过」也是真实命令回执</b>——引擎实际运行 <code>verify</code> 命令、取退出码（<code>exit_code === 0</code> 且非超时/中止）才放行，不是模型自报。仍属模型自报、需人工或 CI 兜底的是：旧任务的常规风险验证声明、「评审通过」「实施项完成」，以及回执命令本身的覆盖面。只有「需求确认」「方案确认」两扇门由人工批准点亮，风险降级（high_risk → standard）也由人工批准。</p>
+          <p><strong>诚实边界：</strong>阶段流转、文件范围、任务绑定、流程快照 hash、钩子完整性、敏感路径风险策略是<b>代码硬校验</b>；提交格式仅在用户配置后校验。高风险任务的验证依据真实命令回执。审核结论、实施项完成及回执命令的覆盖面仍需人工或 CI 判断；需求确认、方案确认和风险降级由人工批准。</p>
         </div>
       </section>
 
@@ -116,7 +116,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
         <pre><code>D:\workspace\
 ├─ AGENTS.md       ← init 生成的项目描述（DSH 每会话自动注入）
 ├─ .dsh\
-│  ├─ eng.json       ← 流程预设 + 节点挂载（团队共享，可进 git）
+│  ├─ eng.json       ← 流程预设 + 节点技能 + 技能规则（团队共享，可进 git）
 │  ├─ skills\        ← 项目级 skill
 │  ├─ rules\         ← 项目级 rule
 │  └─ task-*.json    ← 每个任务的状态快照
@@ -127,11 +127,11 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <table>
             <thead><tr><th>路径</th><th>作用</th><th>何时读取或修改</th></tr></thead>
             <tbody>
-              <tr><td><code>.dsh/eng.json</code></td><td>声明用哪套流程 + 每个节点挂哪些 skill / rule</td><td>任务推进前读取；工作台保存时写入</td></tr>
+              <tr><td><code>.dsh/eng.json</code></td><td>流程、阶段技能引用及技能规则配置</td><td>新任务创建时读取并冻结；工作台保存时写入</td></tr>
               <tr><td><code>.dsh/skills/</code></td><td>项目级 skill（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
               <tr><td><code>.dsh/rules/</code></td><td>项目级 rule（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
               <tr><td><code>.dsh/task-*.json</code></td><td>当前任务的有效状态快照</td><td>确认、实施、验证、评审、切换阶段时更新</td></tr>
-              <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>同名时让位于内置（内置 &gt; 用户 &gt; 项目）</td></tr>
+              <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>引用显式记录来源，同名资源互不混淆</td></tr>
             </tbody>
           </table>
         </div>
@@ -139,14 +139,14 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="flows">
         <h2>4. 三套流程预设</h2>
-        <p>阶段图、守卫、提交规则都随预设固化好，团队只选一套，不改流程图。</p>
+        <p>阶段图和流转门禁随预设固化；提交消息格式、产物字段及技能规则由使用者配置。需要一份起点时，可显式「采用推荐配置」。</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>预设</th><th>阶段顺序</th><th>适用</th><th>守卫强度</th></tr></thead>
             <tbody>
-              <tr><td><code>standard</code> 标准研发</td><td>需求评审 → 设计 → 开发 → 交付 → 代码审核 → 完成</td><td>默认；流程最完整</td><td>含产物门 + 人工确认 + 评审门</td></tr>
-              <tr><td><code>agile</code> 敏捷轻量</td><td>需求 → 开发 → 交付 → 审查</td><td>快速迭代、少产物</td><td>四阶段，产物要求更轻</td></tr>
-              <tr><td><code>minimal</code> 纯代码</td><td>开发 → 交付</td><td>只有代码、无评审流程</td><td>只留提交门禁</td></tr>
+              <tr><td><code>standard</code> 完整研发</td><td>需求评审 → 设计 → 开发 → 交付 → 代码审核 → 完成</td><td>新功能、跨模块及高风险任务</td><td>人工确认 + 验证门 + 评审门</td></tr>
+              <tr><td><code>agile</code> 日常迭代</td><td>需求 → 开发 → 交付 → 审查</td><td>常规功能与缺陷修复</td><td>四阶段，终态需审查通过</td></tr>
+              <tr><td><code>minimal</code> 快速修改</td><td>开发 → 交付</td><td>局部低风险改动</td><td>实施项与交付门禁</td></tr>
             </tbody>
           </table>
         </div>
@@ -178,7 +178,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="rules">
         <h2>6. Rules：这一步守什么</h2>
-        <p>Rule 是纯正文的约束，只有挂在节点上、且走到那一步时才读。内置三条：</p>
+        <p>Rule 是纯正文的约束，配置在技能下。节点引用技能，任务走到该节点时才读取技能及其规则；预设不会自动绑定它们。内置示例有：</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Rule</th><th>约束内容</th><th>典型触发</th></tr></thead>
@@ -189,16 +189,16 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>最重要的轻量原则：团队想改「提交消息格式」「交付要自测」这类约定，新建一个项目级规则 / 技能（用<b>新名字</b>）再挂到对应节点，而不是改一堆参数；内置 skill / rule 的正文<b>不可被同名覆盖</b>。</p>
+        <p>内置资源只是可选示例，正文只读。团队可以创建自己的技能和规则，把规则绑定到技能，再决定哪些节点使用该技能；提交消息格式应在项目配置中设置。</p>
       </section>
 
       <section id="configure">
-        <p>当前版本支持三个内置流程及追加阶段资源。可视化自定义流程曾列入评估，结论是不实现：它把流程设计的负担转嫁给使用者，而三个内置流程已覆盖个人项目的常见需要。</p>
+        <p>当前版本支持三个内置流程，阶段可选择技能，技能可绑定规则。可视化自定义流程不在当前计划内。</p>
         <h2>7. 配置流程与挂载</h2>
         <p>侧边栏点「工程流程」打开工作台，五个标签页：<strong>项目初始化 / 流程配置 / 任务 / 技能 skill / 规则 rule</strong>，默认落在「项目初始化」（详见第 8 节）。日常配流程只需在「流程配置」页做两件事：</p>
         <ol>
-          <li><strong>选流程预设</strong>：standard / agile / minimal 点一下即切。</li>
-          <li><strong>给节点挂 skill / rule</strong>：先选一个节点（如「开发」），再勾选它用什么 skill、守哪条 rule，保存。</li>
+          <li><strong>选流程预设</strong>：standard / agile / minimal；如需现成起点，可单独点击「采用推荐配置」。</li>
+          <li><strong>给节点选技能</strong>：先选节点，再用双栏选择器挑选技能；点技能的规则配置，在右侧栏绑定规则与证据类型，最后保存。</li>
         </ol>
         <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源只读。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
         <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
@@ -207,12 +207,17 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 {
   "flow": "standard",
   "stage_bindings": {
-    "需求评审": { "skills": ["requirement-analysis"], "rules": ["security-redlines"] },
-    "开发":     { "skills": ["code-implement"],        "rules": ["coding-conventions"] }
+    "开发": { "skill_refs": [{ "source": "bundled", "name": "code-implement" }] }
+  },
+  "skill_profiles": {
+    "bundled:code-implement": {
+      "rules": [{ "source": "project", "name": "my-coding-rule" }],
+      "evidence": "none"
+    }
   }
 }</code></pre>
         <div class="callout warn"><p>页面实时校验：挂到不存在的阶段、空名等会红字提示并置灰保存；保存前主机再校验一遍。错误的配置存不进去。</p></div>
-        <p>三层来源与优先级：同名 skill / rule，<strong>内置 &gt; 用户 &gt; 项目</strong>——内置不可被同名覆盖（新建同名会被拒，解析同名只读内置版）。要加团队约定，新建一个<b>不同名</b>的项目级 / 用户级资源再挂到节点上。</p>
+        <p>技能和规则引用包含 <code>source</code> 与 <code>name</code>；内置、项目、用户目录中的同名资源可以区分。旧版节点级规则迁移时会保留为待分配规则并继续生效，建议逐条归到对应技能。</p>
       </section>
 
       <section id="init">
@@ -272,7 +277,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>新任务离开阶段前检查绑定技能是否通过 skill 工具成功加载；附加技能需通过 <code>skill_result</code> 记录执行场景与真实验收命令；状态中的 <code>command_receipts_required</code> 列出这些技能，七个内置技能无需重复登记。挂在“完成”的技能在前一阶段执行。命令成功只证明该命令通过，不证明测试覆盖完整。审核改动后须重跑验证。旧任务继续使用冻结快照。</p>
+        <p>新任务离开阶段前检查绑定技能是否成功加载；技能可以声明 <code>command</code>、<code>artifact</code>、<code>review</code>、<code>manual</code> 或 <code>none</code> 证据类型。只有需要命令回执的技能才出现在 <code>command_receipts_required</code> 中。挂在终态的技能在进入终态前执行。命令成功只证明该命令通过，不证明覆盖完整；文件变动后须重新验证。旧任务继续使用冻结快照。</p>
         <h3>贯穿全程的硬规则</h3>
         <ul>
           <li>阶段是硬状态：status 说你在哪，就只做那一步，绝不倒带重走、绝不跳。</li>
@@ -313,7 +318,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li>差异没变时复用有效证据，不重复跑相同命令。</li>
           <li>无法联调外部系统时必须如实写「未联调」，不能把编译成功说成功能通过。</li>
           <li><code>high_risk</code> 任务过验证门必须跑真实命令回执（引擎运行命令、取退出码，非自报通过）。</li>
-          <li><code>verify</code> 不带 <code>command</code> 时引擎自动选命令：<code>.dsh/eng.json</code> 的 <code>verify_command</code> 优先，其次按项目语言用默认（node → <code>npm test</code>、java → <code>mvn -q test</code>、python → <code>python -m pytest</code>、go → <code>go test ./...</code>、rust → <code>cargo test</code>）；识别不出语言且未配置时保留自报路径。跑命令依赖宿主 shell 服务，未挂载会明确报错。</li>
+          <li><code>verify</code> 不带 <code>command</code> 时引擎自动选命令：<code>.dsh/eng.json</code> 的 <code>verify_command</code> 优先，其次按项目语言用默认（node → <code>npm test</code>、java → <code>mvn -q test</code>、python → <code>python -m pytest</code>、go → <code>go test ./...</code>、rust → <code>cargo test</code>）；新任务若没有可用默认命令，须显式提供真实命令。跑命令依赖宿主 shell 服务，未挂载会明确报错。</li>
           <li><b>验证命令始终在任务记录的项目根运行</b>（任务创建时自动发现并固化 <code>root</code>），不是会话当前目录——monorepo 里会话停在子目录时，<code>npm test</code> 等也会在放清单文件的项目根执行；回执记录的 <code>root</code> 与任务根强校验，不一致直接拒绝。</li>
         </ul>
         <h3>评审</h3>
@@ -329,7 +334,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>内置流程的提交消息要求 <code>【任务 id】【TASK】结果说明</code>，第一段填写当前任务 id，第二段使用 <code>dev_task status</code> 返回的 <code>commit.label</code>；自定义格式由任务冻结流程决定。只提交任务 <code>files</code> 范围内的文件。要彻底封死模型绕过 <code>dev_task</code> 直接 <code>git commit</code>，给仓库装一道机械钩子：</p>
+        <p>流程骨架不规定提交消息格式；若采用推荐配置，会写入 <code>【任务 id】【TASK】结果说明</code> 等文本约定，之后可修改或删除。文件范围门禁按所选流程与任务配置检查。可安装本地提交钩子，让普通 <code>git commit</code> 经过相同的门禁：</p>
         <pre><code>dev_task operation=install_hook   # 装入 .git/hooks/commit-msg，装上后任何 git commit 都被同一套规则校验
 dev_task operation=verify_hook    # 随时比对安装钩子与内置门禁的 hash，被替换/篡改立即报错</code></pre>
         <p><strong>钩子的额外硬校验（0.21/0.22）：</strong>① 任务记录的流程快照带 SHA-256 hash，被手改过的快照一律拒绝提交；② 触及敏感路径（<code>.env</code>、credentials、secrets、<code>.git</code>；<code>.dsh</code> 的任务记录与流程配置由快照 hash 与豁免保护，项目级 rules/skills 属常规内容）的提交，要求任务为 <code>high_risk</code> 且验证有真实命令回执，否则拒绝；③ 删除、类型变换、重命名的旧·新路径都受范围检查。</p>
@@ -373,11 +378,11 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
           <p>引擎只允许：读取仓库事实、修改<b>已确认任务范围内</b>的文件、按策略创建<b>范围受控的本地提交</b>。远程 push / 合并 / 发布、数据库写入，需人单独决定。</p>
         </div>
         <details open><summary>切换预设就是开关吗？</summary><div>是。选「工程化开发引擎」才挂 <code>dev_task</code> 和内置技能；选 <code>standard</code> 等其它预设则完全不介入。</div></details>
-        <details><summary>想改内置 skill / rule 怎么办？</summary><div>内置正文不可被同名覆盖（同名新建会被拒）。要加团队约定，新建一个<b>不同名</b>的项目级 skill / rule 再挂到对应节点，与内置并存。</div></details>
+        <details><summary>想改内置 skill / rule 怎么办？</summary><div>内置正文只读；可以创建自己的技能或规则，给技能绑定规则，再把技能挂到节点。来源明确的同名资源不会互相混淆，推荐配置采用后也可自由增删。</div></details>
         <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交——引擎已豁免 <code>.dsh/task-*.json</code> 与 <code>.dsh/eng.json</code>，不受文件范围门拦截；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
-        <details><summary>git 钩子能防住所有绕过吗？</summary><div>不能，这是它的定位：<code>.git/hooks/commit-msg</code> 是<b>本地即时反馈</b>，拦常规 <code>git commit</code>（校验任务、阶段、范围、消息、快照 hash、敏感路径），但挡不住 <code>git commit --no-verify</code>、<code>core.hooksPath</code> 替换或直接手改 task 记录。<b>最终可信门禁在 CI</b>：CI 里重新校验 task id、快照 hash、staged 范围、提交消息、真实验证退出码、高风险回执，并检测钩子是否被绕过。三层分工：钩子 = 本地反馈，host 工具流 = 正常路径强约束，CI = 最终验证。</div></details>
+        <details><summary>git 钩子能防住所有绕过吗？</summary><div>不能。<code>.git/hooks/commit-msg</code> 提供<b>本地即时反馈</b>，拦常规 <code>git commit</code>（校验任务、阶段、范围、消息、快照 hash、敏感路径），但挡不住 <code>git commit --no-verify</code>、<code>core.hooksPath</code> 替换或直接手改任务记录。若项目需要强制约束，应在自己的受保护分支和 CI 中配置独立检查；插件本身不会自动为使用者仓库安装远程 CI 门禁。</div></details>
         <details><summary>任务记录被手改会怎样？</summary><div>流程快照内容与保存的 SHA-256 不一致时会被拒绝；任务记录本身没有签名，能同时修改内容与 hash 的本地用户仍可伪造。文件版本与 <code>revision</code> 检查用于阻止并发覆盖，不提供身份认证。0.23.0 在读取内容前取得文件版本，使读取期间发生的并发写入也被拒绝。多用户隔离和可信状态签名需要 Harness 支持。</div></details>
         <details><summary>Remote 如何限制工作区？</summary><div>有 <code>workspaceRegistry.resolveByPath</code> 的 Harness 使用主机注册目录；未注册路径拒绝。旧主机保留绝对路径和系统目录检查，并提供严格注册 API。工作区注册不等于当前会话授权；共享多用户部署仍需要调用上下文和主机权限边界。</div></details>
         <details><summary>dev_task 写文件被沙箱拒绝（file access denied）怎么办？</summary><div>沙箱按调用策略放行写入，偶发的越界误判可用一次性升级重试：同一操作加 <code>sandbox_permissions: "workspace-write"（或 "danger-full-access"）</code> 并配 <code>justification</code>（一句话说明原因），升级需要<b>人工批准</b>；无审批服务时直接拒绝。日常任务记录写入默认已在会话工作区内放行，通常无需升级。</div></details>
@@ -385,7 +390,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <p>状态查询中的 <code>evidence_blockers</code> 列出过期验证和附加技能回执；<code>commit.allowed</code> 同时检查这些阻塞及技能执行义务。<code>legal_next</code> 是流程定义的候选去向，不表示所有门禁已通过。</p>
         <details><summary>记录需求时提示字段不存在怎么办？</summary><div>先读取 <code>status.artifact_requirements</code>，按当前阶段列出的字段填写。标准需求为 <code>scope</code> 和 <code>acceptance_criteria</code>，敏捷流程只有 <code>scope</code>。疑问、假设或待确认取舍写入字段正文，不新增字段名。错误输入整次不保存，修正后再提交；不需要修改流程配置或历史任务记录。</div></details>
         <details><summary>验证命令被沙箱阻止怎么办？</summary><div><code>verify</code> 与 <code>skill_result</code> 默认使用会话权限。原命令被沙箱阻止后，用相同命令和 <code>sandbox_permissions: "danger-full-access"</code>、<code>justification</code> 申请单次重试。审批显示命令，批准后才执行；拒绝、取消或审批不可用时不执行、不写回执。授权只对本次调用生效，不改变会话权限。以本次回执的实际模式和退出码判断结果。</div></details>
-        <p class="stamp">适用于插件 0.23.7 及之后 · 最后更新：2026-09-23</p>
+        <p class="stamp">适用于插件 0.26.0 · 最后更新：2026-09-24</p>
       </section>
     </main>
   </div>

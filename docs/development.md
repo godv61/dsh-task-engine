@@ -25,7 +25,7 @@ CI 在 Windows 的 Node 22/24 上运行。每次功能修改选择相关验证�
 | 位置 | 职责 |
 | :--- | :--- |
 | [src/engine.ts](../src/engine.ts) | 状态机、阶段条件和提交规则检查。 |
-| [src/workflows.ts](../src/workflows.ts) | 三套内置流程及默认技能/规则绑定。 |
+| [src/workflows.ts](../src/workflows.ts) | 三套流程骨架及可选的推荐配置。 |
 | [src/dev-task.ts](../src/dev-task.ts) | 模型使用的 dev_task 工具与任务文件操作。 |
 | [src/controller.ts](../src/controller.ts) | 工作台读取配置、任务和资源的 Remote 控制器。 |
 | [src/resource-import.ts](../src/resource-import.ts) | 导入校验、安装预览、独占写入与失败清理。 |
