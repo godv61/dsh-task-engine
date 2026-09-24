@@ -86,9 +86,9 @@ function evidenceBlockers(
       // Requiring a specific id would guess which one, and the workflow already
       // declares what each stage must record.
       const declared = workflow.artifacts.filter(artifact => artifact.stage === stage)
-      if (declared.length === 0) return []
+      if (declared.length === 0) return [`${stage}: "${name}" declares artifact evidence, but the stage has no artifact declaration`]
       const recorded = state.artifacts ?? {}
-      const present = declared.some(artifact => recorded[artifact.id] !== undefined)
+      const present = declared.some(artifact => artifact.fields.every(field => (recorded[artifact.id]?.[field] ?? '').trim() !== ''))
       return present ? [] : [`${stage}: "${name}" declares artifact evidence, but no artifact is recorded at this stage`]
     }
     case 'review':
@@ -98,7 +98,7 @@ function evidenceBlockers(
     case 'manual':
       // A human statement is recorded as evidence text on the skill_result; the
       // engine cannot verify the judgement itself, only that it was made explicitly.
-      return (state.skill_results?.[stage]?.[name]?.evidence ?? []).some(value => value.trim() !== '')
+      return state.skill_results?.[stage]?.[name]?.approved === true
         ? []
         : [`${stage}: "${name}" declares manual evidence and needs an explicit recorded statement`]
     case 'command':

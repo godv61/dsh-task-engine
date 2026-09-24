@@ -25,6 +25,7 @@ import {
   type ResourceRef,
   type ReviewDepth,
   type SkillBinding,
+  type SkillProfile,
   type StageBinding,
   type WorkflowConfig,
 } from '../engine.ts'
@@ -57,8 +58,8 @@ import { describeError } from './shared.ts'
  * @param stageBindings - the user's staged bindings.
  * @returns the resolved config.
  */
-function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding>): WorkflowConfig {
-  const resolved = resolveFlow(flow, { flow, stage_bindings: stageBindings })
+function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding>, skillProfiles: Record<string, SkillProfile>): WorkflowConfig {
+  const resolved = resolveFlow(flow, { flow, stage_bindings: stageBindings, skill_profiles: skillProfiles })
   return resolved.ok ? resolved.config : FLOW_PRESETS.standard.config
 }
 
@@ -180,7 +181,7 @@ export interface TaskEngineRemote {
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   importResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   read(path: string): Promise<RemoteResult<EngConfigView>>
-  write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding> }): Promise<RemoteResult<EngConfigView>>
+  write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile> }): Promise<RemoteResult<EngConfigView>>
   listSkills(path: string): Promise<RemoteResult<{ skills: SkillCatalogEntry[] }>>
   listRules(path: string): Promise<RemoteResult<{ rules: RuleCatalogEntry[] }>>
   writeSkill(request: { name: string; description: string; whenToUse?: string; content: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
@@ -208,6 +209,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
 
   const [flow, setFlow] = useState('standard')
   const [stageBindings, setStageBindings] = useState<Record<string, StageBinding>>({})
+  const [skillProfiles, setSkillProfiles] = useState<Record<string, SkillProfile>>({})
   // The panel holds the WHOLE config it is editing, not only the bindings. It
   // used to keep just the bindings and send just those, so a commit rule, the
   // artifact declarations and the review depth were resolved for the preview and
@@ -215,6 +217,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   const [commitRule, setCommitRule] = useState<CommitRule | undefined>(undefined)
   const [artifacts, setArtifacts] = useState<ArtifactDef[] | undefined>(undefined)
   const [reviewDepth, setReviewDepth] = useState<ReviewDepth | undefined>(undefined)
+  const [commitRequired, setCommitRequired] = useState<boolean | undefined>(undefined)
   const [source, setSource] = useState<string>('default')
   const [savedAt, setSavedAt] = useState<string>('')
   /** True while the in-memory bindings differ from what is on disk. */
@@ -238,9 +241,11 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
       if (result.ok) {
         setFlow(result.value.flow)
         setStageBindings(result.value.config.stage_bindings ?? {})
+        setSkillProfiles(result.value.config.skill_profiles ?? {})
         setCommitRule(result.value.config.commit)
         setArtifacts(result.value.config.artifacts)
         setReviewDepth(result.value.config.review_depth)
+        setCommitRequired(result.value.config.commit_required)
         setSource(result.value.source)
         setConfigProblems(result.value.problems)
         setSavedAt('')
@@ -273,8 +278,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
 
   const stages = useMemo(() => (FLOW_PRESETS[flow] ?? FLOW_PRESETS.standard).config.stages, [flow])
   const problems = useMemo(
-    () => validateWorkflow(resolvedConfig(flow, stageBindings)),
-    [flow, stageBindings],
+    () => validateWorkflow(resolvedConfig(flow, stageBindings, skillProfiles)),
+    [flow, stageBindings, skillProfiles],
   )
 
   /**
@@ -311,6 +316,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     if (adopted === undefined) return
     if (dirty && !window.confirm('采用推荐配置会替换当前的技能与规则设置。继续？')) return
     setStageBindings({ ...(adopted.stage_bindings ?? {}) })
+    const adoptedFlow = resolveFlow(flow, adopted)
+    setSkillProfiles(adoptedFlow.ok ? adoptedFlow.config.skill_profiles ?? {} : {})
     setCommitRule(adopted.commit)
     setArtifacts(adopted.artifacts)
     setReviewDepth(adopted.review_depth)
@@ -380,8 +387,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         </div>
       </div>
 
-      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能 / 规则" hint="选择节点，再勾选附加技能与规则。预设默认绑定固定保留；新建或编辑内容请前往上方“技能”或“规则”页。" >
-        <BindingEditor stages={stages} defaults={(FLOW_PRESETS[flow] ?? FLOW_PRESETS.standard).config.stage_bindings ?? {}} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skills={skills} rules={rules} />
+      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能" hint="节点选择技能；同一技能的规则在所有节点保持一致，均可修改或移除。" >
+        <BindingEditor stages={stages} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skillProfiles={skillProfiles} setSkillProfiles={(next) => { setSkillProfiles(next); setDirty(true); setSavedAt('') }} skills={skills} rules={rules} />
       </SectionCard>
 
       {problems.length > 0
@@ -405,7 +412,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           size="md"
           icon={<IconCheckOutline16 size={16} />}
           disabled={problems.length > 0 || saving}
-          onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}) }, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
+          onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, skill_profiles: skillProfiles, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}), ...(commitRequired !== undefined ? { commit_required: commitRequired } : {}) }, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
         >
           {saving ? '正在保存…' : dirty ? '保存到 .dsh/eng.json' : '已保存 · 无需保存'}
         </Button>
@@ -457,37 +464,28 @@ function SectionCard({ icon, title, hint, children }: SectionCardProps): ReturnT
   )
 }
 
-function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skills, rules }: {
+function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles, setSkillProfiles, skills, rules }: {
   stages: string[]
-  defaults: Record<string, StageBinding>
   stageBindings: Record<string, StageBinding>
   setStageBindings: (b: Record<string, StageBinding>) => void
+  skillProfiles: Record<string, SkillProfile>
+  setSkillProfiles: (profiles: Record<string, SkillProfile>) => void
   skills: SkillCatalogEntry[]
   rules: RuleCatalogEntry[]
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
   const [expanded, setExpanded] = useState<string | null>(null)
-  // Search and filter state for the two lists. Both grow with use — the skill
-  // catalog by installs, the rule catalog by every rule a user writes — and an
-  // unfiltered list stops being usable well before it stops rendering.
+  // The skill catalog grows with installed and user-created skills.
   const [query, setQuery] = useState('')
   const [onlySelected, setOnlySelected] = useState(false)
-  const [ruleQuery, setRuleQuery] = useState('')
-  const [ruleOnlySelected, setRuleOnlySelected] = useState(false)
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
   const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
-  const presetSkills = (name: string): SkillBinding[] => defaults[name]?.skills ?? []
-
-  /** A skill the preset ships cannot be unbound, so the flow keeps its core capability. */
-  const isPresetSkill = (name: string, raw: string): boolean =>
-    presetSkills(name).some(entry => formatResourceRef(entry.skill) === raw)
 
   /**
    * The skills to render, after the search box and the selection filter.
    *
-   * A skill that is bound or preset-shipped always matches, whatever the filters
-   * say: hiding a skill that is currently in force would make the panel disagree
+   * A bound skill always matches the search, because hiding it would make the panel disagree
    * with the configuration it is showing.
    * @returns the skills to display, in catalog order.
    */
@@ -497,7 +495,7 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
     const needle = query.trim().toLowerCase()
     return skills.filter(entry => {
       const raw = formatResourceRef(entry.ref)
-      const inForce = boundKeys.has(raw) || isPresetSkill(currentStage, raw)
+      const inForce = boundKeys.has(raw)
       if (onlySelected && !inForce) return false
       if (needle === '') return true
       return inForce
@@ -507,57 +505,20 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
     })
   }
 
-  /**
-   * The rules to render for one skill, after the rule filters.
-   *
-   * A rule already on the skill always matches, for the same reason: the list must
-   * not hide what is currently configured.
-   * @param bound - the skill binding whose rules are being shown.
-   * @returns the rules to display.
-   */
-  const visibleRulesFor = (bound: SkillBinding): RuleCatalogEntry[] => {
-    const chosen = new Set(bound.rules.map(rule => formatResourceRef(rule)))
-    const needle = ruleQuery.trim().toLowerCase()
-    return rules.filter(rule => {
-      const raw = formatResourceRef(rule.ref)
-      if (ruleOnlySelected && !chosen.has(raw)) return false
-      if (needle === '') return true
-      return chosen.has(raw)
-        || rule.name.toLowerCase().includes(needle)
-        || rule.sourceLabel.toLowerCase().includes(needle)
-    })
-  }
-
   const setSkills = (name: string, next: SkillBinding[]): void => {
     setStageBindings({ ...stageBindings, [name]: { ...bindingFor(name), skills: next } })
   }
 
   const toggleSkill = (raw: string): void => {
-    if (currentStage === '' || isPresetSkill(currentStage, raw)) return
-    const current = bindingFor(currentStage).skills ?? []
-    const next = current.some(entry => formatResourceRef(entry.skill) === raw)
-      ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
-      : [...current, { skill: refFromText(raw), rules: [] }].sort((a, b) =>
-        formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
-    setSkills(currentStage, next)
-  }
-
-  /**
-   * A skill's rule list is edited here, on the skill. There is no stage-level rule
-   * control: rules belong to the skill, so this list is complete wherever the
-   * skill is bound, and one skill under two rule sets means two skills.
-   */
-  const toggleRule = (skillRaw: string, ruleRaw: string): void => {
     if (currentStage === '') return
     const current = bindingFor(currentStage).skills ?? []
-    setSkills(currentStage, current.map(entry => {
-      if (formatResourceRef(entry.skill) !== skillRaw) return entry
-      const has = entry.rules.some(rule => formatResourceRef(rule) === ruleRaw)
-      const next = has
-        ? entry.rules.filter(rule => formatResourceRef(rule) !== ruleRaw)
-        : [...entry.rules, refFromText(ruleRaw)].sort((a, b) => formatResourceRef(a).localeCompare(formatResourceRef(b)))
-      return { ...entry, rules: next }
-    }))
+    const profile = skillProfiles[raw]
+    const next = current.some(entry => formatResourceRef(entry.skill) === raw)
+      ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
+      : [...current, { skill: refFromText(raw), rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
+        formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
+    if (profile === undefined) setSkillProfiles({ ...skillProfiles, [raw]: { rules: [] } })
+    setSkills(currentStage, next)
   }
 
   if (currentStage === '') {
@@ -566,12 +527,11 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
 
   const boundSkills: SkillBinding[] = bindingFor(currentStage).skills ?? []
   const unassigned = bindingFor(currentStage).legacy_rules ?? []
-  const presetCount = presetSkills(currentStage).length
 
   return (
     <div style={styles.section}>
       <p style={styles.hint}>
-        节点只选择技能；规则属于技能——点开一个技能就能看到它完整的规则列表，挂到任何节点都是同一套规则。
+        节点只选择技能；规则在“技能”页统一维护。这里可查看技能当前生效的规则。
         需要同一技能用不同规则时，复制成另一个技能再分别配置。
       </p>
       <div style={styles.field}>
@@ -598,7 +558,6 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
             <h4>技能</h4>
             <span className="te-binding-count">
               已选 {boundSkills.length}
-              {presetCount > 0 ? `（含 ${presetCount} 项预设）` : ''}
               {visibleSkills().length !== skills.length ? ` · 显示 ${visibleSkills().length}/${skills.length}` : ''}
             </span>
           </div>
@@ -630,7 +589,6 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
             {visibleSkills().map(entry => {
               const raw = formatResourceRef(entry.ref)
               const bound = boundSkills.find(candidate => formatResourceRef(candidate.skill) === raw)
-              const preset = isPresetSkill(currentStage, raw)
               const open = expanded === raw
               return (
                 <div key={raw} className={`te-binding-option${bound !== undefined ? ' is-selected' : ''}`}>
@@ -638,20 +596,18 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
                     type="checkbox"
                     aria-label={raw}
                     checked={bound !== undefined}
-                    disabled={preset}
                     onChange={() => toggleSkill(raw)}
                   />
                   <span className="te-binding-detail">
                     <span className="te-binding-name">
                       {entry.name}
-                      {preset ? <span className="te-source-badge">预设</span> : null}
                     </span>
                     <span className="te-binding-meta">
                       {entry.sourceLabel} · {bound === undefined ? '未绑定' : `${bound.rules.length} 条规则`}
                     </span>
                     {bound !== undefined ? (
                       <button type="button" className="te-link" onClick={() => setExpanded(open ? null : raw)}>
-                        {open ? '收起规则' : '规则设置'}
+                        {open ? '收起规则' : '查看规则'}
                       </button>
                     ) : null}
                     {/*
@@ -661,35 +617,11 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
                     */}
                     {open && bound !== undefined ? (
                       <span className="te-rule-list">
-                        {ruleQuery !== '' || ruleOnlySelected ? null : (
-                          <span className="te-binding-meta">{rules.length} 条可用规则</span>
-                        )}
-                        <input
-                          className="te-binding-search"
-                          type="search"
-                          value={ruleQuery}
-                          placeholder="过滤规则…"
-                          aria-label={`过滤 ${entry.name} 的规则`}
-                          onChange={event => setRuleQuery(event.target.value)}
-                        />
-                        <label className="te-binding-filter">
-                          <input type="checkbox" checked={ruleOnlySelected} onChange={() => setRuleOnlySelected(value => !value)} />
-                          {' '}仅看已选
-                        </label>
-                        {rules.length === 0 ? <span className="te-binding-meta">规则库为空。</span> : null}
-                        {rules.length > 0 && visibleRulesFor(bound).length === 0
-                          ? <span className="te-binding-meta">没有匹配的规则。</span>
-                          : null}
-                        {visibleRulesFor(bound).map(rule => {
-                          const ruleRaw = formatResourceRef(rule.ref)
-                          const on = bound.rules.some(candidate => formatResourceRef(candidate) === ruleRaw)
-                          return (
-                            <label key={ruleRaw} className="te-binding-filter">
-                              <input type="checkbox" checked={on} onChange={() => toggleRule(raw, ruleRaw)} />{' '}
-                              {rule.name}
-                              <span className="te-binding-meta">（{rule.sourceLabel}）</span>
-                            </label>
-                          )
+                        {bound.rules.length === 0 ? <span className="te-binding-meta">该技能尚未配置规则。</span> : null}
+                        {bound.rules.map(rule => {
+                          const ruleRaw = formatResourceRef(rule)
+                          const catalog = rules.find(candidate => formatResourceRef(candidate.ref) === ruleRaw)
+                          return <span key={ruleRaw} className="te-binding-meta">{catalog?.name ?? ruleRaw}{catalog ? `（${catalog.sourceLabel}）` : ''}</span>
                         })}
                       </span>
                     ) : null}

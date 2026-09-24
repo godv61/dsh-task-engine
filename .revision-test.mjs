@@ -112,3 +112,17 @@ test('rework: history records what was invalidated, for audit', () => {
   assert.equal(state.revisions[0].to, '设计')
   assert.deepEqual(state.revisions[0].invalidated, invalidatedBy('solution'))
 })
+
+test('rework: skill results from revised stages are invalidated', () => {
+  const state = loadedTask()
+  state.flow = { flow: 'standard', version: 3, config: adoptedFlow('standard') }
+  state.skill_results = {
+    '需求评审': { analysis: { evidence: ['still agreed'] } },
+    '开发': { implementation: { evidence: ['old implementation'] } },
+    '代码审核': { audit: { evidence: ['old audit'] } },
+  }
+  applyRevision(state, rework('defect', '开发'))
+  assert.ok(state.skill_results['需求评审'])
+  assert.equal(state.skill_results['开发'], undefined)
+  assert.equal(state.skill_results['代码审核'], undefined)
+})

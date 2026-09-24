@@ -14,7 +14,8 @@
  * @module dsh-task-engine/workflows
  */
 
-import type { ArtifactDef, CommitRule, ResourceRef, ReviewDepth, SkillBinding, StageBinding, WorkflowConfig } from './engine.ts'
+import { formatResourceRef } from './engine.ts'
+import type { ArtifactDef, CommitRule, ResourceRef, ReviewDepth, SkillBinding, SkillProfile, StageBinding, WorkflowConfig } from './engine.ts'
 
 /** A preset workflow a project can select by id. */
 export interface FlowOption {
@@ -337,15 +338,70 @@ function applyProjectConfig(base: WorkflowConfig, project?: ProjectConfig): Work
   if (project === undefined) return base
   const next: WorkflowConfig = { ...base }
   if (project.stage_bindings !== undefined) {
+    const profiles: Record<string, SkillProfile> = { ...(project.skill_profiles ?? {}) }
+    const problems: string[] = []
     const bindings: Record<string, StageBinding> = {}
     for (const [stage, binding] of Object.entries(project.stage_bindings)) {
       const entry: StageBinding = {}
-      if ((binding.skills ?? []).length > 0) entry.skills = [...binding.skills!]
+      if (binding === null || typeof binding !== 'object') {
+        problems.push(`stage_bindings "${stage}" must be an object`)
+        bindings[stage] = entry
+        continue
+      }
+      if (binding.skill_refs !== undefined && binding.skills !== undefined) {
+        problems.push(`stage_bindings "${stage}" has both skill_refs and legacy skills`)
+      }
+      if (binding.skill_refs !== undefined) {
+        if (!Array.isArray(binding.skill_refs)) {
+          problems.push(`stage_bindings "${stage}" skill_refs must be an array`)
+        }
+        entry.skills = (Array.isArray(binding.skill_refs) ? binding.skill_refs : []).flatMap(ref => {
+          if (ref === null || typeof ref !== 'object') {
+            problems.push(`stage_bindings "${stage}" has an invalid skill reference`)
+            return []
+          }
+          const key = formatResourceRef(ref)
+          const profile = profiles[key]
+          if (profile === undefined) {
+            problems.push(`skill profile "${key}" is missing`)
+            return []
+          }
+          if (profile === null || !Array.isArray(profile.rules)) {
+            problems.push(`skill profile "${key}" must declare a rules array`)
+            return []
+          }
+          return [{ skill: ref, rules: profile.rules, ...(profile.evidence !== undefined ? { evidence: profile.evidence } : {}) }]
+        })
+      } else if (binding.skills !== undefined) {
+        // Read pre-migration inline bindings, then normalize their rule lists to
+        // a single profile per skill. Divergent copies cannot be reconciled by
+        // guessing which stage should win.
+        if (!Array.isArray(binding.skills)) {
+          problems.push(`stage_bindings "${stage}" skills must be an array`)
+        }
+        entry.skills = (Array.isArray(binding.skills) ? binding.skills : []).flatMap(skill => {
+          if (skill === null || typeof skill !== 'object' || skill.skill === null || typeof skill.skill !== 'object') {
+            problems.push(`stage_bindings "${stage}" has an invalid skill binding`)
+            return []
+          }
+          const key = formatResourceRef(skill.skill)
+          const candidate: SkillProfile = { rules: skill.rules ?? [], ...(skill.evidence !== undefined ? { evidence: skill.evidence } : {}) }
+          const existing = profiles[key]
+          if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+            problems.push(`skill "${key}" has different rules or evidence in multiple stages; copy it as a distinct skill`)
+          } else profiles[key] = candidate
+          return [skill]
+        })
+      }
       const legacy = dedupe(binding.legacy_rules ?? [])
       if (legacy.length > 0) entry.legacy_rules = legacy
       bindings[stage] = entry
     }
     next.stage_bindings = bindings
+    next.skill_profiles = profiles
+    if (problems.length > 0) next.configuration_errors = problems
+  } else if (project.skill_profiles !== undefined) {
+    next.skill_profiles = project.skill_profiles
   }
   if (project.commit !== undefined) next.commit = project.commit
   if (project.artifacts !== undefined) next.artifacts = project.artifacts
@@ -388,6 +444,7 @@ export function adoptRecommendation(
   const config: ProjectConfig = {
     flow: presetId,
     stage_bindings: current?.stage_bindings ?? rec.stage_bindings ?? {},
+    ...(current?.skill_profiles !== undefined ? { skill_profiles: current.skill_profiles } : {}),
     commit,
     artifacts: current?.artifacts ?? rec.artifacts ?? preset.config.artifacts,
     ...(current?.review_depth !== undefined
@@ -407,10 +464,26 @@ export function adoptRecommendation(
 export interface ProjectConfig {
   flow: string
   stage_bindings?: Record<string, StageBinding>
+  skill_profiles?: Record<string, SkillProfile>
   commit?: CommitRule
   artifacts?: ArtifactDef[]
   review_depth?: ReviewDepth
   commit_required?: boolean
+}
+
+/** Persist stages as references and each skill's rules exactly once. */
+export function compactProjectConfig(project: ProjectConfig): ProjectConfig {
+  const resolved = resolveFlow(project.flow, project)
+  if (!resolved.ok) return project
+  const profiles = resolved.config.skill_profiles ?? {}
+  const bindings: Record<string, StageBinding> = {}
+  for (const [stage, binding] of Object.entries(resolved.config.stage_bindings ?? {})) {
+    bindings[stage] = {
+      skill_refs: (binding.skills ?? []).map(entry => entry.skill),
+      ...(binding.legacy_rules?.length ? { legacy_rules: binding.legacy_rules } : {}),
+    }
+  }
+  return { ...project, stage_bindings: bindings, skill_profiles: profiles }
 }
 
 /**

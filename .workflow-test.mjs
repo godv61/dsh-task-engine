@@ -75,6 +75,70 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     state: () => JSON.parse(records.get(join(cwd, '.dsh/task-LIVE-1.json'))) }
 }
 
+test('manual skill evidence is approved by the host without a shell command', async () => {
+  const config = resolveFlow('minimal', { flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'human-check' }, rules: [], evidence: 'manual' }] },
+  } }).config
+  const approvals = []
+  const f = fixture('开发', { flow: { flow: 'minimal', version: 3, config } }, {
+    approval: { request: async request => { approvals.push(request); return 'allowed-once' } },
+  })
+  f.load('human-check')
+  await f.call({ operation: 'skill_result', skill_name: 'human-check', evidence: ['checked by owner'] })
+  assert.equal(f.runs.length, 0)
+  assert.equal(approvals.length, 1)
+  assert.equal(f.state().skill_results['开发']['human-check'].approved, true)
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).skill_blockers, [])
+  const denied = fixture('开发', { flow: { flow: 'minimal', version: 3, config } }, {
+    approval: { request: async () => 'rejected' },
+  })
+  denied.load('human-check')
+  await assert.rejects(denied.call({ operation: 'skill_result', skill_name: 'human-check', evidence: ['claimed approval'] }), /not approved/)
+  assert.equal(denied.state().skill_results?.['开发']?.['human-check'], undefined)
+})
+
+test('completion rejects unresolved terminal skills and rules', async () => {
+  const config = resolveFlow('minimal', { flow: 'minimal', stage_bindings: {
+    '交付': { skills: [{ skill: { source: 'project', name: 'must-run' }, rules: [{ source: 'project', name: 'missing' }], evidence: 'command' }] },
+  } }).config
+  const f = fixture('交付', {
+    flow: { flow: 'minimal', version: 3, config },
+    items: [{ id: 'A', title: 'small', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }],
+    commits: [{ label: 'TASK', hash: 'abcdef1' }],
+  })
+  const status = JSON.parse(await f.call({ operation: 'status' }))
+  assert.ok(status.skill_blockers.length > 0)
+  assert.ok(status.missing_rules.length > 0)
+  await assert.rejects(f.call({ operation: 'complete' }), /cannot complete.*must-run|cannot complete.*missing/)
+  assert.equal(f.state().completed, undefined)
+})
+
+test('same-named skill and rule freeze separately and disclose the rule body', async () => {
+  const f = fixture()
+  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
+  } }))
+  f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
+  f.records.set(join(f.cwd, '.dsh/rules/custom.md'), 'RULE BODY')
+  await f.call({ operation: 'create', title: 'collision', branch: 'main', files: ['app.js'] })
+  const resources = f.state().flow.resources.filter(resource => resource.ref.name === 'custom')
+  assert.deepEqual(resources.map(resource => resource.kind).sort(), ['rule', 'skill'])
+  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+  f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'CHANGED SKILL')
+  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.skill_contents[0].content, 'SKILL BODY')
+})
+
+test('task creation rejects an unavailable skill or rule before writing a record', async () => {
+  const f = fixture()
+  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'missing-skill' }, rules: [] }] },
+  } }))
+  await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /unreadable bound resources/)
+  assert.equal(f.records.has(join(f.cwd, '.dsh/task-LIVE-1.json')), false)
+})
+
 test('审查通过后更新状态并激活下一项，保留已完成项的审计', async () => {
   const f = fixture()
   await f.call({ operation: 'items', items: [{ id: 'A', title: 'first', status: 'doing' }, { id: 'B', title: 'second' }] })

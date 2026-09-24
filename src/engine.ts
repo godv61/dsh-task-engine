@@ -124,6 +124,12 @@ export interface SkillBinding {
   evidence?: EvidenceKind
 }
 
+/** One skill's user-owned method, independent of the stages that use it. */
+export interface SkillProfile {
+  rules: ResourceRef[]
+  evidence?: EvidenceKind
+}
+
 /**
  * How a bound skill proves it ran.
  *
@@ -145,6 +151,8 @@ export type EvidenceKind = 'command' | 'artifact' | 'review' | 'manual' | 'none'
  */
 export interface StageBinding {
   skills?: SkillBinding[]
+  /** Persisted schema: stages select skill identities, with methods in skill_profiles. */
+  skill_refs?: ResourceRef[]
   /**
    * Stage-level rule names from a pre-migration config, preserved verbatim.
    *
@@ -181,6 +189,10 @@ export interface WorkflowConfig {
   high_risk_requires_verification: boolean
   /** Per-stage skill/rule bindings disclosed when the task enters the stage. */
   stage_bindings?: Record<string, StageBinding>
+  /** Canonical, source-qualified Skill -> Rule relationship for this project. */
+  skill_profiles?: Record<string, SkillProfile>
+  /** Configuration migration errors produced while expanding persisted bindings. */
+  configuration_errors?: string[]
   /**
    * How much per-item review this flow demands before `todos_done` passes.
    *
@@ -226,6 +238,8 @@ export interface WorkflowConfig {
  * tasks using the same rule do not duplicate several kilobytes each.
  */
 export interface FrozenResource {
+  /** Resource type is part of its identity: a skill and a rule may share a name. */
+  kind?: 'skill' | 'rule'
   ref: ResourceRef
   /** SHA-256 of the body, which is also the key under which it is stored. */
   hash: string
@@ -397,7 +411,7 @@ export interface TaskState {
   updated_at?: string
   /** New tasks enforce skill evidence and checkpoint completion; old snapshots remain readable. */
   execution_version?: 1
-  skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt }>>
+  skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt; approved?: boolean }>>
   /** Set by the `complete` operation once every configured condition holds. Absent while the task is still open. */
   completed?: TaskCompletion
   /** Rework history, newest last. Absent when the task never went back. */
@@ -430,7 +444,7 @@ const GUARD_NAMES: readonly GuardName[] = [
  * @returns problem strings; empty means valid.
  */
 export function validateWorkflow(config: WorkflowConfig): string[] {
-  const problems: string[] = []
+  const problems: string[] = [...(config.configuration_errors ?? [])]
   if (config.stages.length === 0) problems.push('stages must not be empty')
   const seen = new Set<string>()
   for (const stage of config.stages) {
@@ -480,6 +494,7 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
     }
   })
   const bindings = config.stage_bindings ?? {}
+  const skillMethods = new Map<string, string>()
   for (const [stage, binding] of Object.entries(bindings)) {
     if (!config.stages.includes(stage)) {
       problems.push(`stage_bindings: stage "${stage}" is not a stage`)
@@ -494,6 +509,19 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
       }
       if (!['bundled', 'project', 'user'].includes(entry.skill.source)) {
         problems.push(`stage_bindings "${stage}": skill "${entry.skill.name}" has unknown source "${String(entry.skill.source)}"`)
+      }
+      const skillKey = formatResourceRef(entry.skill)
+      const method = JSON.stringify({ rules: entry.rules ?? [], evidence: entry.evidence })
+      const existing = skillMethods.get(skillKey)
+      if (existing !== undefined && existing !== method) {
+        problems.push(`skill "${skillKey}" has different rules or evidence in multiple stages; copy it as a distinct skill`)
+      }
+      skillMethods.set(skillKey, method)
+      if (entry.evidence === 'artifact' && !config.artifacts.some(artifact => artifact.stage === stage)) {
+        problems.push(`skill "${skillKey}" requires artifact evidence, but stage "${stage}" declares no artifact`)
+      }
+      if (entry.evidence !== undefined && !['command', 'artifact', 'review', 'manual', 'none'].includes(entry.evidence)) {
+        problems.push(`skill "${skillKey}" has unknown evidence type "${String(entry.evidence)}"`)
       }
       for (const rule of entry.rules ?? []) {
         if (typeof rule?.name !== 'string' || rule.name.trim() === '') {
@@ -657,7 +685,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
     })
     return { ok: false, errors: [`guards unmet: ${details.join(', ')}`] }
   }
-  if (state.execution_version === 1 && config.commit.policy !== 'manual'
+  if (state.execution_version === 1 && commitRequired(config) && config.commit.policy !== 'manual'
     && config.commit.checkpoints.includes(state.stage)
     && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
     return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
@@ -964,11 +992,11 @@ export function completionBlockers(state: TaskState, config: WorkflowConfig): st
 export function invalidatedBy(kind: TaskRevision['kind']): string[] {
   switch (kind) {
     case 'requirement':
-      return ['requirement_confirmation', 'solution_confirmation', 'verification', 'review', 'item_reviews', 'commits']
+      return ['requirement_confirmation', 'solution_confirmation', 'verification', 'review', 'item_reviews', 'skill_results', 'commits']
     case 'solution':
-      return ['solution_confirmation', 'verification', 'review', 'item_reviews', 'commits']
+      return ['solution_confirmation', 'verification', 'review', 'item_reviews', 'skill_results', 'commits']
     case 'defect':
-      return ['verification', 'review', 'item_reviews', 'commits']
+      return ['verification', 'review', 'item_reviews', 'skill_results', 'commits']
   }
 }
 
@@ -1013,6 +1041,16 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
       if (item.status === 'done') item.status = 'doing'
     }
   }
+  if (cleared.includes('skill_results')) {
+    // Evidence from the revised stage onward described the superseded work.
+    // Earlier stages remain valid when a defect or solution revision preserves them.
+    const targetIndex = state.flow?.config.stages.indexOf(revision.to) ?? -1
+    for (const stage of Object.keys(state.skill_results ?? {})) {
+      if (targetIndex < 0 || (state.flow?.config.stages.indexOf(stage) ?? -1) >= targetIndex) {
+        delete state.skill_results![stage]
+      }
+    }
+  }
   if (cleared.includes('commits')) state.commits = []
   // Going back means the task is open again; a completed task that reworks is a
   // task whose completion no longer describes it.
@@ -1033,6 +1071,7 @@ export interface ParsedProjectConfig {
   flow?: string
   /** The project's own stage bindings, taken verbatim. */
   stage_bindings?: Record<string, StageBinding>
+  skill_profiles?: Record<string, SkillProfile>
   /** The project's own commit policy, replacing any preset default. */
   commit?: CommitRule
   /** The project's own artifact declarations. */

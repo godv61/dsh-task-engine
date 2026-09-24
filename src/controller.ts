@@ -22,9 +22,9 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 // Type-only: pulls the `Context.fs` augmentation into this module.
 import type {} from '@deepseek-ai/dsh-fs'
-import type { ArtifactDef, CommitRule, ParsedProjectConfig, ResourceRef, ResourceSource, ReviewDepth } from './engine.ts'
+import type { ArtifactDef, CommitRule, ParsedProjectConfig, ResourceRef, ResourceSource, ReviewDepth, SkillProfile } from './engine.ts'
 import { validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
-import { resolveFlow } from './workflows.ts'
+import { compactProjectConfig, resolveFlow } from './workflows.ts'
 
 /** Merged workflow plus its validation state, returned by both config methods. */
 export interface EngConfigView {
@@ -48,6 +48,7 @@ export interface EngWriteRequest {
   flow: string
   /** The project's own stage bindings, taken verbatim. Absent means no bindings. */
   stage_bindings?: Record<string, StageBinding>
+  skill_profiles?: Record<string, SkillProfile>
   /** The project's own commit policy. Absent means no commit gate. */
   commit?: CommitRule
   /** The project's own artifact declarations. */
@@ -546,6 +547,7 @@ export default class TaskEngineController extends TypertRemoteService {
         {
           flow: parsed.flow,
           ...(parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : {}),
+          ...(parsed.skill_profiles !== undefined ? { skill_profiles: parsed.skill_profiles } : {}),
           ...(parsed.commit !== undefined ? { commit: parsed.commit } : {}),
           ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
           ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
@@ -585,6 +587,7 @@ export default class TaskEngineController extends TypertRemoteService {
         {
           flow: request.flow,
           ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+          ...(request.skill_profiles !== undefined ? { skill_profiles: request.skill_profiles } : {}),
           ...(request.commit !== undefined ? { commit: request.commit } : {}),
           ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
           ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
@@ -608,14 +611,15 @@ export default class TaskEngineController extends TypertRemoteService {
     // `flow` and `stage_bindings`, so a commit rule, artifact declarations or a
     // review depth that had been resolved and previewed were silently dropped on
     // save — the workbench showed one config and the file held another.
-    const payload = {
+    const payload = compactProjectConfig({
       flow: request.flow,
       ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+      ...(request.skill_profiles !== undefined ? { skill_profiles: request.skill_profiles } : {}),
       ...(request.commit !== undefined ? { commit: request.commit } : {}),
       ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
       ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
       ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
-    }
+    })
     const fs = this.fs()
     const target = await fs.resolve(ENGFILE, { cwd: request.path })
     await fs.writeText(target, JSON.stringify(payload, null, 2), undefined, undefined, {

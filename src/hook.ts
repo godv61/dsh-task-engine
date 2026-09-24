@@ -25,7 +25,7 @@ import {
   type CommitRule,
   type ReviewDepth,
 } from './engine.ts'
-import { resolveFlow } from './workflows.ts'
+import { resolveFlow, type ProjectConfig } from './workflows.ts'
 import { hashConfig } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY } from './project.ts'
 
@@ -200,7 +200,7 @@ function defaultConfig(): WorkflowConfig {
  * task record carries no frozen snapshot. Mirrors `dev_task` `resolveWorkflow`:
  * no file → standard; missing/unknown `flow` → fail closed (never silent fallback).
  */
-  function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown; commit?: unknown; artifacts?: unknown; review_depth?: unknown; commit_required?: unknown } | undefined): WorkflowConfig {
+  function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown; skill_profiles?: unknown; commit?: unknown; artifacts?: unknown; review_depth?: unknown; commit_required?: unknown } | undefined): WorkflowConfig {
   if (parsed === undefined) return defaultConfig()
   const flow = parsed.flow
   if (typeof flow !== 'string' || flow.trim() === '') {
@@ -213,6 +213,9 @@ function defaultConfig(): WorkflowConfig {
     flow,
     ...(typeof parsed.stage_bindings === 'object' && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings)
       ? { stage_bindings: parsed.stage_bindings as Record<string, StageBinding> }
+      : {}),
+    ...(typeof parsed.skill_profiles === 'object' && parsed.skill_profiles !== null && !Array.isArray(parsed.skill_profiles)
+      ? { skill_profiles: parsed.skill_profiles as NonNullable<ProjectConfig['skill_profiles']> }
       : {}),
     ...(typeof parsed.commit === 'object' && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit as CommitRule } : {}),
     ...(Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts as ArtifactDef[] } : {}),

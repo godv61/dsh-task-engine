@@ -56,9 +56,8 @@ test('evidence: a document-producing skill is satisfied by a recorded artifact',
   // The blocker is the point: without an artifact it blocks, and with one it does
   // not — so the declared kind is genuinely enforced rather than merely accepted.
   //
-  // Mounted on 设计, which the standard flow declares an artifact for. A stage with
-  // no declared artifact has nothing to satisfy artifact evidence against, and the
-  // audit deliberately stays silent there rather than inventing a requirement.
+  // Mounted on 设计, which the adopted setup declares an artifact for. Missing
+  // declarations and incomplete fields must both remain blockers.
   const adopted = adoptRecommendation('standard')
   const config = resolveFlow('standard', {
     ...adopted,
@@ -79,7 +78,7 @@ test('evidence: a document-producing skill is satisfied by a recorded artifact',
   // Record what the stage declares and the blocker clears.
   const declared = config.artifacts.find(artifact => artifact.stage === '设计')
   assert.ok(declared !== undefined, 'the standard flow declares an artifact at 设计')
-  const cleared = skillBlockers(atDesign({ artifacts: { [declared.id]: { fields: { approach: 'x' } } } }), config, session)
+  const cleared = skillBlockers(atDesign({ artifacts: { [declared.id]: Object.fromEntries(declared.fields.map(field => [field, 'checked'])) } }), config, session)
   assert.deepEqual(cleared.filter(b => b.includes('doc-skill')), [],
     'a recorded artifact satisfies artifact evidence')
 })
@@ -99,7 +98,7 @@ test('evidence: manual evidence needs an explicit statement, none needs nothing'
   const session = sessionWith(['code-implement', 'doc-skill'])
   assert.ok(skillBlockers(state(), manual, session).some(b => b.includes('manual evidence')),
     'manual evidence is absent until something is recorded')
-  const recorded = state({ skill_results: { '开发': { 'doc-skill': { evidence: ['reviewed by the lead'] } } } })
+  const recorded = state({ skill_results: { '开发': { 'doc-skill': { evidence: ['reviewed by the lead'], approved: true } } } })
   assert.deepEqual(skillBlockers(recorded, manual, session).filter(b => b.includes('doc-skill')), [],
     'a recorded statement satisfies manual evidence')
 

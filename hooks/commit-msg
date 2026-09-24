@@ -172,19 +172,23 @@ var STANDARD = {
     { from: "\u4EA4\u4ED8", to: "\u4EE3\u7801\u5BA1\u6838", requires: ["verified"] },
     { from: "\u4EE3\u7801\u5BA1\u6838", to: "\u5B8C\u6210", requires: ["review_passed", "artifacts_present"] }
   ],
+  // No artifacts, no commit policy, no skills: the skeleton carries none of them.
+  artifacts: [],
+  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EE3\u7801\u5BA1\u6838"], file_scope: true },
+  high_risk_requires_verification: true
+};
+var STANDARD_RECOMMENDATION = {
+  commit: {
+    // Only the TEXT conventions. Policy, checkpoints and scope stay on the
+    // skeleton: they decide when a gate fires, not how a message reads.
+    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
+    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF08\u5982 GREET-001\uFF09\uFF0C\u5199\u7ED3\u679C\u4E0D\u5199\u7A7A\u6CDB\u52A8\u4F5C"
+  },
   artifacts: [
     { stage: "\u9700\u6C42\u8BC4\u5BA1", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope", "acceptance_criteria"] },
     { stage: "\u8BBE\u8BA1", id: "design", name: "\u8BBE\u8BA1\u6587\u6863", fields: ["approach", "risks", "impact"] },
     { stage: "\u4EE3\u7801\u5BA1\u6838", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
   ],
-  commit: {
-    policy: "task",
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF08\u5982 GREET-001\uFF09\uFF0C\u5199\u7ED3\u679C\u4E0D\u5199\u7A7A\u6CDB\u52A8\u4F5C",
-    checkpoints: ["\u4EE3\u7801\u5BA1\u6838"],
-    file_scope: true
-  },
-  high_risk_requires_verification: true,
   stage_bindings: {
     "\u9700\u6C42\u8BC4\u5BA1": { skills: [bundled("requirement-analysis", "security-redlines")] },
     "\u8BBE\u8BA1": { skills: [bundled("solution-design")] },
@@ -204,30 +208,38 @@ var AGILE = {
   transitions: [
     { from: "\u9700\u6C42", to: "\u5F00\u53D1", requires: ["requirement_confirmation"] },
     { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
+    // Entering 审查 is unconditional. A review guard on this edge would be
+    // circular — it would demand the verdict BEFORE the stage that produces it —
+    // and it would also block the commit at 交付, since a commit requires its
+    // stage's outgoing guards. What 审查 requires is declared as completion_guards
+    // instead, because a terminal stage has no outgoing edge to carry it.
     { from: "\u4EA4\u4ED8", to: "\u5BA1\u67E5", requires: [] }
   ],
+  artifacts: [],
+  commit: { policy: "item", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: true },
+  high_risk_requires_verification: false,
+  // 审查 is terminal and IS the review, so there is no outgoing edge to carry
+  // the guard. Declaring it here is what makes a blocked review prevent
+  // completion; without it the stage could be reached and finished with the
+  // review failing, which is what the assessment found.
+  completion_guards: ["review_passed"]
+};
+var AGILE_RECOMMENDATION = {
+  commit: {
+    // `item` policy emits two label shapes: `T<n>` mid-flow and `TASK` at the
+    // closing checkpoint. The pattern accepts BOTH, so the label the engine hands
+    // the model always satisfies the rule that validates it.
+    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
+    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF1B\u5B9E\u65BD\u9879\u63D0\u4EA4\u7528 T1\u3001T2\uFF0C\u6536\u5C3E\u63D0\u4EA4\u7528 TASK"
+  },
   artifacts: [
     { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] },
     // The 审查 stage binds code-review, whose instructions write this artifact with
-    // `record artifact=review`. Declaring it here keeps that binding executable:
-    // the engine refuses an undeclared artifact, so a bound skill pointing at one
-    // would be a contract the preset itself made impossible to satisfy.
+    // `record artifact=review`. Declaring it keeps that binding executable: the
+    // engine refuses an undeclared artifact, so a bound skill pointing at one would
+    // be a contract the recommendation made impossible to satisfy.
     { stage: "\u5BA1\u67E5", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
   ],
-  commit: {
-    // `item` policy emits two label shapes: `T<n>` for a mid-flow item commit and
-    // `TASK` for the closing commit at the checkpoint. The pattern below accepts
-    // BOTH, so the label the engine hands the model always satisfies the preset's
-    // own rule. Previously it accepted only `T\d+` while the checkpoint stage
-    // returned `TASK`, which made the closing commit impossible to phrase: the
-    // status line and the validator disagreed about the contract.
-    policy: "item",
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF1B\u5B9E\u65BD\u9879\u63D0\u4EA4\u7528 T1\u3001T2\uFF0C\u6536\u5C3E\u63D0\u4EA4\u7528 TASK",
-    checkpoints: ["\u4EA4\u4ED8"],
-    file_scope: true
-  },
-  high_risk_requires_verification: false,
   stage_bindings: {
     "\u9700\u6C42": { skills: [bundled("requirement-analysis", "security-redlines")] },
     "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
@@ -242,18 +254,13 @@ var MINIMAL = {
     { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] }
   ],
   artifacts: [],
-  commit: {
-    policy: "task",
-    message_pattern: "",
-    message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42",
-    checkpoints: ["\u4EA4\u4ED8"],
-    file_scope: false
-  },
-  high_risk_requires_verification: false,
+  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: false },
+  high_risk_requires_verification: false
+};
+var MINIMAL_RECOMMENDATION = {
   // A fast-change flow checks each change once, not twice under two headings a
   // short change rarely distinguishes. The item still has to be reviewed — what
-  // drops is the duplicated verdict, which is where the weight actually was: this
-  // flow used to carry the same per-item audit burden as the full one.
+  // drops is the duplicated verdict, which is where the weight actually was.
   review_depth: "single",
   stage_bindings: {
     "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
@@ -269,54 +276,113 @@ function deriveCapabilities(config2) {
   if (config2.commit.file_scope) caps.push("file_scope");
   return caps;
 }
-function preset(id, version, label, description, config2) {
-  return { id, version, label, description, capabilities: deriveCapabilities(config2), config: config2 };
+function preset(id, version, label, description, config2, recommendation) {
+  return {
+    id,
+    version,
+    label,
+    description,
+    capabilities: deriveCapabilities(config2),
+    config: config2,
+    // exactOptionalPropertyTypes: omit rather than assign undefined.
+    ...recommendation !== void 0 ? { recommendation } : {}
+  };
 }
 var FLOW_PRESETS = {
-  standard: preset("standard", 2, "\u5B8C\u6574\u7814\u53D1", "\u65B0\u529F\u80FD\u3001\u67B6\u6784\u6216\u8DE8\u6A21\u5757\u6539\u52A8\u3001\u9AD8\u98CE\u9669\u4EFB\u52A1\uFF1A\u9700\u6C42\u786E\u8BA4 \u2192 \u65B9\u6848\u786E\u8BA4 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u8BC1 \u2192 \u5BA1\u6838 \u2192 \u63D0\u4EA4", STANDARD),
-  // Version 2: the closing-commit label shape was unified with the message pattern,
-  // and the `review` artifact the bound code-review skill writes was declared. Tasks
-  // created before this keep their frozen version 1 config and are unaffected.
-  agile: preset("agile", 2, "\u65E5\u5E38\u8FED\u4EE3", "\u76EE\u6807\u660E\u786E\u7684\u5E38\u89C4\u529F\u80FD\u4E0E\u7F3A\u9677\u4FEE\u590D\uFF1A\u76EE\u6807\u4E0E\u9A8C\u6536 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u6536\u4E0E\u5BA1\u67E5 \u2192 \u63D0\u4EA4", AGILE),
-  // Version 2: per-item review depth is declared as `single` instead of inheriting
-  // the full flow's two verdicts per item. Tasks created before this keep their
-  // frozen version 1 config, which has no `review_depth` and therefore reads as
-  // two-stage exactly as it behaved.
-  minimal: preset("minimal", 2, "\u5FEB\u901F\u4FEE\u6539", "\u5C40\u90E8\u3001\u4F4E\u98CE\u9669\u3001\u65B9\u6848\u660E\u786E\u7684\u6539\u52A8\uFF1A\u4FEE\u6539 \u2192 \u68C0\u67E5\u4E0E\u63D0\u4EA4\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5", MINIMAL)
+  standard: preset("standard", 3, "\u5B8C\u6574\u7814\u53D1", "\u65B0\u529F\u80FD\u3001\u67B6\u6784\u6216\u8DE8\u6A21\u5757\u6539\u52A8\u3001\u9AD8\u98CE\u9669\u4EFB\u52A1\uFF1A\u9700\u6C42\u786E\u8BA4 \u2192 \u65B9\u6848\u786E\u8BA4 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u8BC1 \u2192 \u5BA1\u6838 \u2192 \u63D0\u4EA4", STANDARD, STANDARD_RECOMMENDATION),
+  // Version 4 for agile: 交付 → 审查 now requires review_passed, where it previously
+  // required nothing. That is a gate-semantics change, so a task created before it
+  // keeps its frozen version 3 config and behaves exactly as it did.
+  //
+  // Version 3 across all three: the preset is now a bare skeleton and its former
+  // built-in bindings, commit rule and artifacts are a separate recommendation a
+  // user adopts explicitly. Tasks created before this keep their frozen config and
+  // are unaffected; a project's existing config is likewise left exactly as it is.
+  agile: preset("agile", 4, "\u65E5\u5E38\u8FED\u4EE3", "\u76EE\u6807\u660E\u786E\u7684\u5E38\u89C4\u529F\u80FD\u4E0E\u7F3A\u9677\u4FEE\u590D\uFF1A\u76EE\u6807\u4E0E\u9A8C\u6536 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u6536\u4E0E\u5BA1\u67E5 \u2192 \u63D0\u4EA4", AGILE, AGILE_RECOMMENDATION),
+  minimal: preset("minimal", 3, "\u5FEB\u901F\u4FEE\u6539", "\u5C40\u90E8\u3001\u4F4E\u98CE\u9669\u3001\u65B9\u6848\u660E\u786E\u7684\u6539\u52A8\uFF1A\u4FEE\u6539 \u2192 \u68C0\u67E5\u4E0E\u63D0\u4EA4\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5", MINIMAL, MINIMAL_RECOMMENDATION)
 };
 function dedupe(names) {
   return [...new Set(names)];
 }
-function mergeBindings(base, override) {
-  if (override === void 0) return base;
-  let changed = false;
-  const merged = { ...base.stage_bindings };
-  for (const [stage, addition] of Object.entries(override)) {
-    const existing = merged[stage];
-    const skills = [...existing?.skills ?? []];
-    const seen = new Set(skills.map((skill) => formatResourceRef(skill.skill)));
-    for (const skill of addition.skills ?? []) {
-      const key = formatResourceRef(skill.skill);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      skills.push(skill);
+function applyProjectConfig(base, project) {
+  if (project === void 0) return base;
+  const next = { ...base };
+  if (project.stage_bindings !== void 0) {
+    const profiles = { ...project.skill_profiles ?? {} };
+    const problems = [];
+    const bindings = {};
+    for (const [stage, binding] of Object.entries(project.stage_bindings)) {
+      const entry = {};
+      if (binding === null || typeof binding !== "object") {
+        problems.push(`stage_bindings "${stage}" must be an object`);
+        bindings[stage] = entry;
+        continue;
+      }
+      if (binding.skill_refs !== void 0 && binding.skills !== void 0) {
+        problems.push(`stage_bindings "${stage}" has both skill_refs and legacy skills`);
+      }
+      if (binding.skill_refs !== void 0) {
+        if (!Array.isArray(binding.skill_refs)) {
+          problems.push(`stage_bindings "${stage}" skill_refs must be an array`);
+        }
+        entry.skills = (Array.isArray(binding.skill_refs) ? binding.skill_refs : []).flatMap((ref) => {
+          if (ref === null || typeof ref !== "object") {
+            problems.push(`stage_bindings "${stage}" has an invalid skill reference`);
+            return [];
+          }
+          const key = formatResourceRef(ref);
+          const profile = profiles[key];
+          if (profile === void 0) {
+            problems.push(`skill profile "${key}" is missing`);
+            return [];
+          }
+          if (profile === null || !Array.isArray(profile.rules)) {
+            problems.push(`skill profile "${key}" must declare a rules array`);
+            return [];
+          }
+          return [{ skill: ref, rules: profile.rules, ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {} }];
+        });
+      } else if (binding.skills !== void 0) {
+        if (!Array.isArray(binding.skills)) {
+          problems.push(`stage_bindings "${stage}" skills must be an array`);
+        }
+        entry.skills = (Array.isArray(binding.skills) ? binding.skills : []).flatMap((skill) => {
+          if (skill === null || typeof skill !== "object" || skill.skill === null || typeof skill.skill !== "object") {
+            problems.push(`stage_bindings "${stage}" has an invalid skill binding`);
+            return [];
+          }
+          const key = formatResourceRef(skill.skill);
+          const candidate = { rules: skill.rules ?? [], ...skill.evidence !== void 0 ? { evidence: skill.evidence } : {} };
+          const existing = profiles[key];
+          if (existing !== void 0 && JSON.stringify(existing) !== JSON.stringify(candidate)) {
+            problems.push(`skill "${key}" has different rules or evidence in multiple stages; copy it as a distinct skill`);
+          } else profiles[key] = candidate;
+          return [skill];
+        });
+      }
+      const legacy = dedupe(binding.legacy_rules ?? []);
+      if (legacy.length > 0) entry.legacy_rules = legacy;
+      bindings[stage] = entry;
     }
-    const legacy = dedupe([...existing?.legacy_rules ?? [], ...addition.legacy_rules ?? []]);
-    const binding = {};
-    if (skills.length > 0) binding.skills = skills;
-    if (legacy.length > 0) binding.legacy_rules = legacy;
-    merged[stage] = binding;
-    changed = true;
+    next.stage_bindings = bindings;
+    next.skill_profiles = profiles;
+    if (problems.length > 0) next.configuration_errors = problems;
+  } else if (project.skill_profiles !== void 0) {
+    next.skill_profiles = project.skill_profiles;
   }
-  if (!changed) return base;
-  return { ...base, stage_bindings: merged };
+  if (project.commit !== void 0) next.commit = project.commit;
+  if (project.artifacts !== void 0) next.artifacts = project.artifacts;
+  if (project.review_depth !== void 0) next.review_depth = project.review_depth;
+  if (project.commit_required !== void 0) next.commit_required = project.commit_required;
+  return next;
 }
-function resolveFlow(flow, override) {
+function resolveFlow(flow, project) {
   const preset2 = FLOW_PRESETS[flow];
   if (preset2 === void 0) {
     return { ok: false, code: "UNKNOWN_FLOW", flow, knownFlows: Object.keys(FLOW_PRESETS) };
   }
-  return { ok: true, config: mergeBindings(preset2.config, override?.stage_bindings), preset: preset2 };
+  const { flow: _ignored, ...rest } = project ?? { flow };
+  return { ok: true, config: applyProjectConfig(preset2.config, { flow, ...rest }), preset: preset2 };
 }
 
 // src/snapshot.ts
@@ -471,8 +537,16 @@ function loadWorkflow(parsed) {
   if (typeof flow !== "string" || flow.trim() === "") {
     refuse('\u9879\u76EE .dsh/eng.json \u7F3A "flow" \u5B57\u6BB5\u2014\u2014\u8BBE\u4E3A standard|agile|minimal\uFF0C\u6216\u5220\u9664\u8BE5\u6587\u4EF6');
   }
-  const override = typeof parsed.stage_bindings === "object" && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings) ? { stage_bindings: parsed.stage_bindings } : void 0;
-  const resolved = resolveFlow(flow, override);
+  const project = {
+    flow,
+    ...typeof parsed.stage_bindings === "object" && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings) ? { stage_bindings: parsed.stage_bindings } : {},
+    ...typeof parsed.skill_profiles === "object" && parsed.skill_profiles !== null && !Array.isArray(parsed.skill_profiles) ? { skill_profiles: parsed.skill_profiles } : {},
+    ...typeof parsed.commit === "object" && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit } : {},
+    ...Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts } : {},
+    ...typeof parsed.review_depth === "string" ? { review_depth: parsed.review_depth } : {},
+    ...typeof parsed.commit_required === "boolean" ? { commit_required: parsed.commit_required } : {}
+  };
+  const resolved = resolveFlow(flow, project);
   if (!resolved.ok) {
     refuse(`\u672A\u77E5\u6D41\u7A0B "${resolved.flow}"\uFF08\u5DF2\u77E5\u6D41\u7A0B\uFF1A${resolved.knownFlows.join("\u3001")}\uFF09`);
   }

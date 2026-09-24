@@ -313,6 +313,7 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
       {
         flow: parsed.flow,
         ...(parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : {}),
+        ...(parsed.skill_profiles !== undefined ? { skill_profiles: parsed.skill_profiles } : {}),
         ...(parsed.commit !== undefined ? { commit: parsed.commit } : {}),
         ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
         ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
@@ -573,19 +574,19 @@ async function freezeResources(
   const unreadable: string[] = []
   for (const binding of Object.values(config.stage_bindings ?? {})) {
     for (const entry of binding.skills ?? []) {
-      const skillKey = formatResourceRef(entry.skill)
+      const skillKey = 'skill:' + formatResourceRef(entry.skill)
       if (!seen.has(skillKey)) {
         const body = await readSkillAt(entry.skill, fs, cwd)
         if (body === undefined) unreadable.push(skillKey)
-        else { seen.add(skillKey); resources.push({ ref: entry.skill, hash: hashText(body), content: body }) }
+        else { seen.add(skillKey); resources.push({ kind: 'skill', ref: entry.skill, hash: hashText(body), content: body }) }
       }
       for (const rule of entry.rules) {
-        const key = formatResourceRef(rule)
+        const key = 'rule:' + formatResourceRef(rule)
         if (seen.has(key)) continue
         const body = await readRuleAt(rule.source, rule.name, fs, cwd)
         if (body === undefined) { unreadable.push(key); continue }
         seen.add(key)
-        resources.push({ ref: rule, hash: hashText(body), content: body })
+        resources.push({ kind: 'rule', ref: rule, hash: hashText(body), content: body })
       }
     }
   }
@@ -612,7 +613,7 @@ async function resolveLegacyRuleSource(
   // legacy name resolved to at creation is part of what the task froze, so a
   // source deleted afterwards cannot change where it resolves.
   for (const resource of frozen ?? []) {
-    if (resource.ref.name === name) return resource.ref.source
+    if (resource.kind !== 'skill' && resource.ref.name === name) return resource.ref.source
   }
   for (const source of ['bundled', 'project', 'user'] as const) {
     if ((await readRuleAt(source, name, fs, cwd)) !== undefined) return source
@@ -644,7 +645,15 @@ async function resolveRules(
   // so editing a rule silently changed what a running task was told to follow —
   // the exact instability the snapshot exists to prevent.
   const frozenByRef = new Map<string, FrozenResource>()
-  for (const resource of frozen ?? []) frozenByRef.set(formatResourceRef(resource.ref), resource)
+  // Pre-0.26 snapshots have no kind. If such a snapshot reused a skill's ref
+  // for a rule, its rule was never frozen; fail closed instead of reading the
+  // skill body as a rule.
+  for (const resource of frozen ?? []) {
+    if (resource.kind === 'rule') frozenByRef.set(formatResourceRef(resource.ref), resource)
+    else if (resource.kind === undefined && !resource.content.startsWith('---')) {
+      frozenByRef.set(formatResourceRef(resource.ref), resource)
+    }
+  }
   const stale: string[] = []
   for (const ref of refs) {
     const key = formatResourceRef(ref)
@@ -723,6 +732,25 @@ async function rulesForBinding(
   }
 }
 
+/** Return the task's frozen skill instructions, falling back to live bodies for old tasks. */
+async function skillBodiesForBinding(
+  binding: StageBinding | undefined,
+  fs: Fs,
+  cwd?: string,
+  frozen?: FrozenResource[],
+): Promise<{ name: string; source: ResourceSource; content: string }[]> {
+  const result: { name: string; source: ResourceSource; content: string }[] = []
+  for (const entry of binding?.skills ?? []) {
+    const key = formatResourceRef(entry.skill)
+    const archived = frozen?.find(resource => (resource.kind === 'skill'
+      || (resource.kind === undefined && resource.content.startsWith('---')))
+      && formatResourceRef(resource.ref) === key)
+    const content = archived?.content ?? await readSkillAt(entry.skill, fs, cwd)
+    if (content !== undefined) result.push({ name: entry.skill.name, source: entry.skill.source, content })
+  }
+  return result
+}
+
 /**
  * Render a stage's progressive-disclosure payload: skill names to load via the
  * `skill` tool, plus the resolved rule bodies to follow. Empty text means the
@@ -740,6 +768,10 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const skillPart = skills.length > 0
     ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name)`
     : 'skills to load: none'
+  const frozenSkills = await skillBodiesForBinding(binding, fs, cwd, frozen)
+  const skillInstructions = frozenSkills.length > 0
+    ? `skill instructions for this task (frozen at creation when available; these are authoritative if the live skill changed):\n${frozenSkills.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
+    : ''
   const rulePart = rules.length > 0
     ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${rules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
     : ''
@@ -766,7 +798,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
-  return [skillPart, receiptPart, rulePart, missingPart, legacyPart].filter(Boolean).join('\n')
+  return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, legacyPart].filter(Boolean).join('\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -1174,6 +1206,9 @@ export function registerDevTask(ctx: Context): void {
           // in-flight task stable: editing a rule the task uses would otherwise change
           // what the task is doing without the task saying so.
           const frozen = await freezeResources(resolved.config, fs, cwd)
+          if (frozen.unreadable.length > 0) {
+            throw new Error(`cannot create task with unreadable bound resources: ${frozen.unreadable.join(', ')}`)
+          }
         const flow: FlowSnapshot = {
           flow: resolved.flow,
           version: resolved.version,
@@ -1198,12 +1233,18 @@ export function registerDevTask(ctx: Context): void {
         state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd)}\nBefore advance, load all bound skills. For additional skills, execute their instructions then use skill_result with evidence and command. Terminal bindings must finish before entering the terminal stage.`
+        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
       const state = await loadTask(fs, a.task_id, cwd)
       const workflow = await workflowFor(state, fs, cwd)
+      if (state.completed !== undefined && a.operation === 'complete') {
+        return `task already completed at ${state.completed.at}`
+      }
+      if (state.completed !== undefined && a.operation !== 'status' && a.operation !== 'revise') {
+        throw new Error('task is completed; use revise to reopen it before changing task state')
+      }
 
       if (a.operation === 'status') {
         const binding = bindingsForStage(state.stage, workflow)
@@ -1221,11 +1262,16 @@ export function registerDevTask(ctx: Context): void {
         // needs a passing verification and does not have one. Callers act on both.
         const verification = verificationBlockers(state, workflow)
         const commitBlockers = [...staleEvidence, ...missingSkills, ...verification]
+        const completionIssues = state.completed === undefined
+          ? [...completionBlockers(state, workflow), ...missingSkills, ...resourceBlockers(missingRules, state.stage), ...staleEvidence]
+          : []
         return JSON.stringify({
           id: state.id,
           stage: state.stage,
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
           risk_level: state.risk_level,
+          completed: state.completed ?? null,
+          completion_blockers: completionIssues,
           work_size: state.work_size,
           requirement_confirmed: state.requirement_confirmed,
           solution_confirmed: state.solution_confirmed,
@@ -1273,6 +1319,7 @@ export function registerDevTask(ctx: Context): void {
             : checkpoint,
           bindings: {
             skills: binding?.skills ?? [],
+            skill_contents: await skillBodiesForBinding(binding, fs, cwd, state.flow?.resources),
             // The layer is disclosed with each rule, because two same-named rules in
             // different layers are distinct resources and the caller needs to know
             // which one is actually in force. Reporting only the name made them
@@ -1333,7 +1380,13 @@ export function registerDevTask(ctx: Context): void {
           // leaving a checkpoint" rule fires on the way OUT of a stage and a
           // terminal stage has no way out.
           await assertFreshEvidence(fs, state, workflow, cwd)
-          const blockers = completionBlockers(state, workflow)
+          const missingSkills = skillBlockers(state, workflow, session)
+          const unresolvedRules = (await rulesForBinding(bindingsForStage(state.stage, workflow), fs, cwd, state.flow?.resources)).missing
+          const blockers = [
+            ...completionBlockers(state, workflow),
+            ...missingSkills,
+            ...resourceBlockers(unresolvedRules, state.stage),
+          ]
           if (blockers.length > 0) throw new Error(`cannot complete: ${blockers.join('; ')}`)
           const hash = state.commits.find(commit => commit.hash !== undefined)?.hash
           state.completed = hash === undefined
@@ -1534,9 +1587,26 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'skill_result': {
           const stage = a.target_stage ?? state.stage
-          if (!obligationStages(state, workflow).includes(stage) || !(workflow.stage_bindings?.[stage]?.skills ?? []).some(entry => entry.skill.name === a.skill_name)) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
+          const entry = (workflow.stage_bindings?.[stage]?.skills ?? []).find(binding => binding.skill.name === a.skill_name)
+          if (!obligationStages(state, workflow).includes(stage) || !entry) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
           const loadCall = loadedSkills(session).get(a.skill_name!)
           if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
+          if (entry.evidence === 'manual') {
+            if (!a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('manual skill_result requires non-empty evidence')
+            const approval = ctx.get('approval') as ApprovalAsk | undefined
+            if (approval === undefined || exec.agent === undefined) throw new Error('manual skill_result requires the human approval service')
+            const outcome = await approval.request({ agent: exec.agent, toolName: 'dev_task', callId: exec.callId,
+              reason: `请确认技能 ${a.skill_name} 在 ${stage} 的人工结果：${a.evidence.join('；')}`, signal: exec.signal })
+            if (outcome !== 'allowed-once') throw new Error(`manual skill_result was not approved (${outcome})`)
+            state.skill_results ??= {}
+            state.skill_results[stage] ??= {}
+            state.skill_results[stage]![a.skill_name!] = { session_id: session?.id ?? '', load_call_id: loadCall, evidence: a.evidence, approved: true }
+            note = JSON.stringify({ skill: a.skill_name, stage, approved: true }, null, 2)
+            break
+          }
+          if (entry.evidence === 'artifact' || entry.evidence === 'review' || entry.evidence === 'none') {
+            throw new Error(`${entry.evidence} skill evidence is recorded by its node operation; skill_result is only for command or manual evidence`)
+          }
           if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')
           approvedWriteMode = await resolveWriteMode(ctx, a, exec)
           const receipt = await runVerificationCommand(ctx, a.command, state.root ?? cwd, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
