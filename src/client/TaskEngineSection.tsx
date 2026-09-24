@@ -20,7 +20,10 @@ import {
   formatResourceRef,
   parseResourceRef,
   validateWorkflow,
+  type ArtifactDef,
+  type CommitRule,
   type ResourceRef,
+  type ReviewDepth,
   type SkillBinding,
   type StageBinding,
   type WorkflowConfig,
@@ -40,7 +43,7 @@ import {
 function refFromText(text: string): ResourceRef {
   return parseResourceRef(text) ?? { source: 'bundled', name: text }
 }
-import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow } from '../workflows.ts'
+import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow, type ProjectConfig } from '../workflows.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 
@@ -205,6 +208,13 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
 
   const [flow, setFlow] = useState('standard')
   const [stageBindings, setStageBindings] = useState<Record<string, StageBinding>>({})
+  // The panel holds the WHOLE config it is editing, not only the bindings. It
+  // used to keep just the bindings and send just those, so a commit rule, the
+  // artifact declarations and the review depth were resolved for the preview and
+  // then dropped on save — the panel showed one config and the file held another.
+  const [commitRule, setCommitRule] = useState<CommitRule | undefined>(undefined)
+  const [artifacts, setArtifacts] = useState<ArtifactDef[] | undefined>(undefined)
+  const [reviewDepth, setReviewDepth] = useState<ReviewDepth | undefined>(undefined)
   const [source, setSource] = useState<string>('default')
   const [savedAt, setSavedAt] = useState<string>('')
   /** True while the in-memory bindings differ from what is on disk. */
@@ -228,6 +238,9 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
       if (result.ok) {
         setFlow(result.value.flow)
         setStageBindings(result.value.config.stage_bindings ?? {})
+        setCommitRule(result.value.config.commit)
+        setArtifacts(result.value.config.artifacts)
+        setReviewDepth(result.value.config.review_depth)
         setSource(result.value.source)
         setConfigProblems(result.value.problems)
         setSavedAt('')
@@ -298,6 +311,9 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     if (adopted === undefined) return
     if (dirty && !window.confirm('采用推荐配置会替换当前的技能与规则设置。继续？')) return
     setStageBindings({ ...(adopted.stage_bindings ?? {}) })
+    setCommitRule(adopted.commit)
+    setArtifacts(adopted.artifacts)
+    setReviewDepth(adopted.review_depth)
     setDirty(true)
     setSavedAt('')
   }
@@ -389,7 +405,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           size="md"
           icon={<IconCheckOutline16 size={16} />}
           disabled={problems.length > 0 || saving}
-          onClick={() => { setSaving(true); void save(remote, flow, stageBindings, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
+          onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}) }, workspace, setSavedAt, setSource).then(ok => { if (ok) { setConfigProblems([]); setDirty(false) } }).finally(() => setSaving(false)) }}
         >
           {saving ? '正在保存…' : dirty ? '保存到 .dsh/eng.json' : '已保存 · 无需保存'}
         </Button>
@@ -588,9 +604,28 @@ function BindingEditor({ stages, defaults, stageBindings, setStageBindings, skil
   )
 }
 
-async function save(remote: TaskEngineRemote, flow: string, stageBindings: Record<string, StageBinding>, workspace: string, setSavedAt: (s: string) => void, setSource: (s: string) => void): Promise<boolean> {
+/**
+ * Persist the configuration the user is editing.
+ *
+ * The commit rule, artifact declarations and review depth go with the bindings.
+ * Sending only `stage_bindings` meant those three were resolved for the preview and
+ * then dropped on save, so the panel showed one config while the file held another.
+ * @param remote - the task-engine remote.
+ * @param config - the config being saved, as the panel currently shows it.
+ * @param workspace - absolute workspace directory.
+ * @param setSavedAt - status setter.
+ * @param setSource - source setter.
+ * @returns whether the save succeeded.
+ */
+async function save(
+  remote: TaskEngineRemote,
+  config: ProjectConfig,
+  workspace: string,
+  setSavedAt: (s: string) => void,
+  setSource: (s: string) => void,
+): Promise<boolean> {
   try {
-    const result = await remote.write({ path: workspace, flow, stage_bindings: stageBindings })
+    const result = await remote.write({ path: workspace, ...config })
     if (!result.ok) { setSavedAt('保存失败：' + describeError(result.error)); return false }
     if (!result.value.ok) { setSavedAt('保存失败：' + result.value.problems.join('；')); return false }
     setSource(result.value.source)

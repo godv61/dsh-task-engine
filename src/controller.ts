@@ -604,9 +604,17 @@ export default class TaskEngineController extends TypertRemoteService {
     if (problems.length > 0) {
       return { ok: false, source: 'invalid', flow: request.flow, config: resolved.config, problems }
     }
+    // Every field the user can configure is written back. This used to carry only
+    // `flow` and `stage_bindings`, so a commit rule, artifact declarations or a
+    // review depth that had been resolved and previewed were silently dropped on
+    // save — the workbench showed one config and the file held another.
     const payload = {
       flow: request.flow,
       ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+      ...(request.commit !== undefined ? { commit: request.commit } : {}),
+      ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
+      ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
+      ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
     }
     const fs = this.fs()
     const target = await fs.resolve(ENGFILE, { cwd: request.path })

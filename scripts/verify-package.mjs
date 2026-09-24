@@ -42,7 +42,7 @@ const listing = execSync(`tar -tzf "${tgzPath}"`, { encoding: 'utf8' })
 check('extract', existsSync(join(pkgDir, 'package.json')))
 
 // 3. files whitelist sanity
-for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs']) {
+for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs', '.roundtrip-test.mjs']) {
   check(`tarball contains ${required}`, listing.includes(required))
 }
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
