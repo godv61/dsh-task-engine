@@ -68,10 +68,19 @@ test('one user skill profile is shared across workspaces and cannot depend on a 
       assert.equal(loaded.ok, true)
       assert.deepEqual(loaded.config.stage_bindings['开发'].skills[0].rules, profile.rules)
     }
+    const updatedProfile = { rules: [{ source: 'user', name: 'other-rule' }], evidence: 'none' }
+    const updated = await Controller.prototype.writeUserSkillProfile.call(receiver,
+      { name: skill.name, profile: updatedProfile })
+    assert.equal(updated.ok, true)
+    for (const projectName of ['one', 'two']) {
+      const loaded = await Controller.prototype.read.call(receiver, join(root, projectName))
+      assert.equal(loaded.ok, true)
+      assert.deepEqual(loaded.config.stage_bindings['开发'].skills[0].rules, updatedProfile.rules)
+    }
     const bad = await Controller.prototype.writeUserSkillProfile.call(receiver, { name: skill.name,
       profile: { rules: [{ source: 'project', name: 'local-rule' }] } })
     assert.equal(bad.ok, false)
-    assert.deepEqual(JSON.parse(readFileSync(join(skillDir, 'profile.json'), 'utf8')), profile)
+    assert.deepEqual(JSON.parse(readFileSync(join(skillDir, 'profile.json'), 'utf8')), updatedProfile)
   } finally {
     if (priorHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = priorHome
