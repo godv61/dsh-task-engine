@@ -44,7 +44,7 @@
     ".assessment-batch1.mjs",
     ".e2e-presets.mjs",
     ".revision-test.mjs",
-    ".freeze-test.mjs .enforce-test.mjs",
+    ".freeze-test.mjs",
     ".enforce-test.mjs",
     ".acceptance.mjs",
     ".hook-consistency.mjs"
