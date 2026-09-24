@@ -112,7 +112,31 @@ export interface SkillBinding {
   skill: ResourceRef
   /** Rules this skill follows, each named with its source layer. */
   rules: ResourceRef[]
+  /**
+   * What kind of evidence proves this skill was actually executed.
+   *
+   * A shell command is one kind of proof, not the only one: a requirement or design
+   * skill produces a document, and demanding a "real validation command" from it
+   * forced an irrelevant command in order to satisfy a gate. Absent means the
+   * historical default (`command`), so existing configs and frozen snapshots keep
+   * behaving exactly as they did.
+   */
+  evidence?: EvidenceKind
 }
+
+/**
+ * How a bound skill proves it ran.
+ *
+ * - `command`: a shell command with a captured receipt (the default).
+ * - `artifact`: a recorded artifact body, for skills whose output is a document.
+ * - `review`: a recorded review verdict, for skills that judge rather than build.
+ * - `manual`: an explicit human statement, for work no machine can verify.
+ * - `none`: the skill is advisory and needs no separate proof.
+ *
+ * Naming them lets a flow say what it actually wants, instead of encoding one kind
+ * of evidence as though it were the only kind.
+ */
+export type EvidenceKind = 'command' | 'artifact' | 'review' | 'manual' | 'none'
 
 /**
  * What a stage binds for progressive disclosure when the task enters it.

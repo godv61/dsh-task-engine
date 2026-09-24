@@ -755,7 +755,14 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
     ? `UNASSIGNED legacy stage rules: ${legacy.join(', ')} — these belong to the stage, not to any skill. ` +
       'Assign each to the skill that should carry it (or copy the skill and give each copy its own rules) and record it in stage_bindings.'
     : ''
-  const additional = skills.map(skill => skill.skill.name).filter(needsSkillReceipt)
+  // The disclosure names the skills that owe a command receipt, honouring each
+    // binding's declared evidence kind — a document-producing skill owes an
+    // artifact, not a shell command, and saying otherwise would tell the model to
+    // run something irrelevant.
+    const additional = skills
+      .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
+      .map(entry => entry.skill.name)
+      .filter(name => needsSkillReceipt(name))
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'skill_result not required for this stage: core skills use record/verify/review/commit gates'
@@ -1225,8 +1232,15 @@ export function registerDevTask(ctx: Context): void {
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
           skill_obligations: obligationStages(state, workflow).map(stage => {
-            const skills = (workflow.stage_bindings?.[stage]?.skills ?? []).map(skill => skill.skill.name)
-            return { stage, skills, command_receipts_required: skills.filter(needsSkillReceipt) }
+            const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
+            const skills = bindings.map(entry => entry.skill.name)
+            // Only bindings whose evidence is a command owe a command receipt, so a
+            // document-producing skill is not told to run something irrelevant.
+            const command_receipts_required = bindings
+              .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
+              .map(entry => entry.skill.name)
+              .filter(name => needsSkillReceipt(name))
+            return { stage, skills, command_receipts_required }
           }),
           skill_blockers: missingSkills,
           evidence_blockers: staleEvidence,
