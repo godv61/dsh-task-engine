@@ -4,6 +4,7 @@ import { Button, MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ResourceModal } from './ResourceModal.tsx'
 import { describeError } from './shared.ts'
 import type { TaskEngineRemote, ReadSkillResult } from './TaskEngineSection.tsx'
+import type { ResourceRef } from '../engine.ts'
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
 
 const labels = { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' }
@@ -14,7 +15,7 @@ const sourceText = (source: string) => source === 'bundled' ? '内置' : source.
 const sizeText = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`
 const fail = (r: { ok: boolean; error?: unknown }) => describeError(r.error ?? '操作失败')
 
-export function ResourceManager({ workspace, remote, kind }: { workspace: string; remote: TaskEngineRemote; kind: 'skill' | 'rule' }) {
+export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: { workspace: string; remote: TaskEngineRemote; kind: 'skill' | 'rule'; onConfigureSkill?: (ref: ResourceRef) => void }) {
   const noun = kind === 'skill' ? '技能' : '规则'
   const [rows, setRows] = useState<Row[]>([])
   const [query, setQuery] = useState('')
@@ -172,7 +173,7 @@ export function ResourceManager({ workspace, remote, kind }: { workspace: string
     loading ? h('div', { className: 'te-empty', role: 'status' }, '正在加载…') : visible.length === 0 ? h('div', { className: 'te-empty' }, h('h3', null, query || filter !== 'all' ? '没有匹配的结果' : `还没有${noun}`), h('p', null, '调整筛选，或使用右上角按钮添加。')) : h('div', { className: 'te-resource-grid' }, ...visible.map(row => h('article', { className: 'te-resource-card', key: row.source + '/' + row.name },
       h('div', { className: 'te-card-top' }, h('span', { className: 'te-resource-icon', 'aria-hidden': true }, kind === 'skill' ? '◇' : '≡'), h('span', { className: 'te-badge' }, sourceText(row.source))),
       h('h3', null, row.name), h('p', null, row.description || '项目约定与执行规则'),
-      h('div', { className: 'te-actions' }, h(Button, { variant: 'outline', size: 'sm', onClick: () => { void edit(row, true) } }, '查看'), levelOf(row) !== 'bundled' ? h(Button, { variant: 'ghost', size: 'sm', onClick: () => { void edit(row) } }, '编辑') : null, levelOf(row) !== 'bundled' ? h('button', { className: 'te-delete', onClick: () => { setDeleting(row); setError('') } }, '删除') : null)))),
+      h('div', { className: 'te-actions' }, kind === 'skill' && onConfigureSkill ? h(Button, { variant: 'primary', size: 'sm', onClick: () => onConfigureSkill({ source: levelOf(row), name: row.name }) }, '配置规则') : null, h(Button, { variant: 'outline', size: 'sm', onClick: () => { void edit(row, true) } }, '查看'), levelOf(row) !== 'bundled' ? h(Button, { variant: 'ghost', size: 'sm', onClick: () => { void edit(row) } }, '编辑') : null, levelOf(row) !== 'bundled' ? h('button', { className: 'te-delete', onClick: () => { setDeleting(row); setError('') } }, '删除') : null)))),
     kind === 'skill' ? h('button', { className: 'te-link', onClick: () => { setImporting(true); setManual(true); setError('') } }, '高级：从 Harness 主机路径安装') : null,
     importing ? h(ResourceModal, { title: `安装${noun}`, description: '先检查内容和安装位置，确认后才会写入。', onClose: close, footer: h('div', { className: 'te-actions' }, h(Button, { variant: 'ghost', disabled: busy, onClick: close }, '取消'), h(Button, { variant: 'primary', disabled: busy || !preview || preview.conflict, onClick: () => { void install() } }, busy ? '处理中…' : '确认安装')) },
       targets(), h('div', { className: 'te-actions' }, h(Button, { variant: 'outline', disabled: busy, onClick: choose }, '重新选择'), kind === 'skill' ? h(Button, { variant: 'ghost', disabled: busy, onClick: () => setManual(!manual) }, manual ? '收起高级方式' : '主机路径') : null),

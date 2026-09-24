@@ -47,6 +47,7 @@ function refFromText(text: string): ResourceRef {
 import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow, type ProjectConfig } from '../workflows.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
+import { SkillRuleDialog } from './SkillRuleDialog.tsx'
 
 /**
  * Resolve a flow id plus the user's staged bindings into a complete config for preview.
@@ -229,6 +230,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   const [configProblems, setConfigProblems] = useState<string[]>([])
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([])
   const [rules, setRules] = useState<RuleCatalogEntry[]>([])
+  const [configuringSkill, setConfiguringSkill] = useState<ResourceRef | null>(null)
 
   useEffect(() => {
     if (workspace === '') return
@@ -268,7 +270,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     void remote.listRules(workspace).then((result) => {
       if (result.ok) setRules(result.value.rules)
     }, () => {
-      /* catalog is best-effort */
+      /* catalog is best-effort; the existing profile remains editable */
     })
   }, [remote, workspace])
 
@@ -323,6 +325,23 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
     setReviewDepth(adopted.review_depth)
     setDirty(true)
     setSavedAt('')
+  }
+
+  const updateSkillProfile = async (profile: SkillProfile): Promise<void> => {
+    if (!configuringSkill) return
+    const key = formatResourceRef(configuringSkill)
+    const bindings: Record<string, StageBinding> = {}
+    for (const [name, binding] of Object.entries(stageBindings)) {
+      bindings[name] = { ...binding, skills: binding.skills?.map(entry =>
+        formatResourceRef(entry.skill) === key
+          ? { skill: entry.skill, rules: profile.rules, ...(profile.evidence ? { evidence: profile.evidence } : {}) }
+          : entry) }
+    }
+    setStageBindings(bindings)
+    setSkillProfiles({ ...skillProfiles, [key]: profile })
+    setDirty(true)
+    setSavedAt('')
+    setConfiguringSkill(null)
   }
 
   if (loadError !== '') {
@@ -387,8 +406,8 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         </div>
       </div>
 
-      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能" hint="节点选择技能；同一技能的规则在所有节点保持一致，均可修改或移除。" >
-        <BindingEditor stages={stages} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skillProfiles={skillProfiles} setSkillProfiles={(next) => { setSkillProfiles(next); setDirty(true); setSavedAt('') }} skills={skills} rules={rules} />
+      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能" >
+        <BindingEditor stages={stages} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skillProfiles={skillProfiles} setSkillProfiles={(next) => { setSkillProfiles(next); setDirty(true); setSavedAt('') }} skills={skills} onConfigureSkill={setConfiguringSkill} />
       </SectionCard>
 
       {problems.length > 0
@@ -402,7 +421,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         )
         : (
           <span style={styles.okText}>
-            <StateDot state="done" />{source === 'project' ? '配置有效' : '使用流程预设默认绑定（尚未保存）'}
+            <StateDot state="done" />{source === 'project' ? '配置有效' : '使用空白流程配置（尚未保存）'}
           </span>
         )}
 
@@ -422,6 +441,10 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           )
           : null}
       </div>
+      {configuringSkill ? <SkillRuleDialog key={formatResourceRef(configuringSkill)} skill={configuringSkill}
+        profile={skillProfiles[formatResourceRef(configuringSkill)]} rules={rules}
+        description="规则属于技能，所有引用此技能的节点都会同步。应用后请点击页面底部保存。"
+        saveLabel="应用到当前配置" onSave={updateSkillProfile} onClose={() => setConfiguringSkill(null)} /> : null}
     </div>
   )
 }
@@ -464,46 +487,20 @@ function SectionCard({ icon, title, hint, children }: SectionCardProps): ReturnT
   )
 }
 
-function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles, setSkillProfiles, skills, rules }: {
+function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles, setSkillProfiles, skills, onConfigureSkill }: {
   stages: string[]
   stageBindings: Record<string, StageBinding>
   setStageBindings: (b: Record<string, StageBinding>) => void
   skillProfiles: Record<string, SkillProfile>
   setSkillProfiles: (profiles: Record<string, SkillProfile>) => void
   skills: SkillCatalogEntry[]
-  rules: RuleCatalogEntry[]
+  onConfigureSkill: (ref: ResourceRef) => void
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
-  const [expanded, setExpanded] = useState<string | null>(null)
-  // The skill catalog grows with installed and user-created skills.
   const [query, setQuery] = useState('')
-  const [onlySelected, setOnlySelected] = useState(false)
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
   const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
-
-  /**
-   * The skills to render, after the search box and the selection filter.
-   *
-   * A bound skill always matches the search, because hiding it would make the panel disagree
-   * with the configuration it is showing.
-   * @returns the skills to display, in catalog order.
-   */
-  const visibleSkills = (): SkillCatalogEntry[] => {
-    const bound = bindingFor(currentStage).skills ?? []
-    const boundKeys = new Set(bound.map(entry => formatResourceRef(entry.skill)))
-    const needle = query.trim().toLowerCase()
-    return skills.filter(entry => {
-      const raw = formatResourceRef(entry.ref)
-      const inForce = boundKeys.has(raw)
-      if (onlySelected && !inForce) return false
-      if (needle === '') return true
-      return inForce
-        || entry.name.toLowerCase().includes(needle)
-        || entry.description.toLowerCase().includes(needle)
-        || entry.sourceLabel.toLowerCase().includes(needle)
-    })
-  }
 
   const setSkills = (name: string, next: SkillBinding[]): void => {
     setStageBindings({ ...stageBindings, [name]: { ...bindingFor(name), skills: next } })
@@ -513,11 +510,12 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
     if (currentStage === '') return
     const current = bindingFor(currentStage).skills ?? []
     const profile = skillProfiles[raw]
-    const next = current.some(entry => formatResourceRef(entry.skill) === raw)
+    const alreadyBound = current.some(entry => formatResourceRef(entry.skill) === raw)
+    const next = alreadyBound
       ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
       : [...current, { skill: refFromText(raw), rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
         formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
-    if (profile === undefined) setSkillProfiles({ ...skillProfiles, [raw]: { rules: [] } })
+    if (!alreadyBound && profile === undefined) setSkillProfiles({ ...skillProfiles, [raw]: { rules: [] } })
     setSkills(currentStage, next)
   }
 
@@ -527,13 +525,13 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
 
   const boundSkills: SkillBinding[] = bindingFor(currentStage).skills ?? []
   const unassigned = bindingFor(currentStage).legacy_rules ?? []
+  const boundKeys = new Set(boundSkills.map(entry => formatResourceRef(entry.skill)))
+  const needle = query.trim().toLowerCase()
+  const available = skills.filter(entry => !boundKeys.has(formatResourceRef(entry.ref))
+    && `${entry.name} ${entry.description} ${entry.sourceLabel}`.toLowerCase().includes(needle))
 
   return (
     <div style={styles.section}>
-      <p style={styles.hint}>
-        节点只选择技能；规则在“技能”页统一维护。这里可查看技能当前生效的规则。
-        需要同一技能用不同规则时，复制成另一个技能再分别配置。
-      </p>
       <div style={styles.field}>
         <span style={styles.bindingLabel}>选择节点</span>
         <div style={styles.chips}>
@@ -552,82 +550,35 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
         </div>
       ) : null}
 
-      <div className="te-binding-grid" key={currentStage}>
-        <section className="te-binding-picker" aria-label="技能绑定">
-          <div className="te-binding-heading">
-            <h4>技能</h4>
-            <span className="te-binding-count">
-              已选 {boundSkills.length}
-              {visibleSkills().length !== skills.length ? ` · 显示 ${visibleSkills().length}/${skills.length}` : ''}
-            </span>
+      <div className="te-transfer" key={currentStage}>
+        <section className="te-transfer-pane" aria-label="可用技能">
+          <div className="te-binding-heading"><h4>可用技能</h4><span className="te-binding-count">{skills.filter(entry => !boundKeys.has(formatResourceRef(entry.ref))).length} 项</span></div>
+          <input className="te-input te-transfer-search" type="search" value={query} placeholder="搜索技能名称或说明" aria-label="搜索可用技能" onChange={event => setQuery(event.target.value)} />
+          <div className="te-transfer-list" role="group" aria-label="可用技能列表">
+            {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请先在“技能”页添加。</p> : null}
+            {skills.length > 0 && available.length === 0 ? <p className="te-binding-empty">没有可添加的技能。</p> : null}
+            {available.map(entry => <button key={formatResourceRef(entry.ref)} type="button" className="te-transfer-row" onClick={() => toggleSkill(formatResourceRef(entry.ref))} aria-label={`添加技能 ${entry.name}`}>
+              <span className="te-transfer-row-main"><strong>{entry.name}</strong><small>{entry.sourceLabel}{entry.description ? ` · ${entry.description}` : ''}</small></span>
+              <span className="te-transfer-action" aria-hidden="true">＋</span>
+            </button>)}
           </div>
-          {/*
-            Search and a source filter, because the list grows without bound. With
-            a few dozen skills, scrolling to find one is the whole interaction, and a
-            flat list that only gets longer stops being usable rather than merely
-            becoming long.
-          */}
-          <div className="te-binding-controls">
-            <input
-              className="te-binding-search"
-              type="search"
-              value={query}
-              placeholder="搜索技能名或说明…"
-              aria-label="搜索技能"
-              onChange={event => setQuery(event.target.value)}
-            />
-            <label className="te-binding-filter">
-              <input type="checkbox" checked={onlySelected} onChange={() => setOnlySelected(value => !value)} />
-              {' '}仅看已选
-            </label>
-          </div>
-          <div className="te-binding-list" role="group" aria-label="技能列表" tabIndex={0}>
-            {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请在上方“技能”页添加。</p> : null}
-            {skills.length > 0 && visibleSkills().length === 0
-              ? <p className="te-binding-empty">没有匹配的技能。</p>
-              : null}
-            {visibleSkills().map(entry => {
-              const raw = formatResourceRef(entry.ref)
-              const bound = boundSkills.find(candidate => formatResourceRef(candidate.skill) === raw)
-              const open = expanded === raw
-              return (
-                <div key={raw} className={`te-binding-option${bound !== undefined ? ' is-selected' : ''}`}>
-                  <input
-                    type="checkbox"
-                    aria-label={raw}
-                    checked={bound !== undefined}
-                    onChange={() => toggleSkill(raw)}
-                  />
-                  <span className="te-binding-detail">
-                    <span className="te-binding-name">
-                      {entry.name}
-                    </span>
-                    <span className="te-binding-meta">
-                      {entry.sourceLabel} · {bound === undefined ? '未绑定' : `${bound.rules.length} 条规则`}
-                    </span>
-                    {bound !== undefined ? (
-                      <button type="button" className="te-link" onClick={() => setExpanded(open ? null : raw)}>
-                        {open ? '收起规则' : '查看规则'}
-                      </button>
-                    ) : null}
-                    {/*
-                      Only the OPEN skill's rules are rendered, and inside a bounded
-                      region. Expanding a second skill used to push the first off
-                      screen and the page kept growing with no way to see the total.
-                    */}
-                    {open && bound !== undefined ? (
-                      <span className="te-rule-list">
-                        {bound.rules.length === 0 ? <span className="te-binding-meta">该技能尚未配置规则。</span> : null}
-                        {bound.rules.map(rule => {
-                          const ruleRaw = formatResourceRef(rule)
-                          const catalog = rules.find(candidate => formatResourceRef(candidate.ref) === ruleRaw)
-                          return <span key={ruleRaw} className="te-binding-meta">{catalog?.name ?? ruleRaw}{catalog ? `（${catalog.sourceLabel}）` : ''}</span>
-                        })}
-                      </span>
-                    ) : null}
-                  </span>
-                </div>
-              )
+        </section>
+        <div className="te-transfer-arrow" aria-hidden="true">→</div>
+        <section className="te-transfer-pane" aria-label="当前节点技能">
+          <div className="te-binding-heading"><h4>{currentStage} · 已绑定</h4><span className="te-binding-count">{boundSkills.length} 项</span></div>
+          <p className="te-transfer-caption">规则属于技能；点“配置规则”即可统一修改。</p>
+          <div className="te-transfer-list" role="group" aria-label="已绑定技能列表">
+            {boundSkills.length === 0 ? <p className="te-binding-empty">此节点尚未绑定技能。点击左侧 ＋ 添加。</p> : null}
+            {boundSkills.map(entry => {
+              const raw = formatResourceRef(entry.skill)
+              const catalog = skills.find(skill => formatResourceRef(skill.ref) === raw)
+              return <div key={raw} className="te-transfer-row is-bound">
+                <span className="te-transfer-row-main"><strong>{entry.skill.name}</strong><small>{catalog?.sourceLabel ?? entry.skill.source} · {entry.rules.length} 条规则{catalog ? '' : ' · 资源未找到'}</small></span>
+                <span className="te-transfer-actions">
+                  <button type="button" className="te-transfer-config" onClick={() => onConfigureSkill(entry.skill)}>配置规则</button>
+                  <button type="button" className="te-transfer-remove" onClick={() => toggleSkill(raw)} aria-label={`移除技能 ${entry.skill.name}`}>×</button>
+                </span>
+              </div>
             })}
           </div>
         </section>

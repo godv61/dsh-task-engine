@@ -20,8 +20,8 @@ const warn = 'var(--dsw-alias-state-warn-primary)'
 const brand = 'var(--dsw-alias-state-business-primary)'
 
 export const styles: Record<string, CSSProperties> = {
-  wrap: { display: 'flex', flexDirection: 'column', gap: 16, padding: 20, maxWidth: 900 },
-  head: { display: 'flex', flexDirection: 'column', gap: 4 },
+  wrap: { display: 'flex', flexDirection: 'column', gap: 14, padding: '0 0 24px', width: '100%' },
+  head: { display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 1000 },
   title: { margin: 0, color: text },
   muted: { margin: 0, color: textSecondary, fontSize: 13, lineHeight: 1.5 },
 
@@ -89,7 +89,7 @@ export const styles: Record<string, CSSProperties> = {
   },
 
   // ── flow preset picker ────────────────────────────────────────────────────
-  flowGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 },
+  flowGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10, maxWidth: 1200 },
   // The adoption row is deliberately separated from the flow picker: choosing a
   // skeleton and adopting a recommended setup are different decisions, and the
   // button is the only thing that writes method into the user's config.

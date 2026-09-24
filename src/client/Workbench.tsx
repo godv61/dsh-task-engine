@@ -54,7 +54,7 @@ const tabbar: CSSProperties = {
 const body: CSSProperties = {
   flex: 1,
   overflowY: 'auto',
-  padding: '24px clamp(12px, 3vw, 32px)',
+  padding: '16px clamp(12px, 2vw, 28px)',
 }
 
 const selectStyle: CSSProperties = {
@@ -136,7 +136,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
     ),
     createElement('div', { style: body },
       createElement('div', { className: 'te-content', key: current },
-      createElement('p', { style: { ...styles.hint, marginBottom: 20 }, title: current }, '工作区 · ' + current),
+      createElement('p', { style: { ...styles.hint, marginBottom: 10 }, title: current }, '工作区 · ' + current),
       current === ''
         ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区，再回来配置流程。')
         : tab === 'init'

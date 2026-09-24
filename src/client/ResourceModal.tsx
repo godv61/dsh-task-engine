@@ -1,7 +1,6 @@
 /**
- * A fixed, centered modal for the skill/rule viewer and editor. It gives the
- * markdown view and the edit form a wide, scrollable surface instead of the
- * inline card, using theme tokens so it follows light/dark and brand overrides.
+ * A centered resource dialog or right-side configuration drawer. Both keep
+ * the editor scrollable and trap keyboard focus while open.
  *
  * @module dsh-task-engine/ResourceModal
  */
@@ -29,6 +28,12 @@ const dialogStyle: CSSProperties = {
   width: 'min(760px, 100%)', maxHeight: '85vh',
   borderRadius: 24, background: 'var(--dsw-alias-bg-layer-2)',
   boxShadow: 'var(--dsw-elevation-prominent)', overflow: 'hidden',
+}
+
+const drawerStyle: CSSProperties = {
+  ...dialogStyle,
+  width: 'min(560px, 100%)', height: '100%', maxHeight: '100%',
+  borderRadius: '16px 0 0 16px',
 }
 
 const headerStyle: CSSProperties = {
@@ -63,20 +68,22 @@ const footerStyle: CSSProperties = {
 }
 
 /**
- * Render a wide centered modal. Escape and mask click close it; the title is
- * the accessible dialog label.
+ * Render a centered modal or right-side drawer. Escape and mask click close it;
+ * the title is the accessible dialog label.
  * @param title - dialog heading.
  * @param children - scrollable body.
  * @param footer - optional action row (Cancel / Save).
  * @param onClose - close from Escape, the mask, or the close button.
  * @param description - optional supporting sentence under the title.
+ * @param placement - where to place the dialog.
  */
-export function ResourceModal({ title, description, onClose, footer, children }: {
+export function ResourceModal({ title, description, onClose, footer, children, placement = 'center' }: {
   title: string
   description?: string
   onClose: () => void
   footer?: ReactNode
   children?: ReactNode
+  placement?: 'center' | 'right'
 }): ReactNode {
   const dialog = useRef<HTMLDivElement>(null)
   const closer = useRef(onClose)
@@ -99,9 +106,9 @@ export function ResourceModal({ title, description, onClose, footer, children }:
   }, [])
 
   return createPortal(
-    createElement('div', { style: rootStyle, className: 'te-modal', role: 'presentation' },
-      createElement('div', { style: maskStyle, 'aria-hidden': true, onClick: onClose }),
-      createElement('div', { style: dialogStyle, ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': true, 'aria-label': title },
+    createElement('div', { style: placement === 'right' ? { ...rootStyle, justifyContent: 'flex-end', padding: 0 } : rootStyle, className: `te-modal${placement === 'right' ? ' te-drawer' : ''}`, role: 'presentation' },
+      createElement('div', { style: placement === 'right' ? { ...maskStyle, background: 'rgba(0, 0, 0, 0.18)' } : maskStyle, 'aria-hidden': true, onClick: onClose }),
+      createElement('div', { style: placement === 'right' ? drawerStyle : dialogStyle, ref: dialog, tabIndex: -1, role: 'dialog', 'aria-modal': true, 'aria-label': title },
         createElement('div', { style: headerStyle },
           createElement('h2', { style: titleStyle }, title),
           createElement('button', { type: 'button', style: closeBtnStyle, 'aria-label': '关闭', onClick: onClose },
