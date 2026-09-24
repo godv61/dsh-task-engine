@@ -601,7 +601,18 @@ async function freezeResources(
  * @param fs - sandboxed filesystem for the project-level lookup.
  * @returns the layer that holds this name, or undefined when none does.
  */
-async function resolveLegacyRuleSource(name: string, fs: Fs, cwd?: string): Promise<ResourceSource | undefined> {
+async function resolveLegacyRuleSource(
+  name: string,
+  fs: Fs,
+  cwd?: string,
+  frozen?: FrozenResource[],
+): Promise<ResourceSource | undefined> {
+  // A frozen snapshot answers this without touching the filesystem: the layer a
+  // legacy name resolved to at creation is part of what the task froze, so a
+  // source deleted afterwards cannot change where it resolves.
+  for (const resource of frozen ?? []) {
+    if (resource.ref.name === name) return resource.ref.source
+  }
   for (const source of ['bundled', 'project', 'user'] as const) {
     if ((await readRuleAt(source, name, fs, cwd)) !== undefined) return source
   }
@@ -623,18 +634,40 @@ async function resolveRules(
   refs: ResourceRef[],
   fs: Fs,
   cwd?: string,
-): Promise<{ resolved: ResolvedRule[]; missing: string[] }> {
+  frozen?: FrozenResource[],
+): Promise<{ resolved: ResolvedRule[]; missing: string[]; stale: string[] }> {
   const resolved: ResolvedRule[] = []
   const missing: string[] = []
+  // A frozen body is the authority for a task that has one. Freezing used to only
+  // ARCHIVE the content: status and the stage disclosure still read the live files,
+  // so editing a rule silently changed what a running task was told to follow —
+  // the exact instability the snapshot exists to prevent.
+  const frozenByRef = new Map<string, FrozenResource>()
+  for (const resource of frozen ?? []) frozenByRef.set(formatResourceRef(resource.ref), resource)
+  const stale: string[] = []
   for (const ref of refs) {
+    const key = formatResourceRef(ref)
+    const snapshot = frozenByRef.get(key)
+    if (snapshot !== undefined) {
+      resolved.push({ name: ref.name, content: snapshot.content, source: ref.source })
+      // Report when the source no longer matches what was frozen, so drift is
+      // visible instead of looking like the frozen text was simply current.
+      const live = await readRuleAt(ref.source, ref.name, fs, cwd)
+      if (live === undefined) stale.push(key + ' (source deleted)')
+      else if (hashText(live) !== snapshot.hash) stale.push(key + ' (source edited)')
+      continue
+    }
+    // No snapshot (a pre-freezing task) or this ref was not frozen: read live, and
+    // report a rule that resolves nowhere rather than dropping it, because omitting
+    // it made a deleted file indistinguishable from an unbound one.
     const content = await readRuleAt(ref.source, ref.name, fs, cwd)
     if (content === undefined) {
-      missing.push(formatResourceRef(ref))
+      missing.push(key)
       continue
     }
     resolved.push({ name: ref.name, content, source: ref.source })
   }
-  return { resolved, missing }
+  return { resolved, missing, stale }
 }
 
 /**
@@ -653,7 +686,8 @@ async function rulesForBinding(
   binding: StageBinding | undefined,
   fs: Fs,
   cwd?: string,
-): Promise<{ resolved: ResolvedRule[]; missing: string[]; legacy: string[] }> {
+  frozen?: FrozenResource[],
+): Promise<{ resolved: ResolvedRule[]; missing: string[]; legacy: string[]; stale: string[] }> {
   const refs: ResourceRef[] = []
   // Deduplicated by reference: one rule shared by two skills on the same stage is
   // disclosed once, because it is one constraint being followed.
@@ -666,11 +700,11 @@ async function rulesForBinding(
       refs.push(rule)
     }
   }
-  const { resolved, missing } = await resolveRules(refs, fs, cwd)
+  const { resolved, missing, stale } = await resolveRules(refs, fs, cwd, frozen)
   const legacy = binding?.legacy_rules ?? []
   const legacyRefs: ResourceRef[] = []
   for (const name of legacy) {
-    const source = await resolveLegacyRuleSource(name, fs, cwd)
+    const source = await resolveLegacyRuleSource(name, fs, cwd, frozen)
     // An unresolvable legacy name is reported through `missing` so it is visible
     // rather than quietly absent.
     if (source === undefined) { missing.push(name); continue }
@@ -679,8 +713,13 @@ async function rulesForBinding(
     seen.add(key)
     legacyRefs.push({ source, name })
   }
-  const legacyResolved = (await resolveRules(legacyRefs, fs, cwd)).resolved
-  return { resolved: [...resolved, ...legacyResolved], missing, legacy }
+  const legacyResult = await resolveRules(legacyRefs, fs, cwd, frozen)
+  return {
+    resolved: [...resolved, ...legacyResult.resolved],
+    missing,
+    legacy,
+    stale: [...stale, ...legacyResult.stale],
+  }
 }
 
 /**
@@ -692,11 +731,11 @@ async function rulesForBinding(
  * @param fs - host filesystem for project-rule resolution.
  * @returns the disclosure text, or an empty string.
  */
-async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string): Promise<string> {
+async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string, frozen?: FrozenResource[]): Promise<string> {
   const binding = bindingsForStage(stage, workflow)
   const skills = binding?.skills ?? []
   if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
-  const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd)
+  const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd, frozen)
   const skillPart = skills.length > 0
     ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name)`
     : 'skills to load: none'
@@ -1164,7 +1203,8 @@ export function registerDevTask(ctx: Context): void {
           resolved: rules,
           missing: missingRules,
           legacy: legacyRules,
-        } = await rulesForBinding(binding, fs, cwd)
+          stale: staleRules,
+        } = await rulesForBinding(binding, fs, cwd, state.flow?.resources)
         const missingSkills = skillBlockers(state, workflow, session)
         const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
         const checkpoint = commitCheckpoint(state, workflow)
@@ -1196,6 +1236,11 @@ export function registerDevTask(ctx: Context): void {
           // runs under, and this mirrors that list for the current stage.
           missing_rules: missingRules,
           rules: rules.map(rule => ({ name: rule.name, source: rule.source })),
+          // Rules whose SOURCE no longer matches what the task froze. The task keeps
+          // following the frozen text — that is what freezing is for — and this reports
+          // the drift, so a rule edited or deleted underneath a running task is visible
+          // instead of silently authoritative.
+          stale_source_rules: staleRules,
           unassigned_legacy_rules: legacyRules,
           skill_results: state.skill_results ?? {},
           commits: state.commits,
@@ -1386,9 +1431,9 @@ export function registerDevTask(ctx: Context): void {
           }
           if (!result.ok) throw new Error(result.errors!.join('; '))
           state.stage = target
-          const disclosure = await renderBindings(state.stage, workflow, fs, cwd)
+          const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources)
           const terminalObligations = obligationStages(state, workflow).filter(stage => stage !== state.stage)
-          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd)}`))
+          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd, state.flow?.resources)}`))
           note = [`advanced to ${state.stage}`, disclosure, ...terminalDisclosure].filter(Boolean).join('\n')
           break
         }
