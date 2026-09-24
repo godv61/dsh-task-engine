@@ -339,6 +339,7 @@ function applyProjectConfig(base: WorkflowConfig, project?: ProjectConfig): Work
   const next: WorkflowConfig = { ...base }
   if (project.stage_bindings !== undefined) {
     const profiles: Record<string, SkillProfile> = { ...(project.skill_profiles ?? {}) }
+    const explicitProfiles = new Set(Object.keys(project.skill_profiles ?? {}))
     const problems: string[] = []
     const bindings: Record<string, StageBinding> = {}
     for (const [stage, binding] of Object.entries(project.stage_bindings)) {
@@ -385,6 +386,17 @@ function applyProjectConfig(base: WorkflowConfig, project?: ProjectConfig): Work
             return []
           }
           const key = formatResourceRef(skill.skill)
+          if (explicitProfiles.has(key)) {
+            // The project profile is authoritative. Inline methods are a legacy
+            // transport shape and may be stale after the skill is edited.
+            const profile = profiles[key]
+            if (profile === null || !Array.isArray(profile?.rules)) {
+              problems.push(`skill profile "${key}" must declare a rules array`)
+              return []
+            }
+            return [{ skill: skill.skill, rules: profile.rules,
+              ...(profile.evidence !== undefined ? { evidence: profile.evidence } : {}) }]
+          }
           const candidate: SkillProfile = { rules: skill.rules ?? [], ...(skill.evidence !== undefined ? { evidence: skill.evidence } : {}) }
           const existing = profiles[key]
           if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(candidate)) {

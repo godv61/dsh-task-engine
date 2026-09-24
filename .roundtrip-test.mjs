@@ -51,6 +51,60 @@ test('remote write stores canonical skill profiles and read expands them', async
   assert.deepEqual(loaded.config.skill_profiles, written.config.skill_profiles)
 })
 
+test('an explicit skill profile governs every stage even when inline bindings are stale', () => {
+  const skill = { source: 'project', name: 'my-skill' }
+  const rule = { source: 'project', name: 'my-rule' }
+  const project = { flow: 'minimal',
+    stage_bindings: {
+      '开发': { skills: [{ skill, rules: [] }] },
+      '交付': { skills: [{ skill, rules: [] }] },
+    },
+    skill_profiles: { 'project:my-skill': { rules: [rule] } },
+  }
+  const resolved = resolveFlow('minimal', project)
+  assert.equal(resolved.ok, true)
+  assert.deepEqual(validateWorkflow(resolved.config), [])
+  assert.deepEqual(resolved.config.stage_bindings['开发'].skills[0].rules, [rule])
+  assert.deepEqual(resolved.config.stage_bindings['交付'].skills[0].rules, [rule])
+  const compact = compactProjectConfig(project)
+  assert.deepEqual(compact.stage_bindings['开发'].skill_refs, [skill])
+  assert.deepEqual(resolveFlow('minimal', compact).config.stage_bindings['交付'].skills[0].rules, [rule])
+})
+
+test('canonical references to one skill share its rule list without a false conflict', () => {
+  const skill = { source: 'project', name: 'my-skill' }
+  const rule = { source: 'project', name: 'my-rule' }
+  const resolved = resolveFlow('minimal', { flow: 'minimal', stage_bindings: {
+    '开发': { skill_refs: [skill] },
+    '交付': { skill_refs: [skill] },
+  }, skill_profiles: { 'project:my-skill': { rules: [rule] } } })
+  assert.deepEqual(validateWorkflow(resolved.config), [])
+  assert.deepEqual(resolved.config.stage_bindings['开发'].skills[0].rules, [rule])
+  assert.deepEqual(resolved.config.stage_bindings['交付'].skills[0].rules, [rule])
+})
+
+test('skill editor save persists one changed profile and read expands it into every stage', async () => {
+  let stored
+  const fs = { resolve: async path => path, readText: async () => stored,
+    writeText: async (_target, content) => { stored = content } }
+  const receiver = { authorizedPath: async path => path, fs: () => fs }
+  const skill = { source: 'project', name: 'my-skill' }
+  const rule = { source: 'project', name: 'my-rule' }
+  const initial = compactProjectConfig({ flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill, rules: [] }] },
+    '交付': { skills: [{ skill, rules: [] }] },
+  } })
+  const edited = { ...initial, skill_profiles: { ...initial.skill_profiles,
+    'project:my-skill': { rules: [rule], evidence: 'none' } } }
+  const written = await Controller.prototype.write.call(receiver, { path: 'project', ...edited })
+  assert.equal(written.ok, true)
+  assert.deepEqual(JSON.parse(stored).stage_bindings['开发'].skill_refs, [skill])
+  const loaded = await Controller.prototype.read.call(receiver, 'project')
+  assert.equal(loaded.ok, true)
+  assert.deepEqual(loaded.config.stage_bindings['开发'].skills[0].rules, [rule])
+  assert.deepEqual(loaded.config.stage_bindings['交付'].skills[0].rules, [rule])
+})
+
 test('adopting a recommendation retains the user-owned skill profiles', () => {
   const custom = { 'project:my-skill': { rules: [{ source: 'project', name: 'my-rule' }], evidence: 'manual' } }
   const adopted = adoptRecommendation('standard', { flow: 'standard', skill_profiles: custom })

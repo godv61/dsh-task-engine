@@ -129,6 +129,28 @@ test('same-named skill and rule freeze separately and disclose the rule body', a
   assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.skill_contents[0].content, 'SKILL BODY')
 })
 
+test('task creation applies skill_profiles rules even when legacy inline bindings are empty', async () => {
+  const f = fixture()
+  const skill = { source: 'project', name: 'custom' }
+  const rule = { source: 'project', name: 'my-rule' }
+  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal',
+    stage_bindings: {
+      '开发': { skills: [{ skill, rules: [], evidence: 'none' }] },
+      '交付': { skills: [{ skill, rules: [], evidence: 'none' }] },
+    },
+    skill_profiles: { 'project:custom': { rules: [rule], evidence: 'none' } },
+  }))
+  f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
+  await assert.rejects(f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] }), /rule:project:my-rule/)
+  f.records.set(join(f.cwd, '.dsh/rules/my-rule.md'), 'RULE BODY')
+  await f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] })
+  assert.deepEqual(f.state().flow.config.stage_bindings['开发'].skills[0].rules, [rule])
+  assert.deepEqual(f.state().flow.config.stage_bindings['交付'].skills[0].rules, [rule])
+  assert.equal(f.state().flow.resources.find(resource => resource.kind === 'rule')?.content, 'RULE BODY')
+  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+})
+
 test('task creation rejects an unavailable skill or rule before writing a record', async () => {
   const f = fixture()
   f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))

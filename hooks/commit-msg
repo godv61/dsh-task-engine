@@ -309,6 +309,7 @@ function applyProjectConfig(base, project) {
   const next = { ...base };
   if (project.stage_bindings !== void 0) {
     const profiles = { ...project.skill_profiles ?? {} };
+    const explicitProfiles = new Set(Object.keys(project.skill_profiles ?? {}));
     const problems = [];
     const bindings = {};
     for (const [stage, binding] of Object.entries(project.stage_bindings)) {
@@ -352,6 +353,18 @@ function applyProjectConfig(base, project) {
             return [];
           }
           const key = formatResourceRef(skill.skill);
+          if (explicitProfiles.has(key)) {
+            const profile = profiles[key];
+            if (profile === null || !Array.isArray(profile?.rules)) {
+              problems.push(`skill profile "${key}" must declare a rules array`);
+              return [];
+            }
+            return [{
+              skill: skill.skill,
+              rules: profile.rules,
+              ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
+            }];
+          }
           const candidate = { rules: skill.rules ?? [], ...skill.evidence !== void 0 ? { evidence: skill.evidence } : {} };
           const existing = profiles[key];
           if (existing !== void 0 && JSON.stringify(existing) !== JSON.stringify(candidate)) {
