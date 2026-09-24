@@ -22,7 +22,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 // Type-only: pulls the `Context.fs` augmentation into this module.
 import type {} from '@deepseek-ai/dsh-fs'
-import type { ResourceRef, ResourceSource } from './engine.ts'
+import type { ArtifactDef, CommitRule, ParsedProjectConfig, ResourceRef, ResourceSource, ReviewDepth } from './engine.ts'
 import { validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
 import { resolveFlow } from './workflows.ts'
 
@@ -46,8 +46,16 @@ export interface EngWriteRequest {
   path: string
   /** Preset workflow id. */
   flow: string
-  /** Optional whole `stage_bindings` map replacing the preset default. */
+  /** The project's own stage bindings, taken verbatim. Absent means no bindings. */
   stage_bindings?: Record<string, StageBinding>
+  /** The project's own commit policy. Absent means no commit gate. */
+  commit?: CommitRule
+  /** The project's own artifact declarations. */
+  artifacts?: ArtifactDef[]
+  /** The project's own per-item review depth. */
+  review_depth?: ReviewDepth
+  /** Whether a recorded commit is required before completion. */
+  commit_required?: boolean
 }
 
 /** One skill in the mountable catalog. */
@@ -510,9 +518,9 @@ export default class TaskEngineController extends TypertRemoteService {
     if (raw === undefined) {
       return { ok: true, source: 'default', flow: 'standard', config: standardConfig(), problems: [] }
     }
-    let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding> }
+    let parsed: ParsedProjectConfig
     try {
-      parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding> }
+      parsed = JSON.parse(raw) as ParsedProjectConfig
     } catch (error) {
       return {
         ok: false,
@@ -533,7 +541,16 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     const resolved = resolveFlow(
       parsed.flow,
-      parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : undefined,
+        // The project's whole config is forwarded: skills, commit rule, artifacts and
+        // review depth all belong to the user, so nothing is narrowed to bindings.
+        {
+          flow: parsed.flow,
+          ...(parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : {}),
+          ...(parsed.commit !== undefined ? { commit: parsed.commit } : {}),
+          ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
+          ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
+          ...(parsed.commit_required !== undefined ? { commit_required: parsed.commit_required } : {}),
+        },
     )
     if (!resolved.ok) {
       return {
@@ -565,7 +582,14 @@ export default class TaskEngineController extends TypertRemoteService {
     request.path = await this.authorizedPath(request.path)
     const resolved = resolveFlow(
       request.flow,
-      request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : undefined,
+        {
+          flow: request.flow,
+          ...(request.stage_bindings !== undefined ? { stage_bindings: request.stage_bindings } : {}),
+          ...(request.commit !== undefined ? { commit: request.commit } : {}),
+          ...(request.artifacts !== undefined ? { artifacts: request.artifacts } : {}),
+          ...(request.review_depth !== undefined ? { review_depth: request.review_depth } : {}),
+          ...(request.commit_required !== undefined ? { commit_required: request.commit_required } : {}),
+        },
     )
     if (!resolved.ok) {
       return {

@@ -5,6 +5,7 @@
  * running task used silently changed what that task was doing, and deleting one
  * made a configured constraint disappear without the task recording anything.
  */
+import { adoptRecommendation } from './lib/workflows.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
@@ -15,7 +16,10 @@ import { hashText } from './lib/snapshot.js'
 async function created(flow) {
   const cwd = resolve('freeze-project')
   const records = new Map([
-    [join(cwd, '.dsh/eng.json'), JSON.stringify({ flow })],
+    // A project that adopted the shipped recommendation, which is what gives it
+    // skills and rules to freeze. `{flow}` alone adopts nothing and therefore has
+    // nothing to freeze — a legitimate state, but not the one under test.
+    [join(cwd, '.dsh/eng.json'), JSON.stringify(adoptRecommendation(flow))],
     [join(cwd, 'a.js'), 'source'],
   ])
   const events = []

@@ -11,7 +11,22 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyRevision, invalidatedBy, completionBlockers } from './lib/engine.js'
-import { resolveFlow } from './lib/workflows.js'
+import { adoptRecommendation, resolveFlow } from './lib/workflows.js'
+
+/**
+ * The preset as a project would actually run it: the skeleton plus the shipped
+ * recommendation, adopted exactly the way a user adopts it. A test that asserts
+ * on bindings, commit rules or artifacts wants this, because those no longer come
+ * from the preset itself.
+ * @param {string} id - preset id.
+ * @returns {import('./lib/engine.js').WorkflowConfig} the adopted config.
+ */
+function adoptedFlow(id, extra) {
+  const base = adoptRecommendation(id)
+  if (base === undefined) throw new Error('unknown preset: ' + id)
+  return resolveFlow(id, { ...base, ...extra }).config
+}
+
 
 /** A task carrying every conclusion, so a rework has something to invalidate. */
 function loadedTask() {
@@ -83,7 +98,7 @@ test('rework: clearing evidence returns an item to unfinished, not to done-witho
   const state = loadedTask()
   applyRevision(state, rework('defect', '开发'))
   assert.equal(state.items[0].status, 'doing')
-  const config = resolveFlow('standard', {}).config
+  const config = adoptedFlow('standard')
   assert.ok(completionBlockers({ ...state, stage: '完成' }, config).length > 0,
     'a task with an unproven item must not be completable')
 })

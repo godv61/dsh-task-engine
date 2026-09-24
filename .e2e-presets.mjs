@@ -15,7 +15,22 @@ import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
 import { newTask } from './lib/engine.js'
-import { resolveFlow, FLOW_PRESETS } from './lib/workflows.js'
+import { adoptRecommendation, resolveFlow, FLOW_PRESETS } from './lib/workflows.js'
+
+/**
+ * The preset as a project would actually run it: the skeleton plus the shipped
+ * recommendation, adopted exactly the way a user adopts it. A test that asserts
+ * on bindings, commit rules or artifacts wants this, because those no longer come
+ * from the preset itself.
+ * @param {string} id - preset id.
+ * @returns {import('./lib/engine.js').WorkflowConfig} the adopted config.
+ */
+function adoptedFlow(id, extra) {
+  const base = adoptRecommendation(id)
+  if (base === undefined) throw new Error('unknown preset: ' + id)
+  return resolveFlow(id, { ...base, ...extra }).config
+}
+
 
 const HASH = 'abcdef1234567890'
 
@@ -26,16 +41,18 @@ const HASH = 'abcdef1234567890'
  */
 async function runPreset(preset) {
   const cwd = resolve('e2e-project')
-  const config = resolveFlow(preset, {}).config
+  const config = adoptedFlow(preset)
   const state = newTask({
     id: 'E2E-1', title: 'pipeline', branch: 'main', work_size: 'standard',
     risk_level: 'standard', flow: { flow: preset, version: FLOW_PRESETS[preset].version, config }, root: cwd,
   })
   const records = new Map([
     [join(cwd, '.dsh/task-E2E-1.json'), JSON.stringify(state)],
-    // `create` reads the project's flow from here, so the preset under test must
-    // be the project's declared flow rather than one passed to the tool.
-    [join(cwd, '.dsh/eng.json'), JSON.stringify({ flow: preset })],
+    // `create` reads the project's config from here, so this writes what a real
+    // project has after adopting the shipped recommendation: the skeleton plus its
+    // recommended skills, commit rule and artifacts. Writing only `{flow}` would
+    // describe a project that adopted nothing — a different, equally valid case.
+    [join(cwd, '.dsh/eng.json'), JSON.stringify(adoptRecommendation(preset))],
     [join(cwd, 'src/a.js'), 'source'],
   ])
   const events = []

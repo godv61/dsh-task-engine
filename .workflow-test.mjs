@@ -5,14 +5,41 @@ import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
 import { newTask } from './lib/engine.js'
-import { resolveFlow } from './lib/workflows.js'
+import { adoptRecommendation, resolveFlow } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
 
+/**
+ * The preset as a project would actually run it: the skeleton plus the shipped
+ * recommendation, adopted exactly the way a user adopts it. A test that asserts
+ * on bindings, commit rules or artifacts wants this, because those no longer come
+ * from the preset itself.
+ * @param {string} id - preset id.
+ * @returns {import('./lib/engine.js').WorkflowConfig} the adopted config.
+ */
+function adoptedFlow(id, extra) {
+  const base = adoptRecommendation(id)
+  if (base === undefined) throw new Error('unknown preset: ' + id)
+  return resolveFlow(id, { ...base, ...extra }).config
+}
+
+
 function fixture(stage = '开发', extra = {}, services = {}) {
   const cwd = resolve('test-project')
-  const config = resolveFlow('standard', { stage_bindings: { 完成: { skills: [{ skill: { source: 'bundled', name: 'software-testing' }, rules: [] }] } } }).config
-  const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 2, config }, root: cwd })
+  // A project running the standard flow: the skeleton plus the adopted
+  // recommendation, with one extra skill mounted on 完成 for the tests that need
+  // a binding beyond the shipped set. The bindings are MERGED, not replaced —
+  // replacing them would drop the recommended skills and artifacts the tests
+  // assert on, since the preset skeleton itself carries none.
+  const adopted = adoptRecommendation('standard')
+  const config = resolveFlow('standard', {
+    ...adopted,
+    stage_bindings: {
+      ...adopted.stage_bindings,
+      完成: { skills: [{ skill: { source: 'bundled', name: 'software-testing' }, rules: [] }] },
+    },
+  }).config
+  const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 3, config }, root: cwd })
   Object.assign(state, { stage, execution_version: 1, files: ['app.js'], requirement_confirmed: true, solution_confirmed: true, ...extra })
   const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)], [join(cwd, 'app.js'), 'source']])
   const events = [], runs = []
@@ -168,7 +195,7 @@ test('status 披露当前阶段记录字段和缺项，字段误用不写入且�
 })
 
 test('记录字段来自冻结流程，精简流程不硬编码标准字段，无记录阶段返回空列表', async () => {
-  const config = resolveFlow('agile').config
+  const config = adoptedFlow('agile')
   const f = fixture('需求', { flow: { flow: 'agile', version: 1, config } })
   assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).artifact_requirements, [{ id: 'requirement', name: '需求说明', fields: ['scope'], missing_fields: ['scope'] }])
   await f.call({ operation: 'record', artifact: 'requirement', fields: { scope: '目标、验收与疑问' } })

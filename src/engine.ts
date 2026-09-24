@@ -918,6 +918,27 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
   return { stage: revision.to, invalidated: cleared }
 }
 
+/**
+ * A project's `.dsh/eng.json` as read off disk.
+ *
+ * This describes what a file MAY contain so the resolver can narrow it; declaring
+ * only the fields a valid file is allowed would make an invalid one look valid to
+ * the parser and hide the error until much later.
+ */
+export interface ParsedProjectConfig {
+  flow?: string
+  /** The project's own stage bindings, taken verbatim. */
+  stage_bindings?: Record<string, StageBinding>
+  /** The project's own commit policy, replacing any preset default. */
+  commit?: CommitRule
+  /** The project's own artifact declarations. */
+  artifacts?: ArtifactDef[]
+  /** The project's own per-item review depth. */
+  review_depth?: ReviewDepth
+  /** Whether a recorded commit is required before completion. */
+  commit_required?: boolean
+}
+
 export interface FileScopeResult {
   ok: boolean
   /** Paths outside the declared scope (present only when the scope is set but violated). */

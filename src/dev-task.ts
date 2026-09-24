@@ -36,6 +36,7 @@ import {
   validateWorkflow,
   verificationBlockers,
   type FlowSnapshot,
+  type ParsedProjectConfig,
   type FrozenResource,
   type GuardName,
   type ResourceRef,
@@ -287,9 +288,9 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
     const standard = standardWorkflow()
     return { ...standard, problems: [], source: 'default' }
   }
-  let parsed: { flow?: string; stage_bindings?: Record<string, StageBinding> }
+  let parsed: ParsedProjectConfig
   try {
-    parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: Record<string, StageBinding> }
+    parsed = JSON.parse(raw) as ParsedProjectConfig
   } catch (error) {
     const standard = standardWorkflow()
     return {
@@ -308,7 +309,14 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
   }
   const resolved = resolveFlow(
     parsed.flow,
-    parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : undefined,
+      {
+        flow: parsed.flow,
+        ...(parsed.stage_bindings !== undefined ? { stage_bindings: parsed.stage_bindings } : {}),
+        ...(parsed.commit !== undefined ? { commit: parsed.commit } : {}),
+        ...(parsed.artifacts !== undefined ? { artifacts: parsed.artifacts } : {}),
+        ...(parsed.review_depth !== undefined ? { review_depth: parsed.review_depth } : {}),
+        ...(parsed.commit_required !== undefined ? { commit_required: parsed.commit_required } : {}),
+      },
   )
   if (!resolved.ok) {
     const standard = standardWorkflow()
@@ -1205,7 +1213,11 @@ export function registerDevTask(ctx: Context): void {
             : checkpoint,
           bindings: {
             skills: binding?.skills ?? [],
-            rules: rules.map(r => ({ name: r.name, content: r.content })),
+            // The layer is disclosed with each rule, because two same-named rules in
+            // different layers are distinct resources and the caller needs to know
+            // which one is actually in force. Reporting only the name made them
+            // indistinguishable in exactly the case where the distinction matters.
+            rules: rules.map(r => ({ name: r.name, source: r.source, content: r.content })),
           },
           bindings_drift: state.bindings_fingerprint !== undefined && state.bindings_fingerprint !== builtinRulesFingerprint()
             ? 'bundled rules changed since this task froze — the frozen fingerprint no longer matches the shipped rules'

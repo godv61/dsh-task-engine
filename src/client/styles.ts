@@ -90,6 +90,10 @@ export const styles: Record<string, CSSProperties> = {
 
   // ── flow preset picker ────────────────────────────────────────────────────
   flowGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 },
+  // The adoption row is deliberately separated from the flow picker: choosing a
+  // skeleton and adopting a recommended setup are different decisions, and the
+  // button is the only thing that writes method into the user's config.
+  adoptRow: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 },
   flowOption: {
     display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'stretch',
     border: `1px solid ${border}`, borderRadius: 10, padding: '10px 12px',

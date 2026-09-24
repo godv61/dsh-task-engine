@@ -40,13 +40,22 @@ import {
 function refFromText(text: string): ResourceRef {
   return parseResourceRef(text) ?? { source: 'bundled', name: text }
 }
-import { FLOW_PRESETS, FLOW_OPTIONS, resolveFlow } from '../workflows.ts'
+import { FLOW_PRESETS, FLOW_OPTIONS, adoptRecommendation, resolveFlow } from '../workflows.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 
-/** Resolve a flow id plus staged bindings into a complete config for preview (unknown ids preview the standard preset; writes still reject them). */
+/**
+ * Resolve a flow id plus the user's staged bindings into a complete config for preview.
+ *
+ * The preset is a skeleton, so a bare `{ stage_bindings }` is the WHOLE config: the
+ * user's bindings, and nothing merged in behind them. Unknown ids preview the
+ * standard preset; writes still reject them.
+ * @param flow - preset id.
+ * @param stageBindings - the user's staged bindings.
+ * @returns the resolved config.
+ */
 function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding>): WorkflowConfig {
-  const resolved = resolveFlow(flow, { stage_bindings: stageBindings })
+  const resolved = resolveFlow(flow, { flow, stage_bindings: stageBindings })
   return resolved.ok ? resolved.config : FLOW_PRESETS.standard.config
 }
 
@@ -256,19 +265,39 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   )
 
   /**
-   * Switch presets, protecting unsaved edits.
+   * Switch flow skeletons, protecting unsaved edits.
    *
-   * Clicking the already-selected preset is a no-op: it used to re-seed the
-   * bindings from the preset defaults, so a stray click on the current card threw
-   * away every customization the user had made. Switching away from a dirty draft
-   * now asks first, because the bindings are replaced wholesale and the edit is
-   * otherwise unrecoverable.
+   * Selecting a flow chooses how work MOVES and nothing else. It deliberately does
+   * not seed any skills, commit format or artifact fields: those are engineering
+   * method, and the user receives them only by pressing the adopt button. Seeding
+   * them here is what previously made a preset's built-in method forced on every
+   * project the moment a flow was picked.
+   *
+   * Clicking the already-selected flow is a no-op, so a stray click cannot discard
+   * the user's work.
    */
   const selectFlow = (id: string): void => {
     if (id === flow) return
     if (dirty && !window.confirm('当前流程配置有未保存的修改，切换流程会丢弃它们。继续切换？')) return
     setFlow(id)
-    setStageBindings({ ...(FLOW_PRESETS[id]?.config.stage_bindings ?? {}) })
+    // The bindings are the user's own and are not touched by choosing a skeleton.
+    setDirty(true)
+    setSavedAt('')
+  }
+
+  /**
+   * Adopt the current flow's recommended setup into the user's config.
+   *
+   * This is the explicit act that supplies a starting point: skills, commit text
+   * and artifact fields. It is offered once and applied once — after this the
+   * values are ordinary config, so a value the user deletes stays deleted and no
+   * upgrade merges anything back.
+   */
+  const adopt = (): void => {
+    const adopted = adoptRecommendation(flow)
+    if (adopted === undefined) return
+    if (dirty && !window.confirm('采用推荐配置会替换当前的技能与规则设置。继续？')) return
+    setStageBindings({ ...(adopted.stage_bindings ?? {}) })
     setDirty(true)
     setSavedAt('')
   }
@@ -293,7 +322,17 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
       {configProblems.length > 0 && <p role="alert" style={styles.problems}>原配置有问题：{configProblems.join('；')}。请选择有效预设并保存修复。</p>}
       <div style={styles.head}>
         <h2 style={styles.title}>工程流程配置</h2>
-        <p style={styles.muted}>选一套流程，再给每个节点挂上 skill / rule。阶段流转、守卫、提交规则都由流程预设固化，无需手工配置。</p>
+        <p style={styles.muted}>
+          流程决定工作怎么流转（阶段与门禁）；技能、规则、提交格式和产物字段由你自己配置。
+          需要一份现成的起点时，可以「采用推荐配置」——采用后这些就完全属于你，可随意修改或删除。
+        </p>
+      </div>
+
+      <div style={styles.adoptRow}>
+        <Button size="sm" onClick={adopt}>采用「{FLOW_PRESETS[flow]?.label ?? flow}」的推荐配置</Button>
+        <span style={styles.muted}>
+          写入推荐技能、提交信息格式与产物字段。仅在你点击时发生一次；删除后不会自动补回。
+        </span>
       </div>
 
       <div style={styles.sourceRow}>

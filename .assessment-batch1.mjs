@@ -15,13 +15,28 @@ import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
 import { newTask, todosBlockers, completionBlockers, validateWorkflow, formatResourceRef } from './lib/engine.js'
-import { FLOW_PRESETS } from './lib/workflows.js'
+import { adoptRecommendation, FLOW_PRESETS } from './lib/workflows.js'
 import { resolveFlow } from './lib/workflows.js'
+
+/**
+ * The preset as a project would actually run it: the skeleton plus the shipped
+ * recommendation, adopted exactly the way a user adopts it. A test that asserts
+ * on bindings, commit rules or artifacts wants this, because those no longer come
+ * from the preset itself.
+ * @param {string} id - preset id.
+ * @returns {import('./lib/engine.js').WorkflowConfig} the adopted config.
+ */
+function adoptedFlow(id, extra) {
+  const base = adoptRecommendation(id)
+  if (base === undefined) throw new Error('unknown preset: ' + id)
+  return resolveFlow(id, { ...base, ...extra }).config
+}
+
 
 /** Build a fixture on one preset, mirroring .workflow-test.mjs's contract. */
 function fixture(preset = 'standard', stage, extra = {}, services = {}) {
   const cwd = resolve('test-project')
-  const config = resolveFlow(preset, {}).config
+  const config = adoptedFlow(preset)
   const state = newTask({
     id: 'LIVE-1', title: 'assessment', branch: 'test', work_size: 'standard',
     risk_level: 'standard', flow: { flow: preset, version: config.version ?? 1, config }, root: cwd,
@@ -131,7 +146,7 @@ test('P1: the agile checkpoint label must satisfy the agile message pattern', as
   const f = fixture('agile', '交付', { items: [{ id: 'A', title: 'a', status: 'done' }] })
   const status = JSON.parse(await f.call({ operation: 'status' }))
   const label = status.commit?.label
-  const pattern = resolveFlow('agile', {}).config.commit.message_pattern
+  const pattern = adoptedFlow('agile').commit.message_pattern
   assert.ok(label !== undefined, 'a commit must be due at the agile checkpoint')
   assert.match(
     `【LIVE-1】【${label}】did a thing`,
@@ -202,8 +217,8 @@ test('P2: the minimal preset reviews each item once, and still reviews it', () =
   // This earlier asserted on status.skill_blockers/commit_blockers, which never
   // contain todosBlockers output, so it passed against a completely unfixed
   // engine. Call the function under test directly instead.
-  const minimal = resolveFlow('minimal', {}).config
-  const standard = resolveFlow('standard', {}).config
+  const minimal = adoptedFlow('minimal')
+  const standard = adoptedFlow('standard')
   const specPassQualityFail = {
     items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'fail' } } }],
   }
@@ -230,7 +245,7 @@ test('P2: the three presets must not share one identical review burden', () => {
     items: [{ id: 'A', title: 'a', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'fail' } } }],
   }
   const byDepth = ['standard', 'agile', 'minimal'].map(id =>
-    todosBlockers(state, resolveFlow(id, {}).config).length)
+    todosBlockers(state, adoptedFlow(id)).length)
   assert.ok(
     byDepth[2] < byDepth[0],
     `the fast-change flow must audit less per item than the full one; got ${JSON.stringify(byDepth)}`,
@@ -267,7 +282,7 @@ test('P2: a rule a skill declares but that resolves nowhere must be reported, no
 test('batch3: a stage selects skills only, and a skill carries its own complete rule list', () => {
   // The whole point of the model: opening a skill tells you every rule it runs
   // under, and binding it anywhere does not add or override any rule.
-  const config = resolveFlow('standard', {}).config
+  const config = adoptedFlow('standard')
   for (const [stage, binding] of Object.entries(config.stage_bindings ?? {})) {
     assert.ok(
       !('rules' in binding) || binding.rules === undefined,
@@ -305,7 +320,7 @@ test('batch3: the same skill carries identical rules wherever it is bound', () =
 test('batch3: a rule shared by two skills is one resource, referenced twice', () => {
   // Reuse must not duplicate the rule body: two skills referencing one rule point
   // at the same source-qualified reference.
-  const config = resolveFlow('standard', {}).config
+  const config = adoptedFlow('standard')
   const review = config.stage_bindings['代码审核'].skills
   const reviewRules = review.find(entry => entry.skill.name === 'code-review').rules.map(formatResourceRef)
   const implementRules = config.stage_bindings['开发'].skills
@@ -344,7 +359,7 @@ test('P2: reaching the last stage is not completion for any preset', () => {
   // flow could stand on its last stage with no delivery record at all. Completion
   // is now its own checked event, shared by all three presets.
   for (const [preset, stage] of [['standard', '完成'], ['agile', '审查'], ['minimal', '交付']]) {
-    const config = resolveFlow(preset, {}).config
+    const config = adoptedFlow(preset)
     const state = {
       stage,
       execution_version: 1,
@@ -365,7 +380,7 @@ test('P2: reaching the last stage is not completion for any preset', () => {
 })
 
 test('P2: completion refuses a task that has not reached a final stage', () => {
-  const config = resolveFlow('standard', {}).config
+  const config = adoptedFlow('standard')
   const state = {
     stage: '开发',
     execution_version: 1,
@@ -381,7 +396,7 @@ test('P2: completion refuses a task that has not reached a final stage', () => {
 test('P2: a flow may declare that its delivery mode needs no commit', () => {
   // A Git commit is one delivery mode, not a universal finish line: a non-code
   // task or a project outside version control has nothing to commit.
-  const withoutCommit = { ...resolveFlow('minimal', {}).config, commit_required: false }
+  const withoutCommit = { ...adoptedFlow('minimal'), commit_required: false }
   const state = {
     stage: '交付',
     execution_version: 1,
@@ -396,7 +411,7 @@ test('P2: a flow may declare that its delivery mode needs no commit', () => {
 })
 
 test('P2: an unknown review_depth is a configuration error, not a silent downgrade', () => {
-  const config = { ...resolveFlow('minimal', {}).config, review_depth: 'thorough' }
+  const config = { ...adoptedFlow('minimal'), review_depth: 'thorough' }
   const problems = validateWorkflow(config)
   assert.ok(problems.some(p => /review_depth/u.test(p)),
     `a typo must be reported; saw ${JSON.stringify(problems)}`)

@@ -100,10 +100,15 @@ function approvedTask(overrides = {}) {
   }
 }
 
-/** Resolve the standard preset's config the same way the hook does. */
+/**
+ * Resolve the standard preset's config the way a real project has it: the skeleton
+ * plus the shipped recommendation, adopted. The hook reads the project's config
+ * from disk, so a project that adopted the recommendation is what these tests
+ * describe — the bare skeleton has no commit rule or artifacts to check.
+ */
 async function standardConfig() {
-  const { resolveFlow } = await import('./lib/workflows.js')
-  const resolved = resolveFlow('standard')
+  const { resolveFlow, adoptRecommendation } = await import('./lib/workflows.js')
+  const resolved = resolveFlow('standard', adoptRecommendation('standard'))
   assert.equal(resolved.ok, true, 'the built-in standard preset resolves')
   return resolved.config
 }

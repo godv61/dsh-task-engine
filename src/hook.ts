@@ -21,6 +21,9 @@ import {
   type StageBinding,
   type TaskState,
   type WorkflowConfig,
+  type ArtifactDef,
+  type CommitRule,
+  type ReviewDepth,
 } from './engine.ts'
 import { resolveFlow } from './workflows.ts'
 import { hashConfig } from './snapshot.ts'
@@ -197,16 +200,26 @@ function defaultConfig(): WorkflowConfig {
  * task record carries no frozen snapshot. Mirrors `dev_task` `resolveWorkflow`:
  * no file → standard; missing/unknown `flow` → fail closed (never silent fallback).
  */
-function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown } | undefined): WorkflowConfig {
+  function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown; commit?: unknown; artifacts?: unknown; review_depth?: unknown; commit_required?: unknown } | undefined): WorkflowConfig {
   if (parsed === undefined) return defaultConfig()
   const flow = parsed.flow
   if (typeof flow !== 'string' || flow.trim() === '') {
     refuse('项目 .dsh/eng.json 缺 "flow" 字段——设为 standard|agile|minimal，或删除该文件')
   }
-  const override = typeof parsed.stage_bindings === 'object' && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings)
-    ? { stage_bindings: parsed.stage_bindings as Record<string, StageBinding> }
-    : undefined
-  const resolved = resolveFlow(flow, override)
+  // The hook validates the same contract the tool does, so it reads the same whole
+  // config: narrowing to stage_bindings would let the hook judge a commit against a
+  // different commit rule than the one the tool authorised it under.
+  const project = {
+    flow,
+    ...(typeof parsed.stage_bindings === 'object' && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings)
+      ? { stage_bindings: parsed.stage_bindings as Record<string, StageBinding> }
+      : {}),
+    ...(typeof parsed.commit === 'object' && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit as CommitRule } : {}),
+    ...(Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts as ArtifactDef[] } : {}),
+    ...(typeof parsed.review_depth === 'string' ? { review_depth: parsed.review_depth as ReviewDepth } : {}),
+    ...(typeof parsed.commit_required === 'boolean' ? { commit_required: parsed.commit_required } : {}),
+  }
+  const resolved = resolveFlow(flow, project)
   if (!resolved.ok) {
     refuse(`未知流程 "${resolved.flow}"（已知流程：${resolved.knownFlows.join('、')}）`)
   }
