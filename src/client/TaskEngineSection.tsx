@@ -12,8 +12,8 @@ import type { ResourceImportRequest, ResourcePreview } from '../resource-types.t
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
-  IconCheckOutline16, IconSettingsOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconCheck, IconSettings } from './icons.ts'
 import {
   formatResourceRef,
   parseResourceRef,
@@ -441,7 +441,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         </div>
       </div>
 
-      <SectionCard icon={<IconSettingsOutline16 size={16} />} title="阶段技能" >
+      <SectionCard icon={<IconSettings size={16} />} title="阶段技能" >
         <BindingEditor stages={stages} stageBindings={stageBindings} setStageBindings={(next) => { setStageBindings(next); setDirty(true); setSavedAt('') }} skillProfiles={skillProfiles} setSkillProfiles={(next) => { setSkillProfiles(next); setDirty(true); setSavedAt('') }} skills={skills} onConfigureSkill={setConfiguringSkill} />
       </SectionCard>
 
@@ -464,7 +464,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         <Button
           variant="primary"
           size="md"
-          icon={<IconCheckOutline16 size={16} />}
+          icon={<IconCheck size={16} />}
           disabled={problems.length > 0 || saving}
           onClick={() => { setSaving(true); void save(remote, { flow, stage_bindings: stageBindings, skill_profiles: skillProfiles, ...(commitRule !== undefined ? { commit: commitRule } : {}), ...(artifacts !== undefined ? { artifacts } : {}), ...(reviewDepth !== undefined ? { review_depth: reviewDepth } : {}), ...(commitRequired !== undefined ? { commit_required: commitRequired } : {}), ...(pendingAdoption ? { materialize_bundled: 'project' as const } : {}) }, workspace, setSavedAt, setSource).then(view => { if (view) { setConfigProblems([]); setDirty(false); setPendingAdoption(false); setStageBindings(view.config.stage_bindings ?? {}); setSkillProfiles(view.config.skill_profiles ?? {}); refreshCatalogs() } }).finally(() => setSaving(false)) }}
         >

@@ -1,6 +1,6 @@
 {
   "name": "@godv61/dsh-task-engine",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "description": "Workflow engine for DeepSeek Harness: a `dev_task` tool that hard-gates stage transitions and commit scope/message, per-node skill bindings with progressive disclosure, and a workbench to configure flows and mount skills. A preset is a flow SKELETON — state control only — and one reasonable engineering setup is offered separately for explicit adoption; which skills run, which rules they follow and what a commit message must look like stay the user's decisions.",
   "type": "module",
   "main": "lib/index.js",

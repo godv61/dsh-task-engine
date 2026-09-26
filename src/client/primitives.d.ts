@@ -78,6 +78,10 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
   export function IconThinkOutline16(props: IconProps): React.ReactElement
   export function IconChevronDownOutline14(props: IconProps): React.ReactElement
 
+  export const IconCloseOutlineRegular: ((props: IconProps) => React.ReactElement) | undefined
+  export const IconCheckOutlineRegular: ((props: IconProps) => React.ReactElement) | undefined
+  export const IconSettingsOutlineRegular: ((props: IconProps) => React.ReactElement) | undefined
+
   /** Localized chrome for the Markdown renderer. */
   export interface MarkdownLabels {
     code: { copyLabel: string; copiedLabel: string }

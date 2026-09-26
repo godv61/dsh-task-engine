@@ -13,7 +13,7 @@
  */
 
 import { createElement } from 'react'
-import { IconSettingsOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconSettings } from './icons.ts'
 
 const hover = 'var(--dsw-alias-bg-layer-2)'
 const label = 'var(--dsw-alias-label-primary)'
@@ -54,7 +54,7 @@ export function TriggerButton({ wide, actions }: {
       transition: 'background 120ms ease',
     },
   },
-    createElement(IconSettingsOutline16, { size: wide ? 16 : 18 }),
+    createElement(IconSettings, { size: wide ? 16 : 18 }),
     wide ? createElement('span', { style: { fontSize: 14, lineHeight: '22px' } }, '工程流程') : null,
   )
 }

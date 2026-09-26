@@ -8,7 +8,7 @@
 import { createElement, useEffect, useRef } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { IconCloseOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconClose } from './icons.ts'
 
 const rootStyle: CSSProperties = {
   position: 'fixed', inset: 0, zIndex: 1000,
@@ -120,7 +120,7 @@ export function ResourceModal({ title, description, onClose, footer, children, p
     createElement('div', { style: headerStyle },
       createElement('h2', { style: titleStyle }, title),
       createElement('button', { type: 'button', style: closeBtnStyle, 'aria-label': '关闭', onClick: onClose },
-        createElement(IconCloseOutline16, { size: 14 }),
+        createElement(IconClose, { size: 14 }),
       ),
     ),
     description !== undefined && description !== ''

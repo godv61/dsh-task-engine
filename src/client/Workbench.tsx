@@ -9,7 +9,8 @@
  */
 
 import { createElement, useState, type CSSProperties, type ChangeEvent } from 'react'
-import { IconCloseOutline16, IconSettingsOutline16, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconClose, IconSettings } from './icons.ts'
 import { workbenchTheme } from './workbench-theme.ts'
 import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
@@ -108,7 +109,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
     createElement('style', null, workbenchTheme),
     createElement('div', { style: header },
       createElement('div', { style: headerBrand },
-        createElement(IconSettingsOutline16, { size: 18 }),
+        createElement(IconSettings, { size: 18 }),
         createElement('div', { style: headerText },
           createElement('span', { style: headerTitle }, '工程流程'),
           createElement('p', { style: headerSub }, '工程化交付工作台 · 需求评审 → 设计 → 开发 → 交付 → 代码审核'),
@@ -122,7 +123,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
         onMouseEnter: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'var(--dsw-alias-bg-layer-2)' },
         onMouseLeave: (event: { currentTarget: HTMLButtonElement }) => { event.currentTarget.style.background = 'transparent' },
       },
-        createElement(IconCloseOutline16, { size: 16 })),
+        createElement(IconClose, { size: 16 })),
     ),
     createElement('div', { style: tabbar },
       ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => { setTab(t.id) } }, t.label)),
