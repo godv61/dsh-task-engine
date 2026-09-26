@@ -6,17 +6,20 @@ export interface SkillSession {
   snapshotEvents(): readonly { type: string; data: unknown }[]
 }
 
-/** Return successful loader call ids in the calling session, including resumed history. */
+/** Return successful loader call ids in the calling session, including task-scoped Codex project loads. */
 export function loadedSkills(session?: SkillSession): Map<string, string> {
   const calls = new Map<string, string>()
   const loaded = new Map<string, string>()
   for (const event of session?.snapshotEvents?.() ?? []) {
     if (event.type === 'tool/call') {
       const data = event.data as { name?: string; callId?: string; arguments?: string }
-      if (data.name !== 'skill' || !data.callId) continue
+      if ((data.name !== 'skill' && data.name !== 'dev_task') || !data.callId) continue
       try {
-        const args = JSON.parse(data.arguments ?? '{}') as { name?: unknown }
-        if (typeof args.name === 'string') calls.set(data.callId, args.name)
+        const args = JSON.parse(data.arguments ?? '{}') as { name?: unknown; operation?: unknown; skill_name?: unknown; task_id?: unknown }
+        if (data.name === 'skill' && typeof args.name === 'string') calls.set(data.callId, args.name)
+        if (data.name === 'dev_task' && args.operation === 'load_skill' && typeof args.skill_name === 'string'
+          && args.skill_name.startsWith('codex-project:') && typeof args.task_id === 'string')
+          calls.set(data.callId, `${args.task_id}#${args.skill_name}`)
       } catch { /* Failed or malformed loader requests are not loading evidence. */ }
     } else if (event.type === 'tool/result') {
       const data = event.data as { error?: unknown; message?: { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } }
@@ -108,11 +111,14 @@ export function skillBlockers(state: TaskState, workflow: WorkflowConfig, sessio
   if (state.execution_version !== 1) return []
   const loaded = loadedSkills(session)
   return obligationStages(state, workflow).flatMap(stage => (workflow.stage_bindings?.[stage]?.skills ?? []).flatMap(entry => {
-    // A binding names its skill with a source layer; the loaded set and the
-    // skill_result keys are keyed by name, because DSH's skill tool is addressed
-    // by name. The source decides which layer to resolve, not which key to use.
-    const name = entry.skill.name
-    if (!loaded.has(name)) return [`${stage}: load skill "${name}" with the skill tool before leaving this stage`]
+    // The host skill tool uses a bare name. A Codex project Skill instead uses
+    // a task-scoped, source-qualified dev_task load so a same-named Skill or a
+    // load for another task cannot satisfy this binding.
+    const name = entry.skill.source === 'codex-project' ? `codex-project:${entry.skill.name}` : entry.skill.name
+    const loadKey = entry.skill.source === 'codex-project' ? `${state.id}#${name}` : name
+    if (!loaded.has(loadKey)) return [entry.skill.source === 'codex-project'
+      ? `${stage}: load skill "${name}" with dev_task operation=load_skill before leaving this stage`
+      : `${stage}: load skill "${name}" with the skill tool before leaving this stage`]
     // A declared non-command kind is checked against its own record rather than
     // falling through to the command requirement, which would demand evidence of a
     // kind this binding never asked for.

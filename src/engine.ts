@@ -73,7 +73,7 @@ export interface ResourceRef {
 }
 
 /** Where a skill or rule came from. `bundled` ships with the plugin. */
-export type ResourceSource = 'bundled' | 'project' | 'user'
+export type ResourceSource = 'bundled' | 'project' | 'codex-project' | 'user'
 
 /** Render a reference as `source:name`, the form used in config and status output. */
 export function formatResourceRef(ref: ResourceRef): string {
@@ -87,7 +87,7 @@ export function formatResourceRef(ref: ResourceRef): string {
  * @returns the parsed reference, or undefined when it carries no source.
  */
 export function parseResourceRef(text: string): ResourceRef | undefined {
-  const match = /^(bundled|project|user):(.+)$/u.exec(text)
+  const match = /^(bundled|project|codex-project|user):(.+)$/u.exec(text)
   if (match === null) return undefined
   return { source: match[1] as ResourceSource, name: match[2]! }
 }
@@ -504,7 +504,7 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
         problems.push(`stage_bindings "${stage}": skill ${index + 1} has no name`)
         continue
       }
-      if (!['bundled', 'project', 'user'].includes(entry.skill.source)) {
+      if (!['bundled', 'project', 'codex-project', 'user'].includes(entry.skill.source)) {
         problems.push(`stage_bindings "${stage}": skill "${entry.skill.name}" has unknown source "${String(entry.skill.source)}"`)
       }
       const skillKey = formatResourceRef(entry.skill)

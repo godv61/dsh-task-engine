@@ -538,6 +538,8 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
       return read(join(BUNDLED_SKILLS_DIR, safe, 'SKILL.md'))
     case 'project':
       return await readText(fs, '.dsh/skills/' + safe + '/SKILL.md', cwd)
+    case 'codex-project':
+      return await readText(fs, '.agents/skills/' + safe + '/SKILL.md', cwd)
     case 'user':
       return read(join(dshHome(), 'skills', safe, 'SKILL.md'))
   }
@@ -767,7 +769,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
   const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd, frozen)
   const skillPart = skills.length > 0
-    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name)`
+    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name; for codex-project skills use dev_task operation=load_skill with the qualified skill_name)`
     : 'skills to load: none'
   const currentSkills = await skillBodiesForBinding(binding, fs, cwd)
   const skillInstructions = currentSkills.length > 0
@@ -797,7 +799,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
     // run something irrelevant.
     const additional = skills
       .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
-      .map(entry => entry.skill.name)
+      .map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
       .filter(name => needsSkillReceipt(name))
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
@@ -979,7 +981,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -1007,7 +1009,7 @@ export function registerDevTask(ctx: Context): void {
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
       task_id: { type: 'string', description: 'Task id. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
-      skill_name: { type: 'string', description: 'Bound skill to record after executing it (skill_result): requires prior successful skill load. Command evidence needs a real validation command; manual evidence needs human approval. target_stage may name the upcoming terminal stage.' },
+      skill_name: { type: 'string', description: 'Bound skill to load or record. For a codex-project skill, pass codex-project:name to load_skill and skill_result. Command evidence needs a real validation command; manual evidence needs human approval.' },
       branch: { type: 'string', description: 'Current git branch (recorded on create).' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Workload tier (create).' },
@@ -1249,6 +1251,20 @@ export function registerDevTask(ctx: Context): void {
         throw new Error('task is completed; use revise to reopen it before changing task state')
       }
 
+      if (a.operation === 'load_skill') {
+        const stage = a.target_stage ?? state.stage
+        if (!obligationStages(state, workflow).includes(stage)) throw new Error(`stage "${stage}" is not currently actionable`)
+        const entry = (workflow.stage_bindings?.[stage]?.skills ?? [])
+          .find(binding => formatResourceRef(binding.skill) === a.skill_name)
+        if (!entry || entry.skill.source !== 'codex-project') throw new Error('load_skill requires a bound codex-project:name at the current or upcoming terminal stage')
+        const content = await readSkillAt(entry.skill, fs, cwd)
+        if (content === undefined) throw new Error(`bound skill ${a.skill_name} cannot be read`)
+        const { resolved, missing } = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
+        if (missing.length) throw new Error(`bound rule for ${a.skill_name} cannot be read: ${missing.join(', ')}`)
+        return [`skill: ${a.skill_name}`, `current skill instructions:\n${content}`,
+          resolved.length ? `rules attached to this skill:\n${resolved.map(rule => `### ${rule.source}:${rule.name}\n${rule.content}`).join('\n\n')}` : 'rules attached to this skill: none'].join('\n\n')
+      }
+
       if (a.operation === 'status') {
         const binding = bindingsForStage(state.stage, workflow)
         const {
@@ -1287,12 +1303,12 @@ export function registerDevTask(ctx: Context): void {
           items: state.items,
           skill_obligations: obligationStages(state, workflow).map(stage => {
             const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
-            const skills = bindings.map(entry => entry.skill.name)
+            const skills = bindings.map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
             // Only bindings whose evidence is a command owe a command receipt, so a
             // document-producing skill is not told to run something irrelevant.
             const command_receipts_required = bindings
               .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
-              .map(entry => entry.skill.name)
+              .map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
               .filter(name => needsSkillReceipt(name))
             return { stage, skills, command_receipts_required }
           }),
@@ -1601,7 +1617,8 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'skill_result': {
           const stage = a.target_stage ?? state.stage
-          const entry = (workflow.stage_bindings?.[stage]?.skills ?? []).find(binding => binding.skill.name === a.skill_name)
+          const entry = (workflow.stage_bindings?.[stage]?.skills ?? []).find(binding =>
+            (binding.skill.source === 'codex-project' ? formatResourceRef(binding.skill) : binding.skill.name) === a.skill_name)
           if (!obligationStages(state, workflow).includes(stage) || !entry) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
           if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) {
             throw new Error(`bound skill ${formatResourceRef(entry.skill)} resolves nowhere; restore its source before recording a result`)
@@ -1610,8 +1627,11 @@ export function registerDevTask(ctx: Context): void {
           if (unresolvedForSkill.length > 0) {
             throw new Error(`bound rule for ${formatResourceRef(entry.skill)} resolves nowhere: ${unresolvedForSkill.join(', ')}`)
           }
-          const loadCall = loadedSkills(session).get(a.skill_name!)
-          if (!loadCall) throw new Error(`load skill "${a.skill_name}" successfully before recording execution`)
+          const loadKey = entry.skill.source === 'codex-project' ? `${state.id}#${a.skill_name}` : a.skill_name!
+          const loadCall = loadedSkills(session).get(loadKey)
+          if (!loadCall) throw new Error(entry.skill.source === 'codex-project'
+            ? `load skill "${a.skill_name}" with dev_task operation=load_skill before recording execution`
+            : `load skill "${a.skill_name}" successfully before recording execution`)
           if (entry.evidence === 'manual') {
             if (!a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('manual skill_result requires non-empty evidence')
             const approval = ctx.get('approval') as ApprovalAsk | undefined

@@ -166,7 +166,7 @@ export interface WriteResourceResult {
 export interface ReadSkillRequest {
   name: string
   /** `project` reads under the workspace's `.dsh/skills`; `user` under `$DSH_HOME/skills`; `bundled` the shipped catalog. */
-  level: 'project' | 'user' | 'bundled'
+  level: 'project' | 'codex-project' | 'user' | 'bundled'
   /** Absolute workspace directory (required when level is `project`). */
   path?: string
 }
@@ -371,7 +371,7 @@ function filesystemRoots(): string[] {
  * one place rather than at each call site.
  */
 function asResourceSource(source: string): ResourceSource {
-  if (source === 'bundled' || source === 'project' || source === 'user') return source
+  if (source === 'bundled' || source === 'project' || source === 'codex-project' || source === 'user') return source
   if (source.startsWith('project')) return 'project'
   if (source.startsWith('user')) return 'user'
   return 'bundled'
@@ -382,6 +382,7 @@ function sourceLabel(source: string): string {
   switch (asResourceSource(source)) {
     case 'bundled': return '内置'
     case 'project': return '项目'
+    case 'codex-project': return '项目 · Codex'
     case 'user': return '用户'
   }
 }
@@ -673,8 +674,9 @@ export default class TaskEngineController extends TypertRemoteService {
    * List every skill available for stage binding by scanning the same three
    * layers as {@link listRules}: bundled, project (`.dsh/skills`), and user
    * (`$DSH_HOME/skills`). Reading the directories directly keeps the catalog
-   * aligned with where {@link writeSkill} writes, independently of the host
-   * skill registry's scan roots.
+   * aligned with where {@link writeSkill} writes, plus the current project's
+   * Codex skill directory. These are source-qualified independently of the
+   * host skill registry's scan roots.
    * @param path - absolute workspace directory for the project level.
    * @returns the mountable skill catalog.
    */
@@ -682,11 +684,12 @@ export default class TaskEngineController extends TypertRemoteService {
   async listSkills(path: string): Promise<SkillCatalog> {
     path = await this.authorizedPath(path)
     const project = path === '' ? [] : listSkillsFromDir(join(path, '.dsh/skills'), 'project')
+    const codexProject = path === '' ? [] : listSkillsFromDir(join(path, '.agents/skills'), 'codex-project')
     const user = listSkillsFromDir(join(dshHome(), 'skills'), 'user')
     // eng-delivery orchestrates the session; it is not a stage-selectable skill.
     const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled').filter(entry => entry.name !== 'eng-delivery')
     // Management retains every scope; invocation remains a registry lookup by name.
-    const skills = [...bundled, ...project, ...user].sort((a, b) => a.name.localeCompare(b.name))
+    const skills = [...bundled, ...project, ...codexProject, ...user].sort((a, b) => a.name.localeCompare(b.name))
     return { skills }
   }
 
@@ -988,6 +991,8 @@ export default class TaskEngineController extends TypertRemoteService {
       ? BUNDLED_SKILLS_DIR
       : request.level === 'project'
         ? join(request.path ?? '', '.dsh/skills')
+        : request.level === 'codex-project'
+          ? join(request.path ?? '', '.agents/skills')
         : join(dshHome(), 'skills')
     const raw = readResourceFile(join(base, name, 'SKILL.md'))
     if (raw === undefined) {

@@ -24,7 +24,7 @@
 }
 ```
 
-`stage_bindings` 的键是当前流程中的阶段名称，`skill_refs` 只保存技能引用。项目级技能的 `skill_profiles` 在 `.dsh/eng.json` 中保存唯一的规则列表和证据类型；用户级技能的规则配置保存在 `$DSH_HOME/skills/<技能名>/profile.json`，所有项目和会话共用。用户级技能只能关联用户级规则，避免引用某个项目独有的规则。
+`stage_bindings` 的键是当前流程中的阶段名称，`skill_refs` 只保存技能引用。项目级技能（包括从 `.agents/skills` 发现的 Codex 技能）的 `skill_profiles` 在 `.dsh/eng.json` 中保存唯一的规则列表和证据类型；用户级技能的规则配置保存在 `$DSH_HOME/skills/<技能名>/profile.json`，所有项目和会话共用。用户级技能只能关联用户级规则，避免引用某个项目独有的规则。
 
 ```json
 {
@@ -47,17 +47,19 @@
 
 规则引用带来源(`bundled:` / `project:` / `user:`),因此同名资源不会被混淆。同一份规则可被多个技能引用,不需要复制正文;编辑共享规则时界面会显示受影响的技能。
 
+项目技能可来自 `.dsh/skills/<名称>/SKILL.md`（引用来源 `project:`）或 `.agents/skills/<名称>/SKILL.md`（引用来源 `codex-project:`）。工作台会扫描这两个项目目录；新建技能仍默认写入 `.dsh/skills`。Codex 项目技能的正文在工作台中只读，可在原文件编辑；其规则配置仍属于该技能，存于项目 `.dsh/eng.json`，规则正文可引用项目 `.dsh/rules`。例如，节点使用 `codex-project:my-skill`，对应 `skill_profiles["codex-project:my-skill"].rules` 可引用 `project:api-contract`。Codex 自身 `.codex/rules/*.rules` 是命令权限配置，并非这里的 Markdown 规则。
+
 [最小配置示例](../defaults/eng.json)仅选择流程，不绑定技能或规则。
 
 **预设不带任何绑定。** 一个只写了 `flow` 的配置就是字面意思：节点没有绑定，阶段仍按流程骨架流转。工作台的「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度，不添加或覆盖技能与规则。项目级技能和规则放在 `.dsh/skills/` 与 `.dsh/rules/`；同一份规则可由多个技能引用。
 
 插件只内置会话编排技能 `eng-delivery`，不提供阶段业务技能或业务规则。它由会话预设使用，不显示在阶段技能列表。工作台可以安装或新建项目级、用户级资源。
 
-进入阶段后,`dev_task` 按稳定的资源引用读取并披露该阶段技能和规则的最新正文。新任务离开阶段前会检查 Harness 的 skill 工具成功加载记录;技能可声明证据类型(`command` / `artifact` / `review` / `manual` / `none`)。`manual` 通过宿主人工审批记录，不要求执行命令；`artifact` 需要该阶段有产物定义且必填字段完整。未声明时沿用命令回执。`status.skill_obligations` 中的 `command_receipts_required` 列出需要命令回执的技能。
+进入阶段后,`dev_task` 按稳定的资源引用读取并披露该阶段技能和规则的最新正文。DSH 技能仍检查 Harness 的 skill 工具成功加载记录；Codex 项目技能使用 `dev_task operation=load_skill`（`skill_name` 传 `codex-project:<名称>`）加载技能及所挂规则，并检查这次加载记录。技能可声明证据类型(`command` / `artifact` / `review` / `manual` / `none`)。`manual` 通过宿主人工审批记录，不要求执行命令；`artifact` 需要该阶段有产物定义且必填字段完整。未声明时沿用命令回执。`status.skill_obligations` 中的 `command_receipts_required` 列出需要命令回执的技能。
 
 挂在终态(例如"完成")的技能在进入终态前执行。测试技能通常建议挂在"交付";现有"完成"绑定也会在审核阶段执行后才放行。标准流程 v2 在审核通过后提交,并核对真实 Git HEAD。修改文件或声明范围后,旧验证回执失效。
 
-资源管理保留项目和个人目录的同名条目,避免来源误标和误操作。技能最终由 Harness 的技能目录加载。
+资源管理保留不同来源的同名条目,避免来源误标和误操作。DSH 技能通过 Harness 的 skill 工具加载；Codex 项目技能通过 `dev_task load_skill` 按来源和任务读取。
 
 ### 旧配置迁移
 

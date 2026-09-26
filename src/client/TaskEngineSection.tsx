@@ -189,7 +189,7 @@ export interface TaskEngineRemote {
   listDirs(request: { path: string }): Promise<RemoteResult<{ ok: boolean; path: string; entries: { name: string; hasSkill: boolean }[]; roots: string[]; currentHasSkill: boolean; error?: string }>>
   writeRule(request: { name: string; content: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   writeUserSkillProfile(request: { name: string; profile: SkillProfile }): Promise<RemoteResult<{ ok: boolean; error?: string }>>
-  readSkill(request: { name: string; level: 'project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadSkillResult>>
+  readSkill(request: { name: string; level: 'project' | 'codex-project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadSkillResult>>
   readRule(request: { name: string; level: 'project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadRuleResult>>
   deleteSkill(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   deleteRule(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>

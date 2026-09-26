@@ -16,6 +16,7 @@ export function sourceLabel(source: string): string {
   switch (source) {
     case 'bundled': return '内置'
     case 'project': case 'project-dsh': case 'project-agents': return '项目'
+    case 'codex-project': return '项目 · Codex'
     case 'user': case 'user-dsh': case 'user-agents': return '用户'
     case 'custom': return '自定义'
     default: return source

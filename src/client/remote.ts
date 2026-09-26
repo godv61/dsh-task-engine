@@ -45,7 +45,7 @@ const commitSchema = z.object({
 })
 
 /** Preserve source-qualified identities across the browser/host boundary. */
-const resourceRefSchema = z.object({ source: z.enum(['bundled', 'project', 'user']), name: z.string() })
+const resourceRefSchema = z.object({ source: z.enum(['bundled', 'project', 'codex-project', 'user']), name: z.string() })
 const evidenceSchema = z.enum(['command', 'artifact', 'review', 'manual', 'none'])
 const skillProfileSchema = z.object({ rules: z.array(resourceRefSchema), evidence: evidenceSchema.optional() })
 const skillBindingSchema = z.object({
@@ -170,7 +170,7 @@ const writeResourceResultSchema = z.object({
 /** `readSkill` request. */
 const readSkillRequestSchema = z.object({
   name: z.string(),
-  level: z.enum(['project', 'user', 'bundled']),
+  level: z.enum(['project', 'codex-project', 'user', 'bundled']),
   path: z.string().optional(),
 })
 

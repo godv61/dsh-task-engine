@@ -126,7 +126,8 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             <thead><tr><th>路径</th><th>作用</th><th>何时读取或修改</th></tr></thead>
             <tbody>
               <tr><td><code>.dsh/eng.json</code></td><td>流程、阶段技能引用及技能规则配置</td><td>新任务创建时读取并冻结；工作台保存时写入</td></tr>
-              <tr><td><code>.dsh/skills/</code></td><td>项目级 skill（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
+              <tr><td><code>.dsh/skills/</code></td><td>项目级 DSH skill（团队共享）</td><td>新建默认写入这里；节点挂载命中时按需读取</td></tr>
+              <tr><td><code>.agents/skills/</code></td><td>项目级 Codex skill（团队共享）</td><td>工作台自动发现；通过 dev_task load_skill 读取技能与所挂规则</td></tr>
               <tr><td><code>.dsh/rules/</code></td><td>项目级 rule（团队共享）</td><td>节点挂载命中时按需读取</td></tr>
               <tr><td><code>.dsh/task-*.json</code></td><td>当前任务的有效状态快照</td><td>确认、实施、验证、评审、切换阶段时更新</td></tr>
               <tr><td><code>$DSH_HOME/skills/ · rules/</code></td><td>用户级 skill / rule</td><td>引用显式记录来源，同名资源互不混淆</td></tr>
@@ -157,7 +158,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="skills">
         <h2>5. Skills：这一步做什么</h2>
-        <p>插件仅内置 <code>eng-delivery</code>，用于会话编排。项目级与用户级业务技能由使用者自行创建或安装；挂到节点后，走到那一步才加载。</p>
+        <p>插件仅内置 <code>eng-delivery</code>，用于会话编排。项目级与用户级业务技能由使用者自行创建或安装；工作台也可发现当前项目 <code>.agents/skills</code> 中已有的 Codex 技能。挂到节点后，走到那一步才加载。</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Skill</th><th>职责</th><th>不负责</th></tr></thead>
@@ -182,7 +183,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li><strong>给节点选技能</strong>：先选节点，再用双栏选择器挑选技能；点技能的规则配置，在右侧栏绑定规则与证据类型，最后保存。</li>
         </ol>
         <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。点「安装技能」选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
-        <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
+        <p>新建项目资源默认写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。当前项目 <code>.agents/skills</code> 中已有的 Codex 技能也会显示，其正文在工作台只读，可编辑原文件；规则仍配置在该技能下，规则正文可引用项目 <code>.dsh/rules</code>。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
         <p>资源删除前会显示名称与实际目标路径，确认后永久删除；可点击「保留」取消。任务台账支持搜索、风险与阶段筛选，并显示验证、审核和更新时间。流程配置读取与保存失败时显示错误，损坏任务记录不会被静默视为没有任务。</p>
         <pre><code>// .dsh/eng.json 等价内容
 {
@@ -258,7 +259,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
             </tbody>
           </table>
         </div>
-        <p>新任务离开阶段前检查绑定技能是否成功加载；技能可以声明 <code>command</code>、<code>artifact</code>、<code>review</code>、<code>manual</code> 或 <code>none</code> 证据类型。只有需要命令回执的技能才出现在 <code>command_receipts_required</code> 中。挂在终态的技能在进入终态前执行。命令成功只证明该命令通过，不证明覆盖完整；文件变动后须重新验证。旧任务继续使用冻结快照。</p>
+        <p>新任务离开阶段前检查绑定技能是否成功加载；Codex 项目技能通过 <code>dev_task load_skill</code> 加载其正文及所挂规则。技能可以声明 <code>command</code>、<code>artifact</code>、<code>review</code>、<code>manual</code> 或 <code>none</code> 证据类型。只有需要命令回执的技能才出现在 <code>command_receipts_required</code> 中。挂在终态的技能在进入终态前执行。命令成功只证明该命令通过，不证明覆盖完整；文件变动后须重新验证。任务的流程配置按创建时的快照执行，Skill/Rule 正文在下一次交互读取最新版本。</p>
         <h3>贯穿全程的硬规则</h3>
         <ul>
           <li>阶段是硬状态：status 说你在哪，就只做那一步，绝不倒带重走、绝不跳。</li>

@@ -78,8 +78,10 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 | 安装范围 | 存放位置 | 用途 |
 | :--- | :--- | :--- |
-| 项目 | 工作区 `.dsh/skills`、`.dsh/rules` | 当前项目的工作方法与约定。 |
+| 项目 | 工作区 `.dsh/skills`、`.dsh/rules` | 当前项目的工作方法与约定；工作台新建资源默认写在这里。 |
 | 个人 | `$DSH_HOME/skills`、`$DSH_HOME/rules` | 在这台电脑上的多个项目间复用。 |
+
+工作台也会发现同一项目 `.agents/skills/<名称>/SKILL.md` 中的 Codex 项目技能，可将它绑定到流程节点，并在技能下配置 DSH 规则；它的正文仍留在原目录。运行时使用 `dev_task` 的 `load_skill` 操作读取该技能及其规则，下一次读取会取得文件的最新内容。[Codex 项目技能说明](docs/configuration.md#技能与规则)
 
 技能的脚本、模板和附件会一并保留。文件格式、大小限制和故障处理见[技能与规则安装指南](docs/resource-install.md)。
 
