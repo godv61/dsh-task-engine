@@ -83,11 +83,9 @@ test('filter: only-selected combined with a query still keeps what is in force',
   assert.ok(!shown.some(e => e.name === 'code-implement'), 'an unbound non-matching skill is dropped')
 })
 
-test('filter: the shipped catalog is small enough that the default view shows it all', () => {
-  // Sanity: the initial view of a fresh project is the shipped set, unfiltered.
+test('filter: a fresh project has no prebound business skill', () => {
   const adopted = adoptRecommendation('standard')
   const resolved = resolveFlow('standard', adopted).config
   const binding = bindingsForStage('开发', resolved)
-  assert.ok(binding !== undefined, 'the adopted config binds 开发')
-  assert.ok((binding.skills ?? []).length > 0)
+  assert.equal(binding, undefined)
 })

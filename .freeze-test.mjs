@@ -15,11 +15,21 @@ import { hashText } from './lib/snapshot.js'
 /** Create one task through the real tool and return its frozen snapshot. */
 async function created(flow) {
   const cwd = resolve('freeze-project')
+  const stage = { standard: '需求评审', agile: '需求', minimal: '开发' }[flow]
+  const shared = { source: 'project', name: 'shared-rule' }
+  const adopted = adoptRecommendation(flow)
+  const project = { ...adopted, stage_bindings: { [stage]: { skills: [
+    { skill: { source: 'project', name: 'first-skill' }, rules: [shared], evidence: 'none' },
+    { skill: { source: 'project', name: 'second-skill' }, rules: [shared], evidence: 'none' },
+  ] } } }
   const records = new Map([
     // A project that adopted the shipped recommendation, which is what gives it
     // skills and rules to freeze. `{flow}` alone adopts nothing and therefore has
     // nothing to freeze — a legitimate state, but not the one under test.
-    [join(cwd, '.dsh/eng.json'), JSON.stringify(adoptRecommendation(flow))],
+    [join(cwd, '.dsh/eng.json'), JSON.stringify(project)],
+    [join(cwd, '.dsh/skills/first-skill/SKILL.md'), '# First skill'],
+    [join(cwd, '.dsh/skills/second-skill/SKILL.md'), '# Second skill'],
+    [join(cwd, '.dsh/rules/shared-rule.md'), '# Shared rule'],
     [join(cwd, 'a.js'), 'source'],
   ])
   const events = []
@@ -75,13 +85,13 @@ test('freeze: a frozen body carries its content and a hash of that content', asy
 })
 
 test('freeze: shared resources are stored once, not duplicated per reference', async () => {
-  // security-redlines is referenced by two skills; the body must not be copied twice.
+  // One project rule is referenced by two skills; the body is stored once.
   const state = await created('standard')
   const resources = state.flow.resources ?? []
   const hashes = resources.map(r => r.hash)
   assert.equal(new Set(hashes).size, hashes.length,
     'identical bodies must not be stored more than once')
-  assert.ok(resources.some(r => r.ref.name === 'security-redlines'),
+  assert.ok(resources.some(r => r.ref.name === 'shared-rule'),
     'the shared rule must be present')
 })
 
@@ -103,14 +113,13 @@ test('freeze: every preset freezes a complete, non-empty set', async () => {
 async function atDevelopmentWithProjectRule() {
   const cwd = resolve('freeze-live')
   const adopted = adoptRecommendation('standard')
-  const skills = adopted.stage_bindings['开发'].skills.map(entry => ({
-    ...entry,
-    rules: [...entry.rules, { source: 'project', name: 'mine' }],
-  }))
+  const skills = [{ skill: { source: 'project', name: 'my-implementation' },
+    rules: [{ source: 'project', name: 'mine' }], evidence: 'none' }]
   const project = { ...adopted, stage_bindings: { ...adopted.stage_bindings, '开发': { skills } } }
   const records = new Map([
     [join(cwd, '.dsh/eng.json'), JSON.stringify(project)],
     [join(cwd, '.dsh/rules/mine.md'), 'ORIGINAL RULE'],
+    [join(cwd, '.dsh/skills/my-implementation/SKILL.md'), '# Implementation skill'],
     [join(cwd, 'a.js'), 'source'],
   ])
   let execute

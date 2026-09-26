@@ -59,7 +59,7 @@ export interface CommitRule {
  * A resource reference that names where the resource lives.
  *
  * A bare name is ambiguous once project and user directories can both hold one:
- * `coding-conventions` in a project and `coding-conventions` in the user home are
+ * `team-rules` in a project and `team-rules` in the user home are
  * different resources that happen to share a name, and a binding written as a
  * plain string cannot say which was meant. Every stored reference therefore
  * carries its source layer, and a legacy bare name is resolved by the documented
@@ -402,7 +402,6 @@ export interface TaskState {
   /** Audit trail of risk changes; a high_risk → standard downgrade only appears here after human approval. Absent on pre-0.22 records. */
   risk_downgrades?: { from: string; to: string; at: string }[]
   /** Fingerprint of bundled rules at create time; reports later changes. Absent on pre-0.22 records. */
-  bindings_fingerprint?: string
   /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
   revision?: number
   /** Time of the latest successful tool write, absent on older records. */

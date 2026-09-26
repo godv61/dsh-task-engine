@@ -31,7 +31,6 @@
     "defaults/eng.json",
     "hooks/**",
     "skills/**",
-    "rules/**",
     "preset/**",
     "scripts/**",
     "docs/**",

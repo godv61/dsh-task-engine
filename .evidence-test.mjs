@@ -24,7 +24,7 @@ function sessionWith(names) {
 /** A standard-flow config with one extra skill on 开发 carrying the given evidence. */
 function withEvidence(evidence) {
   const adopted = adoptRecommendation('standard')
-  const skills = [...adopted.stage_bindings['开发'].skills, { skill: { source: 'project', name: 'doc-skill' }, rules: [], ...(evidence !== undefined ? { evidence } : {}) }]
+  const skills = [{ skill: { source: 'project', name: 'doc-skill' }, rules: [], ...(evidence !== undefined ? { evidence } : {}) }]
   return resolveFlow('standard', { ...adopted, stage_bindings: { ...adopted.stage_bindings, '开发': { skills } } }).config
 }
 
@@ -42,8 +42,8 @@ function state(extra = {}) {
 }
 
 test('evidence: needsSkillReceipt honours a declared non-command kind', () => {
-  // Core skills keep their exemption; a declared kind overrides the default.
-  assert.equal(needsSkillReceipt('code-implement'), false, 'a core skill owes no separate receipt')
+  // No name-based exemption remains; a declared kind overrides the default.
+  assert.equal(needsSkillReceipt('code-implement'), true, 'skill names do not exempt command evidence')
   assert.equal(needsSkillReceipt('doc-skill'), true, 'an undeclared extra skill defaults to a command receipt')
   assert.equal(needsSkillReceipt('doc-skill', 'command'), true)
   assert.equal(needsSkillReceipt('doc-skill', 'artifact'), false)

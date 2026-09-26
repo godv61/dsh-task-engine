@@ -320,16 +320,18 @@ test('batch3: the same skill carries identical rules wherever it is bound', () =
 test('batch3: a rule shared by two skills is one resource, referenced twice', () => {
   // Reuse must not duplicate the rule body: two skills referencing one rule point
   // at the same source-qualified reference.
-  const config = adoptedFlow('standard')
-  const review = config.stage_bindings['代码审核'].skills
-  const reviewRules = review.find(entry => entry.skill.name === 'code-review').rules.map(formatResourceRef)
-  const implementRules = config.stage_bindings['开发'].skills
-    .find(entry => entry.skill.name === 'code-implement').rules.map(formatResourceRef)
+  const sharedRule = { source: 'project', name: 'shared-rule' }
+  const config = resolveFlow('standard', { flow: 'standard', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'implement' }, rules: [sharedRule] }] },
+    '代码审核': { skills: [{ skill: { source: 'project', name: 'review' }, rules: [sharedRule] }] },
+  } }).config
+  const reviewRules = config.stage_bindings['代码审核'].skills[0].rules.map(formatResourceRef)
+  const implementRules = config.stage_bindings['开发'].skills[0].rules.map(formatResourceRef)
   const shared = reviewRules.filter(rule => implementRules.includes(rule))
   assert.ok(shared.length > 0,
     'coding-conventions and security-redlines apply to both implementing and reviewing code, so at least one rule must be shared by reference')
-  assert.ok(shared.includes('bundled:security-redlines'),
-    `security-redlines is the clear shared case; saw ${JSON.stringify(shared)}`)
+  assert.ok(shared.includes('project:shared-rule'),
+    `the shared project rule is one reference; saw ${JSON.stringify(shared)}`)
 })
 
 test('batch3: legacy stage-level rules stay in force and are named as unassigned', async () => {
@@ -337,16 +339,17 @@ test('batch3: legacy stage-level rules stay in force and are named as unassigned
   // invent an answer the config never had; dropping them would lose a constraint.
   const f = fixture('standard', '开发', {}, {})
   const state = f.state()
-  state.flow.config.stage_bindings = { 开发: { skills: [], legacy_rules: ['security-redlines'] } }
+  state.flow.config.stage_bindings = { 开发: { skills: [], legacy_rules: ['shared-rule'] } }
+  f.records.set(join(f.cwd, '.dsh/rules/shared-rule.md'), '# shared legacy rule')
   f.records.set(join(f.cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status' }))
   assert.ok(
-    (status.unassigned_legacy_rules ?? []).includes('security-redlines'),
+    (status.unassigned_legacy_rules ?? []).includes('shared-rule'),
     `the legacy rule must be reported as unassigned; saw ${JSON.stringify(status.unassigned_legacy_rules)}`,
   )
   // Still enforced: it resolves and appears among the rules in force.
   assert.ok(
-    (status.rules ?? []).some(rule => rule.name === 'security-redlines'),
+    (status.rules ?? []).some(rule => rule.name === 'shared-rule'),
     `a legacy rule must keep applying; saw ${JSON.stringify(status.rules)}`,
   )
 })

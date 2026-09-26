@@ -15,14 +15,13 @@ import { completionBlockers, terminalRequirements, resourceBlockers } from './li
 async function project() {
   const cwd = resolve('enforce-project')
   const adopted = adoptRecommendation('standard')
-  const skills = adopted.stage_bindings['开发'].skills.map(entry => ({
-    ...entry,
-    rules: [...entry.rules, { source: 'project', name: 'mine' }],
-  }))
+  const skills = [{ skill: { source: 'project', name: 'my-implementation' },
+    rules: [{ source: 'project', name: 'mine' }], evidence: 'none' }]
   const stage_bindings = { ...adopted.stage_bindings, '开发': { skills } }
   const records = new Map([
     [join(cwd, '.dsh/eng.json'), JSON.stringify({ ...adopted, stage_bindings })],
     [join(cwd, '.dsh/rules/mine.md'), 'RULE'],
+    [join(cwd, '.dsh/skills/my-implementation/SKILL.md'), '---\nname: my-implementation\n---\nImplement.'],
     [join(cwd, 'a.js'), 'source'],
   ])
   const events = []

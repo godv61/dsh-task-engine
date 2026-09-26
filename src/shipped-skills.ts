@@ -1,8 +1,6 @@
 /**
- * Bundled engineering skills shipped with the package, registered into the
- * calling scope's layer of the host skill registry. The registration runs on
- * the AGENT plane (inside a preset) so only sessions on that preset carry the
- * `eng-delivery` skill and its stage skills.
+ * The bundled eng-delivery orchestration skill, registered into the calling
+ * scope's layer of the host skill registry on the AGENT plane.
  *
  * @module dsh-task-engine/shipped-skills
  */

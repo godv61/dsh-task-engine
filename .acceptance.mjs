@@ -44,7 +44,12 @@ console.log('')
 console.log('=== 3. 采用后完全可编辑、可删除 ===')
 for (const id of ['standard', 'agile', 'minimal']) {
   const adopted = adoptRecommendation(id)
-  check(`${id} 采用后带推荐技能`, Object.keys(adopted.stage_bindings ?? {}).length > 0)
+  check(`${id} 采用后仍不绑定业务技能`, Object.keys(adopted.stage_bindings ?? {}).length === 0)
+  const retained = adoptRecommendation(id, { flow: id, stage_bindings: {
+    开发: { skill_refs: [{ source: 'project', name: 'mine' }] },
+  } })
+  check(`${id} 采用推荐文本时保留用户技能`, retained.stage_bindings.开发.skill_refs[0].name === 'mine')
+  if (id !== 'minimal') check(`${id} 推荐提交文本实际写入`, retained.commit.message_pattern !== '')
   const replaced = resolveFlow(id, { ...adopted, stage_bindings: {} }).config
   check(`${id} 清空后为空（不补回）`, Object.keys(replaced.stage_bindings ?? {}).length === 0)
   const mine = resolveFlow(id, {
@@ -101,13 +106,13 @@ for (const id of ['standard', 'agile', 'minimal']) {
 }
 
 console.log('')
-console.log('=== 7. defaults/eng.json 是采用后的配置示例 ===')
+console.log('=== 7. defaults/eng.json 是空绑定配置示例 ===')
 const doc = JSON.parse(readFileSync('defaults/eng.json', 'utf8'))
 const merged = resolveFlow(doc.flow, doc)
 check('defaults/eng.json 可解析', merged.ok)
 if (merged.ok) {
   check('defaults/eng.json 无验证问题', validateWorkflow(merged.config).length === 0)
-  check('defaults/eng.json 含技能（是采用后的样子）', Object.keys(merged.config.stage_bindings ?? {}).length > 0)
+  check('defaults/eng.json 不含技能', Object.keys(merged.config.stage_bindings ?? {}).length === 0)
 }
 
 console.log('')

@@ -88,17 +88,11 @@ test('one user skill profile is shared across workspaces and cannot depend on a 
   }
 })
 
-test('recommendation adoption copies each shared bundled rule once and rewrites every reference', () => {
+test('recommendation adoption contains no bundled resources', () => {
   const { config, copies } = materializeBundledReferences(adoptRecommendation('standard'), 'project')
-  assert.equal(copies.filter(copy => copy.kind === 'skill').length, 6)
-  assert.equal(copies.filter(copy => copy.kind === 'rule').length, 3)
-  const refs = Object.values(config.stage_bindings).flatMap(binding => binding.skill_refs)
-  assert.ok(refs.every(ref => ref.source === 'project'))
-  const rules = Object.values(config.skill_profiles).flatMap(profile => profile.rules)
-  assert.ok(rules.every(ref => ref.source === 'project'))
-  const shared = rules.filter(ref => ref.name === 'security-redlines-copy')
-  assert.equal(shared.length, 3)
-  assert.equal(copies.filter(copy => copy.kind === 'rule' && copy.name === 'security-redlines').length, 1)
+  assert.deepEqual(copies, [])
+  assert.deepEqual(config.stage_bindings, {})
+  assert.equal(JSON.stringify(config).includes('bundled:'), false)
   assert.deepEqual(validateWorkflow(resolveFlow('standard', config).config), [])
 })
 
@@ -112,7 +106,7 @@ test('project migration leaves a global user skill profile and its bundled rules
   assert.deepEqual(copies, [])
 })
 
-test('adoption saves editable project copies, preserves edited files on repeat, and leaves legacy bundled configs alone', async () => {
+test('recommendation saves only editable project configuration, without resource copies', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-adopt-'))
   assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))
   const fs = {
@@ -126,39 +120,31 @@ test('adoption saves editable project copies, preserves edited files on repeat, 
     const first = await Controller.prototype.write.call(receiver,
       { path: root, ...recommended, materialize_bundled: 'project' })
     assert.equal(first.ok, true)
-    assert.equal(first.adoption.created.length, 9)
+    assert.equal(first.adoption.created.length, 0)
     const file = join(root, '.dsh', 'eng.json')
     const saved = JSON.parse(readFileSync(file, 'utf8'))
     assert.equal(JSON.stringify(saved).includes('"bundled"'), false)
-    const shared = join(root, '.dsh', 'rules', 'security-redlines-copy.md')
-    assert.ok(readFileSync(shared, 'utf8').length > 0)
-    writeFileSync(shared, 'user edited shared rule\n')
     const second = await Controller.prototype.write.call(receiver,
       { path: root, ...recommended, materialize_bundled: 'project' })
     assert.equal(second.ok, true)
     assert.equal(second.adoption.created.length, 0)
-    assert.equal(second.adoption.reused.length, 9)
-    assert.equal(readFileSync(shared, 'utf8'), 'user edited shared rule\n')
+    assert.equal(second.adoption.reused.length, 0)
     const loaded = await Controller.prototype.read.call(receiver, root)
     assert.equal(loaded.ok, true)
-    const sharedRefs = Object.values(loaded.config.skill_profiles).flatMap(profile => profile.rules)
-      .filter(rule => rule.name === 'security-redlines-copy')
-    assert.equal(sharedRefs.length, 3)
-    writeFileSync(file, JSON.stringify(compactProjectConfig(recommended)))
-    const legacy = await Controller.prototype.read.call(receiver, root)
-    assert.equal(legacy.ok, true)
-    assert.ok(JSON.stringify(legacy.config).includes('"bundled"'))
+    assert.deepEqual(loaded.config.stage_bindings, {})
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
 })
 
 test('round-trip: stages store references while skill rules have one owner', () => {
-  const adopted = adoptRecommendation('standard')
+  const adopted = { ...adoptRecommendation('standard'), stage_bindings: {
+    '开发': { skill_refs: [{ source: 'project', name: 'my-implementation' }] },
+  }, skill_profiles: { 'project:my-implementation': { rules: [{ source: 'project', name: 'my-rule' }] } } }
   const compact = compactProjectConfig(adopted)
   assert.ok(compact.stage_bindings['开发'].skill_refs.length > 0)
   assert.equal(compact.stage_bindings['开发'].skills, undefined)
-  assert.ok(compact.skill_profiles['bundled:code-implement'].rules.length > 0)
+  assert.ok(compact.skill_profiles['project:my-implementation'].rules.length > 0)
   const readBack = resolveFlow('standard', JSON.parse(JSON.stringify(compact)))
   assert.deepEqual(readBack.config.stage_bindings, resolveFlow('standard', adopted).config.stage_bindings)
   const custom = { flow: 'standard', stage_bindings: {
@@ -177,13 +163,15 @@ test('remote write stores canonical skill profiles and read expands them', async
     writeText: async (_target, text) => { stored = text },
   }
   const receiver = { authorizedPath: async path => path, fs: () => fs }
-  const adopted = adoptRecommendation('standard')
+  const adopted = { ...adoptRecommendation('standard'), stage_bindings: {
+    '开发': { skill_refs: [{ source: 'project', name: 'my-implementation' }] },
+  }, skill_profiles: { 'project:my-implementation': { rules: [{ source: 'project', name: 'my-rule' }] } } }
   const written = await Controller.prototype.write.call(receiver, { path: 'project', ...adopted })
   assert.equal(written.ok, true)
   const onDisk = JSON.parse(stored)
   assert.ok(onDisk.stage_bindings['开发'].skill_refs.length > 0)
   assert.equal(onDisk.stage_bindings['开发'].skills, undefined)
-  assert.ok(onDisk.skill_profiles['bundled:code-implement'].rules.length > 0)
+  assert.ok(onDisk.skill_profiles['project:my-implementation'].rules.length > 0)
   const loaded = await Controller.prototype.read.call(receiver, 'project')
   assert.equal(loaded.ok, true)
   assert.deepEqual(loaded.config.stage_bindings, written.config.stage_bindings)

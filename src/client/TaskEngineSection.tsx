@@ -1,10 +1,8 @@
 /**
  * The "工程流程配置" settings section: a picker over preset workflows plus one
- * editable surface — which skill/rule each node mounts. The stage graph, guards,
- * artifact fields, commit rule, and verification requirement are fixed by the
- * chosen preset, so the page no longer edits those; a project customizes
- * behavior by overriding its stage bindings (and by editing skill/rule content
- * in the sibling tabs). Editing and saving run the same `validateWorkflow` the
+ * editable surface — which skill/rule each node mounts. The stage graph and
+ * guards are fixed by the chosen preset; text and artifact conventions are
+ * optional user configuration. Editing and saving run the same `validateWorkflow` the
  * `dev_task` tool enforces.
  *
  * @module dsh-task-engine/TaskEngineSection
@@ -329,20 +327,19 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   /**
    * Adopt the current flow's recommended setup into the user's config.
    *
-   * This is the explicit act that supplies a starting point: skills, commit text
-   * and artifact fields. It is offered once and applied once — after this the
+   * This is the explicit act that supplies optional text and artifact fields.
+   * Existing skill and rule bindings remain the user's choice. After this the
    * values are ordinary config, so a value the user deletes stays deleted and no
    * upgrade merges anything back.
    */
   const adopt = (): void => {
-    const adopted = adoptRecommendation(flow)
+    const adopted = adoptRecommendation(flow, {
+      flow, stage_bindings: stageBindings, skill_profiles: skillProfiles,
+      ...(commitRequired !== undefined ? { commit_required: commitRequired } : {}),
+    })
     if (adopted === undefined) return
-    if (dirty && !window.confirm('采用推荐配置会替换当前的技能与规则设置。继续？')) return
-    setStageBindings({ ...(adopted.stage_bindings ?? {}) })
-    setPendingAdoption(true)
+    if (dirty && !window.confirm('采用推荐的提交文本、产物字段和评审深度？现有技能与规则会保留。')) return
     setFlowNotice('')
-    const adoptedFlow = resolveFlow(flow, adopted)
-    setSkillProfiles(adoptedFlow.ok ? adoptedFlow.config.skill_profiles ?? {} : {})
     setCommitRule(adopted.commit)
     setArtifacts(adopted.artifacts)
     setReviewDepth(adopted.review_depth)
@@ -395,14 +392,14 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
         <h2 style={styles.title}>工程流程配置</h2>
         <p style={styles.muted}>
           流程决定工作怎么流转（阶段与门禁）；技能、规则、提交格式和产物字段由你自己配置。
-          需要一份现成的起点时，可以「采用推荐配置」；保存时会把内置样本复制到当前项目，再由你的项目资源承载这些规则。
+          需要提交文本、产物字段和评审深度的起点时，可以「采用推荐配置」。技能与规则请按项目需要自行创建并绑定。
         </p>
       </div>
 
       <div style={styles.adoptRow}>
         <Button size="sm" onClick={adopt}>采用「{FLOW_PRESETS[flow]?.label ?? flow}」的推荐配置</Button>
         <span style={styles.muted}>
-          保存后复制推荐技能与共享规则各一份到项目；已有项目副本不会被覆盖，之后插件升级也不会改写它们。
+          仅写入可修改的文本与字段，不增删现有技能和规则绑定。
         </span>
       </div>
       {hasBundledReferences && <div style={styles.adoptRow}>
@@ -412,7 +409,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
           setSavedAt('')
           setFlowNotice('保存后会把当前配置中的内置引用复制到项目，保留已有项目副本及其他配置。')
         }}>把当前内置引用迁移到项目</Button>
-        <span style={styles.muted}>旧项目可单独迁移，不必重新采用推荐配置。</span>
+        <span style={styles.muted}>将当前内置引用复制为项目资源。</span>
       </div>}
 
       <div style={styles.sourceRow}>

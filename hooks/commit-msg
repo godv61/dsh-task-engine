@@ -158,10 +158,6 @@ function checkFileScope(state2, committing, config2) {
 }
 
 // src/workflows.ts
-function bundled(skill, ...rules) {
-  const ref = (name) => ({ source: "bundled", name });
-  return { skill: ref(skill), rules: rules.map(ref) };
-}
 var STANDARD = {
   stages: ["\u9700\u6C42\u8BC4\u5BA1", "\u8BBE\u8BA1", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"],
   start_stage: "\u9700\u6C42\u8BC4\u5BA1",
@@ -188,19 +184,7 @@ var STANDARD_RECOMMENDATION = {
     { stage: "\u9700\u6C42\u8BC4\u5BA1", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope", "acceptance_criteria"] },
     { stage: "\u8BBE\u8BA1", id: "design", name: "\u8BBE\u8BA1\u6587\u6863", fields: ["approach", "risks", "impact"] },
     { stage: "\u4EE3\u7801\u5BA1\u6838", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ],
-  stage_bindings: {
-    "\u9700\u6C42\u8BC4\u5BA1": { skills: [bundled("requirement-analysis", "security-redlines")] },
-    "\u8BBE\u8BA1": { skills: [bundled("solution-design")] },
-    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
-    "\u4EA4\u4ED8": { skills: [bundled("code-verify")] },
-    "\u4EE3\u7801\u5BA1\u6838": {
-      skills: [
-        bundled("code-review", "coding-conventions", "security-redlines"),
-        bundled("code-commit", "commit-conventions")
-      ]
-    }
-  }
+  ]
 };
 var AGILE = {
   stages: ["\u9700\u6C42", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u5BA1\u67E5"],
@@ -234,18 +218,9 @@ var AGILE_RECOMMENDATION = {
   },
   artifacts: [
     { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] },
-    // The 审查 stage binds code-review, whose instructions write this artifact with
-    // `record artifact=review`. Declaring it keeps that binding executable: the
-    // engine refuses an undeclared artifact, so a bound skill pointing at one would
-    // be a contract the recommendation made impossible to satisfy.
+    // Optional review record; the flow's review gate itself does not require a skill.
     { stage: "\u5BA1\u67E5", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ],
-  stage_bindings: {
-    "\u9700\u6C42": { skills: [bundled("requirement-analysis", "security-redlines")] },
-    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
-    "\u4EA4\u4ED8": { skills: [bundled("code-verify"), bundled("code-commit", "commit-conventions")] },
-    "\u5BA1\u67E5": { skills: [bundled("code-review", "coding-conventions", "security-redlines")] }
-  }
+  ]
 };
 var MINIMAL = {
   stages: ["\u5F00\u53D1", "\u4EA4\u4ED8"],
@@ -261,11 +236,7 @@ var MINIMAL_RECOMMENDATION = {
   // A fast-change flow checks each change once, not twice under two headings a
   // short change rarely distinguishes. The item still has to be reviewed — what
   // drops is the duplicated verdict, which is where the weight actually was.
-  review_depth: "single",
-  stage_bindings: {
-    "\u5F00\u53D1": { skills: [bundled("code-implement", "coding-conventions", "security-redlines")] },
-    "\u4EA4\u4ED8": { skills: [bundled("code-commit", "commit-conventions")] }
-  }
+  review_depth: "single"
 };
 function deriveCapabilities(config2) {
   const caps = [];

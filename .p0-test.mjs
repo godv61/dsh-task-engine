@@ -152,20 +152,20 @@ assert(emptied.ok && (emptied.config.stage_bindings['开发'].skills ?? []).leng
   'a project that binds nothing to a stage keeps it empty; nothing is merged back in')
 
 const adopted = adoptedFlow('standard')
-assert(adopted.stage_bindings['开发'].skills.some(entry => entry.skill.name === 'code-implement'),
-  'adopting the recommendation is what supplies the shipped skills')
+assert(Object.keys(adopted.stage_bindings ?? {}).length === 0,
+  'adopting the recommendation does not supply skills')
 
-// And a user who gives a shipped skill their own rule list gets that list — the
+// And a user who gives a project skill their own rule list gets that list — the
 // defect this replaces was that the entry was skipped as a duplicate reference.
 const ownRules = resolveFlow('standard', {
   flow: 'standard',
   stage_bindings: {
-    '开发': { skills: [{ skill: { source: 'bundled', name: 'code-implement' }, rules: [{ source: 'project', name: 'only-mine' }] }] },
+    '开发': { skills: [{ skill: { source: 'project', name: 'my-implementation' }, rules: [{ source: 'project', name: 'only-mine' }] }] },
   },
 }).config
-const implementBinding = ownRules.stage_bindings['开发'].skills.find(entry => entry.skill.name === 'code-implement')
+const implementBinding = ownRules.stage_bindings['开发'].skills.find(entry => entry.skill.name === 'my-implementation')
 assert(implementBinding.rules.length === 1 && implementBinding.rules[0].name === 'only-mine',
-  'a project rule list for a shipped skill is used as given, not discarded as a duplicate')
+  'a project rule list for a project skill is used as given, not discarded as a duplicate')
 
 // ── 4. newTask freezes the snapshot ────────────────────────────────────────
 const snapshot = { flow: 'standard', version: 1, config: adoptedFlow('standard') }
@@ -267,8 +267,6 @@ await assertThrows(
 // is no chain to walk and no shadowing to defend against: the same name in two
 // layers is two distinct resources, and the binding says which one it means.
 {
-  const bundled = readFileSync('./rules/security-redlines.md', 'utf8')
-  assert(bundled.includes('服务端'), 'bundled security-redlines exists as expected')
   const fs = makeFs({
     // A project file with the same NAME but a different body. Under the old
     // bare-name lookup this would have replaced the bundled rule silently.
@@ -276,12 +274,13 @@ await assertThrows(
       flow: 'standard',
       stage_bindings: {
         '需求评审': { skills: [{
-          skill: { source: 'bundled', name: 'requirement-analysis' },
+          skill: { source: 'project', name: 'requirement-analysis' },
           rules: [{ source: 'project', name: 'security-redlines' }],
         }] },
       },
     }),
     '.dsh/rules/security-redlines.md': '# 弱化的安全红线，前端校验即可',
+    '.dsh/skills/requirement-analysis/SKILL.md': '# Project requirement analysis',
   })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'T9', title: 'x', branch: 'main' }, EXEC)
@@ -292,26 +291,24 @@ await assertThrows(
   assert(sec.content.includes('前端校验即可'), 'the PROJECT body is what gets disclosed, because the reference names the project layer')
 }
 
-// ── 11b. a bundled reference keeps resolving the bundled body ───────────────
+// ── 11b. a deleted bundled rule is reported as missing ───────────────────────
 {
   const fs = makeFs({
     '.dsh/eng.json': JSON.stringify({
       flow: 'standard',
       stage_bindings: {
         '需求评审': { skills: [{
-          skill: { source: 'bundled', name: 'requirement-analysis' },
+          skill: { source: 'project', name: 'requirement-analysis' },
           rules: [{ source: 'bundled', name: 'security-redlines' }],
         }] },
       },
     }),
     '.dsh/rules/security-redlines.md': '# 弱化的安全红线，前端校验即可',
+    '.dsh/skills/requirement-analysis/SKILL.md': '# Project requirement analysis',
   })
   const exe = await registered(fs)
-  await exe({ operation: 'create', task_id: 'T10', title: 'x', branch: 'main' }, EXEC)
-  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T10' }, EXEC))
-  const sec = status.bindings.rules.find(r => r.name === 'security-redlines')
-  assert(sec !== undefined && sec.source === 'bundled', 'a bundled reference resolves to the bundled layer')
-  assert(sec.content.includes('服务端'), 'the bundled body is used, untouched by the same-named project file')
+  await assertThrows(() => exe({ operation: 'create', task_id: 'T10', title: 'x', branch: 'main' }, EXEC),
+    'unreadable', 'a reference to a removed bundled rule fails closed')
 }
 
 // ── 12. session cwd drives every relative path (init regression) ──────────
@@ -602,10 +599,10 @@ function memProbe(files) {
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'FP-1', title: 'x', branch: 'main' }, EXEC)
   const status = JSON.parse(await exe({ operation: 'status', task_id: 'FP-1' }, EXEC))
-  assert(status.bindings_drift === undefined, 'fresh task shows no bindings drift')
+  assert(status.bindings_drift === undefined, 'fresh task has no bundled-rule drift marker')
   const record = JSON.parse(fs._files.get('.dsh/task-FP-1.json'))
-  assert(typeof record.bindings_fingerprint === 'string' && record.bindings_fingerprint.length === 64,
-    'create records the bundled-rules fingerprint')
+  assert(record.bindings_fingerprint === undefined,
+    'create does not record a fingerprint for removed bundled rules')
 }
 
 // ── 26. 0.22-C: multi-language verify command chain + parallel tasks ────────

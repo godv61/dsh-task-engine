@@ -72,11 +72,9 @@
         <pre><code>开发请求
   → dev_task（统一入口，硬约束在代码里执行）
   → eng-delivery（编排：读状态 → 选阶段 → 推进）
-      → 需求评审 · requirement-analysis
-      → 设计     · solution-design
-      → 开发     · code-implement
-      → 交付     · code-verify
-      → 代码审核 · code-review + code-commit</code></pre>
+      → 按所选流程进入当前阶段
+      → 读取该阶段由使用者绑定的技能和规则
+      → 检查门禁并推进到下一阶段</code></pre>
         <div class="callout">
           <p><strong>它不是常驻程序。</strong>只有你在「工程化开发引擎」预设的会话里提出开发请求时，才触发 <code>dev_task</code> 和这套门禁；换到别的预设，流程完全不介入。</p>
         </div>
@@ -107,7 +105,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
         <p><code>dsh plugin --profile &lt;name&gt; add &lt;package&gt;</code> 会在 <code>$DSH_HOME/profiles/&lt;name&gt;/</code> 里执行 <code>pnpm add</code>，并自动识别插件声明的 <code>dsh.bundle.patch</code>，把它挂进该 profile 的插件层栈——<b>不要</b>手写 <code>npm i</code> 装到别处，那样不会挂载。</p>
         <p>装完<b>重启 <code>dsh web</code></b> 生效，自动完成两件事：侧边栏多出「工程流程」工作台；预设列表多出「工程化开发引擎」。</p>
         <h3>2.4 启用</h3>
-        <p>新建会话 → 预设选「工程化开发引擎」。这个会话就挂上 <code>dev_task</code> + 内置技能 + 工程人设，开始按流程走。</p>
+        <p>新建会话 → 预设选「工程化开发引擎」。这个会话会启用 <code>dev_task</code> 与编排技能 <code>eng-delivery</code>，按配置的流程走。</p>
         <div class="callout"><p>想「正式开发」就选它；想「让 AI 自由探索」就选 <code>standard</code>。切换预设本身就是开关，零配置。</p></div>
       </section>
 
@@ -159,18 +157,12 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="skills">
         <h2>5. Skills：这一步做什么</h2>
-        <p>每个内置 Skill 尺寸很小、只做一件事。挂到对应节点后，走到那一步才加载，不会一次性全塞给模型。</p>
+        <p>插件仅内置 <code>eng-delivery</code>，用于会话编排。项目级与用户级业务技能由使用者自行创建或安装；挂到节点后，走到那一步才加载。</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>Skill</th><th>职责</th><th>不负责</th></tr></thead>
             <tbody>
               <tr><td><code>eng-delivery</code></td><td>读任务状态、按阶段推进、确保不越轨</td><td>代替各阶段 Skill 的专业工作</td></tr>
-              <tr><td><code>requirement-analysis</code></td><td>目标、验收、非目标，落需求说明，等人确认</td><td>编码</td></tr>
-              <tr><td><code>solution-design</code></td><td>最小方案、技术基线、改动点，落设计文档</td><td>实现</td></tr>
-              <tr><td><code>code-implement</code></td><td>实现、做「规格 + 质量」两阶段评审，都过才标完成</td><td>无关重构</td></tr>
-              <tr><td><code>code-verify</code></td><td>按验收与风险验证、记录结果（高风险必须跑真实命令回执）</td><td>掩盖失败或自动修复</td></tr>
-              <tr><td><code>code-commit</code></td><td>校验阶段、范围、消息格式后提交</td><td>远程 push / 合并 / 发布</td></tr>
-              <tr><td><code>code-review</code></td><td>评审变更，落结论与问题清单</td><td>代替实现或验证</td></tr>
             </tbody>
           </table>
         </div>
@@ -178,18 +170,7 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
 
       <section id="rules">
         <h2>6. Rules：这一步守什么</h2>
-        <p>Rule 是纯正文的约束，配置在技能下。节点引用技能，任务走到该节点时才读取技能及其规则；预设不会自动绑定它们。内置示例有：</p>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Rule</th><th>约束内容</th><th>典型触发</th></tr></thead>
-            <tbody>
-              <tr><td><code>coding-conventions</code></td><td>编码规范：复用优先、禁空 catch、禁全表更新等</td><td>写代码</td></tr>
-              <tr><td><code>commit-conventions</code></td><td>提交消息格式、只提交任务内文件、禁止 push / 合并 / 发布</td><td>本地提交</td></tr>
-              <tr><td><code>security-redlines</code></td><td>敏感数据、危险动作和权限边界</td><td>所有写操作</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <p>内置资源只是可选示例，正文只读。团队可以创建自己的技能和规则，把规则绑定到技能，再决定哪些节点使用该技能；提交消息格式应在项目配置中设置。</p>
+        <p>Rule 是纯正文的约束，配置在技能下。节点引用技能，任务走到该节点时才读取技能及其规则的最新正文；预设不会自动绑定它们。插件不内置业务规则。团队可创建自己的技能和共享规则，再决定哪些节点使用技能；提交消息格式在项目配置中设置。</p>
       </section>
 
       <section id="configure">
@@ -200,17 +181,17 @@ pnpm install &amp;&amp; pnpm run build &amp;&amp; pnpm dsh web</code></pre>
           <li><strong>选流程预设</strong>：standard / agile / minimal；如需现成起点，可单独点击「采用推荐配置」。</li>
           <li><strong>给节点选技能</strong>：先选节点，再用双栏选择器挑选技能；点技能的规则配置，在右侧栏绑定规则与证据类型，最后保存。</li>
         </ol>
-        <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。内置资源是只读样本，可点「以此为模板新建」预填可编辑副本；副本的完成凭证、规则与阶段绑定需另行配置。点「安装技能」直接打开系统文件选择器，选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
+        <p>「技能」和「规则」页提供搜索、来源筛选、新建、安装、查看、编辑与删除。点「安装技能」选择含 <code>SKILL.md</code> 的文件夹；点「安装规则」选择一个 <code>.md</code> 文件。选择后先显示预览：名称、正文、文件数、体积、目标路径和同名冲突。确认项目或个人范围后点击「确认安装」；预览本身不写入文件，改变范围后需要重新预览。</p>
         <p>项目资源写入工作区 <code>.dsh/skills</code> 或 <code>.dsh/rules</code>；个人资源写入 <code>$DSH_HOME</code> 对应目录。浏览器选择的是浏览器所在电脑的文件；高级目录模式读取 Harness 主机的目录。技能保留脚本、references、模板和二进制资源，排除常见缓存；上限 1000 文件、100 MB、单文件 20 MB、20 层目录，<code>SKILL.md</code> 和规则正文上限 1 MB。拒绝覆盖同名资源；主机扫描拒绝符号链接和 junction。浏览器上传不提供源链接元数据。</p>
         <p>资源删除前会显示名称与实际目标路径，确认后永久删除；可点击「保留」取消。任务台账支持搜索、风险与阶段筛选，并显示验证、审核和更新时间。流程配置读取与保存失败时显示错误，损坏任务记录不会被静默视为没有任务。</p>
         <pre><code>// .dsh/eng.json 等价内容
 {
   "flow": "standard",
   "stage_bindings": {
-    "开发": { "skill_refs": [{ "source": "bundled", "name": "code-implement" }] }
+    "开发": { "skill_refs": [{ "source": "project", "name": "my-implementation" }] }
   },
   "skill_profiles": {
-    "bundled:code-implement": {
+    "project:my-implementation": {
       "rules": [{ "source": "project", "name": "my-coding-rule" }],
       "evidence": "none"
     }
@@ -377,8 +358,8 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <div class="callout danger">
           <p>引擎只允许：读取仓库事实、修改<b>已确认任务范围内</b>的文件、按策略创建<b>范围受控的本地提交</b>。远程 push / 合并 / 发布、数据库写入，需人单独决定。</p>
         </div>
-        <details open><summary>切换预设就是开关吗？</summary><div>是。选「工程化开发引擎」才挂 <code>dev_task</code> 和内置技能；选 <code>standard</code> 等其它预设则完全不介入。</div></details>
-        <details><summary>想改内置 skill / rule 怎么办？</summary><div>内置正文只读；可以创建自己的技能或规则，给技能绑定规则，再把技能挂到节点。来源明确的同名资源不会互相混淆，推荐配置采用后也可自由增删。</div></details>
+        <details open><summary>切换预设就是开关吗？</summary><div>是。选「工程化开发引擎」才启用 <code>dev_task</code> 与编排技能；工作台中的 <code>standard</code>、<code>agile</code>、<code>minimal</code> 则选择该工具使用的流程骨架。</div></details>
+        <details><summary>技能和规则由谁提供？</summary><div>插件只内置用于会话编排的 <code>eng-delivery</code>。项目或个人技能与规则由你创建或安装；规则挂在技能下，再把技能挂到节点。空绑定时流程门禁照常运行。</div></details>
         <details><summary>任务文档要不要提交？</summary><div>要。<code>.dsh/task-*.json</code> 是团队共享、跨会话恢复的任务事实，随分支提交——引擎已豁免 <code>.dsh/task-*.json</code> 与 <code>.dsh/eng.json</code>，不受文件范围门拦截；忽略它别人只能看到代码，看不到确认内容和进度。</div></details>
         <details><summary>一个会话能同时做两个需求吗？</summary><div>一个任务对应一份状态文档、一个分支。新需求保存当前进度后切新分支，切回原分支即可恢复。</div></details>
         <details><summary>提交被拒是怎么回事？</summary><div>通常是四类：没建 dev_task 任务、阶段没到提交检查点、消息格式不符、提交文件不在任务范围内。按拒绝原因修正即可。</div></details>
@@ -390,7 +371,7 @@ risk_level: high_risk   // 涉及鉴权，验证要加证据
         <p>状态查询中的 <code>evidence_blockers</code> 列出过期验证和附加技能回执；<code>commit.allowed</code> 同时检查这些阻塞及技能执行义务。<code>legal_next</code> 是流程定义的候选去向，不表示所有门禁已通过。</p>
         <details><summary>记录需求时提示字段不存在怎么办？</summary><div>先读取 <code>status.artifact_requirements</code>，按当前阶段列出的字段填写。标准需求为 <code>scope</code> 和 <code>acceptance_criteria</code>，敏捷流程只有 <code>scope</code>。疑问、假设或待确认取舍写入字段正文，不新增字段名。错误输入整次不保存，修正后再提交；不需要修改流程配置或历史任务记录。</div></details>
         <details><summary>验证命令被沙箱阻止怎么办？</summary><div><code>verify</code> 与 <code>skill_result</code> 默认使用会话权限。原命令被沙箱阻止后，用相同命令和 <code>sandbox_permissions: "danger-full-access"</code>、<code>justification</code> 申请单次重试。审批显示命令，批准后才执行；拒绝、取消或审批不可用时不执行、不写回执。授权只对本次调用生效，不改变会话权限。以本次回执的实际模式和退出码判断结果。</div></details>
-        <p class="stamp">适用于插件 0.26.1 · 最后更新：2026-09-24</p>
+        <p class="stamp">适用于当前研发版 · 最后更新：2026-09-26</p>
       </section>
     </main>
   </div>

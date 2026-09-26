@@ -481,20 +481,6 @@ function readAbsRule(file: string): string | undefined {
   }
 }
 
-/** The bundled rule files whose changes can be reported to existing tasks. */
-const BUILTIN_RULE_FILES = ['commit-conventions', 'coding-conventions', 'security-redlines'] as const
-
-/**
- * Fingerprint of the bundled rules this package ships. Existing tasks record
- * the creation-time value so changes can be reported while live bodies apply.
- */
-function builtinRulesFingerprint(): string {
-  const contents = BUILTIN_RULE_FILES
-    .map(name => readAbsRule(fileURLToPath(new URL(`../rules/${name}.md`, import.meta.url))) ?? '')
-    .join('\n')
-  return hashText(contents)
-}
-
 /**
  * A rule resolved to its body, with the layer it came from.
  *
@@ -600,8 +586,8 @@ async function freezeResources(
  * Resolve a bare legacy rule name to the layer that precedence selects.
  *
  * Precedence, unchanged from before: bundled wins over project, which wins over
- * user. A project cannot shadow a shipped rule like `security-redlines` with a
- * weaker local copy; local additions use distinct names instead.
+ * user. A source-qualified reference identifies the intended body even when
+ * two resource layers use the same name.
  * @param name - the bare rule name from a legacy config.
  * @param fs - sandboxed filesystem for the project-level lookup.
  * @returns the layer that holds this name, or undefined when none does.
@@ -1248,7 +1234,6 @@ export function registerDevTask(ctx: Context): void {
         state.items = normalizeItems(a.items)
         state.execution_version = 1
         state.files = a.files ?? []
-        state.bindings_fingerprint = builtinRulesFingerprint()
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.`
@@ -1352,9 +1337,6 @@ export function registerDevTask(ctx: Context): void {
             // indistinguishable in exactly the case where the distinction matters.
             rules: rules.map(r => ({ name: r.name, source: r.source, content: r.content })),
           },
-          bindings_drift: state.bindings_fingerprint !== undefined && state.bindings_fingerprint !== builtinRulesFingerprint()
-            ? 'bundled rules changed since task creation — current bundled bodies are now in force'
-            : undefined,
           risk_downgrades: state.risk_downgrades ?? [],
         }, null, 2)
       }

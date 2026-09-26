@@ -6,8 +6,6 @@ export interface SkillSession {
   snapshotEvents(): readonly { type: string; data: unknown }[]
 }
 
-const CORE_SKILLS = new Set(['eng-delivery', 'requirement-analysis', 'solution-design', 'code-implement', 'code-verify', 'code-review', 'code-commit'])
-
 /** Return successful loader call ids in the calling session, including resumed history. */
 export function loadedSkills(session?: SkillSession): Map<string, string> {
   const calls = new Map<string, string>()
@@ -46,16 +44,16 @@ export function obligationStages(state: TaskState, workflow: WorkflowConfig): st
  * A binding may declare how it proves execution. A requirement or design skill
  * produces a document, and demanding a "real validation command" from it forced an
  * irrelevant command to satisfy a gate — the evidence existed, just in another
- * form. Core skills keep their exemption because their native artifact,
- * verification, review and commit gates already carry the proof.
+ * form. An undeclared evidence type defaults to a command receipt for every
+ * skill, regardless of its name.
  * @param name - the bound skill's name.
  * @param evidence - the declared evidence kind, if the binding named one.
  * @returns true when a command receipt is what this binding owes.
  */
-export function needsSkillReceipt(name: string, evidence?: EvidenceKind): boolean {
+export function needsSkillReceipt(_name: string, evidence?: EvidenceKind): boolean {
   if (evidence === 'none' || evidence === 'artifact' || evidence === 'review' || evidence === 'manual') return false
   if (evidence === 'command') return true
-  return !CORE_SKILLS.has(name)
+  return true
 }
 
 /**

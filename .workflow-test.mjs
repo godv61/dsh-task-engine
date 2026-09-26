@@ -309,10 +309,8 @@ test('记录字段来自冻结流程，精简流程不硬编码标准字段，�
   assert.deepEqual(JSON.parse(await fixture('设计').call({ operation: 'status' })).artifact_requirements[0].fields, ['approach', 'risks', 'impact'])
 })
 
-test('可选内置技能回执不会因范围变更升级成额外流转门禁', async () => {
+test('空绑定流程不会因范围变更产生额外技能门禁', async () => {
   const f = fixture('需求评审', { artifacts: { requirement: { scope: 'device picker', acceptance_criteria: 'contract and selection' } } })
-  f.load('requirement-analysis')
-  await f.call({ operation: 'skill_result', skill_name: 'requirement-analysis', command: 'check', evidence: ['optional check'] })
   await f.call({ operation: 'scope', files: ['app.js', 'new-vo.java'] })
   await f.call({ operation: 'advance', target_stage: '设计' })
   assert.equal(f.state().stage, '设计')
@@ -413,12 +411,12 @@ test('同名技能与规则在项目和个人目录各自保留管理入口', as
   assert.match(read.content, /Run tests/)
 })
 
-test('安装包的七个内置技能实际注册且可在资源目录发现', async () => {
+test('安装包只注册会话编排技能，阶段目录不展示它', async () => {
   const registered = []
   registerShippedSkills({ get: name => name === 'skills' ? { register: skill => { registered.push(skill); return () => {} } } : undefined })
-  const expected = ['code-commit', 'code-implement', 'code-review', 'code-verify', 'eng-delivery', 'requirement-analysis', 'solution-design']
+  const expected = ['eng-delivery']
   assert.deepEqual(registered.map(skill => skill.name).sort(), expected)
   assert.ok(registered.every(skill => skill.content.trim().length > 0))
   const catalog = await Controller.prototype.listSkills.call({ authorizedPath: async path => path }, '')
-  assert.deepEqual(catalog.skills.filter(skill => skill.source === 'bundled').map(skill => skill.name).sort(), expected)
+  assert.deepEqual(catalog.skills.filter(skill => skill.source === 'bundled').map(skill => skill.name).sort(), [])
 })

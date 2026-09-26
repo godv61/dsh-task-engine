@@ -683,7 +683,8 @@ export default class TaskEngineController extends TypertRemoteService {
     path = await this.authorizedPath(path)
     const project = path === '' ? [] : listSkillsFromDir(join(path, '.dsh/skills'), 'project')
     const user = listSkillsFromDir(join(dshHome(), 'skills'), 'user')
-    const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled')
+    // eng-delivery orchestrates the session; it is not a stage-selectable skill.
+    const bundled = listSkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled').filter(entry => entry.name !== 'eng-delivery')
     // Management retains every scope; invocation remains a registry lookup by name.
     const skills = [...bundled, ...project, ...user].sort((a, b) => a.name.localeCompare(b.name))
     return { skills }

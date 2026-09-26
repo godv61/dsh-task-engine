@@ -6,7 +6,7 @@
  * also baked in skills, a commit format and artifact fields would make every
  * project follow the shipped method whether or not that suits it.
  *
- * One reasonable engineering setup per skeleton is offered separately as a
+ * Optional text conventions and artifact fields are offered separately as a
  * {@link FlowRecommendation}, and enters a project only when a user adopts it
  * explicitly. After adoption those values are the user's own config: edited,
  * extended or removed, with nothing merged back by a later version.
@@ -15,28 +15,13 @@
  */
 
 import { formatResourceRef } from './engine.ts'
-import type { ArtifactDef, CommitRule, ResourceRef, ReviewDepth, SkillBinding, SkillProfile, StageBinding, WorkflowConfig } from './engine.ts'
+import type { ArtifactDef, CommitRule, ResourceRef, ReviewDepth, SkillProfile, StageBinding, WorkflowConfig } from './engine.ts'
 
 /** A preset workflow a project can select by id. */
 export interface FlowOption {
   id: string
   label: string
   description: string
-}
-
-/**
- * Build one skill binding from a bare name plus its bundled rules.
- *
- * The preset's own bindings are all bundled resources, so the `bundled:` prefix
- * is applied here rather than repeated at every call site. Project and user
- * resources enter through a project's config, where their source is explicit.
- * @param skill - the bundled skill name.
- * @param rules - bundled rule names that belong to this skill.
- * @returns the binding.
- */
-function bundled(skill: string, ...rules: string[]): SkillBinding {
-  const ref = (name: string): ResourceRef => ({ source: 'bundled', name })
-  return { skill: ref(skill), rules: rules.map(ref) }
 }
 
 /** A gate capability a flow either has or lacks; high-risk tasks require a subset. */
@@ -51,9 +36,8 @@ export interface FlowPreset extends FlowOption {
   /** The complete engine config this preset resolves to. */
   config: WorkflowConfig
   /**
-   * An optional ready-made engineering setup a user may ADOPT into their own
-   * config: stage bindings, commit format and artifact fields reflecting one
-   * reasonable way of working.
+   * Optional commit text, artifact fields and review depth a user may adopt.
+   * Current recommendations contain no skill or rule bindings.
    *
    * Separate from `config` on purpose. The skeleton states how the work moves;
    * the recommendation states one opinion about how to do it. A preset that also
@@ -141,18 +125,6 @@ const STANDARD_RECOMMENDATION: FlowRecommendation = {
     { stage: '设计', id: 'design', name: '设计文档', fields: ['approach', 'risks', 'impact'] },
     { stage: '代码审核', id: 'review', name: '评审记录', fields: ['conclusion', 'issues'] },
   ],
-  stage_bindings: {
-    '需求评审': { skills: [bundled('requirement-analysis', 'security-redlines')] },
-    '设计': { skills: [bundled('solution-design')] },
-    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
-    '交付': { skills: [bundled('code-verify')] },
-    '代码审核': {
-      skills: [
-        bundled('code-review', 'coding-conventions', 'security-redlines'),
-        bundled('code-commit', 'commit-conventions'),
-      ],
-    },
-  },
 }
 
 /** Lighter four-stage flow: the skeleton only. */
@@ -190,18 +162,9 @@ const AGILE_RECOMMENDATION: FlowRecommendation = {
   },
   artifacts: [
     { stage: '需求', id: 'requirement', name: '需求说明', fields: ['scope'] },
-    // The 审查 stage binds code-review, whose instructions write this artifact with
-    // `record artifact=review`. Declaring it keeps that binding executable: the
-    // engine refuses an undeclared artifact, so a bound skill pointing at one would
-    // be a contract the recommendation made impossible to satisfy.
+    // Optional review record; the flow's review gate itself does not require a skill.
     { stage: '审查', id: 'review', name: '评审记录', fields: ['conclusion', 'issues'] },
   ],
-  stage_bindings: {
-    '需求': { skills: [bundled('requirement-analysis', 'security-redlines')] },
-    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
-    '交付': { skills: [bundled('code-verify'), bundled('code-commit', 'commit-conventions')] },
-    '审查': { skills: [bundled('code-review', 'coding-conventions', 'security-redlines')] },
-  },
 }
 
 /** Minimal two-stage flow: the skeleton only. */
@@ -222,10 +185,6 @@ const MINIMAL_RECOMMENDATION: FlowRecommendation = {
   // short change rarely distinguishes. The item still has to be reviewed — what
   // drops is the duplicated verdict, which is where the weight actually was.
   review_depth: 'single',
-  stage_bindings: {
-    '开发': { skills: [bundled('code-implement', 'coding-conventions', 'security-redlines')] },
-    '交付': { skills: [bundled('code-commit', 'commit-conventions')] },
-  },
 }
 
 /**

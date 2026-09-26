@@ -24,20 +24,19 @@
 }
 ```
 
-`stage_bindings` 的键是当前流程中的阶段名称，`skill_refs` 只保存技能引用。项目级和内置技能的 `skill_profiles` 在 `.dsh/eng.json` 中保存唯一的规则列表和证据类型；用户级技能的规则配置保存在 `$DSH_HOME/skills/<技能名>/profile.json`，所有项目和会话共用。用户级技能只能关联用户级或内置规则，避免引用某个项目独有的规则。
+`stage_bindings` 的键是当前流程中的阶段名称，`skill_refs` 只保存技能引用。项目级技能的 `skill_profiles` 在 `.dsh/eng.json` 中保存唯一的规则列表和证据类型；用户级技能的规则配置保存在 `$DSH_HOME/skills/<技能名>/profile.json`，所有项目和会话共用。用户级技能只能关联用户级规则，避免引用某个项目独有的规则。
 
 ```json
 {
   "flow": "standard",
   "stage_bindings": {
     "开发": {
-      "skill_refs": [{ "source": "bundled", "name": "code-implement" }]
+      "skill_refs": [{ "source": "project", "name": "my-implementation" }]
     }
   },
   "skill_profiles": {
-    "bundled:code-implement": {
-      "rules": [{ "source": "bundled", "name": "coding-conventions" },
-                { "source": "project", "name": "api-contract" }],
+    "project:my-implementation": {
+      "rules": [{ "source": "project", "name": "api-contract" }],
       "evidence": "none"
     }
   }
@@ -48,13 +47,11 @@
 
 规则引用带来源(`bundled:` / `project:` / `user:`),因此同名资源不会被混淆。同一份规则可被多个技能引用,不需要复制正文;编辑共享规则时界面会显示受影响的技能。
 
-[默认配置示例](../defaults/eng.json)列出了标准流程采用推荐配置后的样子。
+[最小配置示例](../defaults/eng.json)仅选择流程，不绑定技能或规则。
 
-**预设不带任何绑定。** 一个只写了 `flow` 的配置就是字面意思:该流程的节点没有绑定,阶段仍按流程骨架流转。要一份现成的工程起点,在工作台点「采用推荐配置」并保存。系统会把所引用的内置技能和规则各复制一份到项目 `.dsh/skills/` 与 `.dsh/rules/`，把配置引用改为 `project:`，并写入提交信息格式与产物字段。共享规则只复制一份，多个技能继续引用同一份。之后这些文件与配置均归项目所有，可编辑，升级不覆盖；重复采用也不会覆盖已经修改的项目副本。
+**预设不带任何绑定。** 一个只写了 `flow` 的配置就是字面意思：节点没有绑定，阶段仍按流程骨架流转。工作台的「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度，不添加或覆盖技能与规则。项目级技能和规则放在 `.dsh/skills/` 与 `.dsh/rules/`；同一份规则可由多个技能引用。
 
-以前已采用的项目如仍使用 `bundled:` 引用，打开或保存时不会擅自迁移。它们继续引用内置样本，新任务会读取当前插件版本的正文；若要固定为项目资源，可在流程页点「把当前内置引用迁移到项目」并保存，保留其他现有配置。
-
-内置业务技能和规则作为只读样本保留。在“技能”或“规则”页选择“以此为模板新建”，可预填一份可编辑的项目或个人资源；复制只带正文，不自动复制该技能的规则档案，也不挂到任何阶段。保存后请单独配置完成凭证、规则与阶段引用。
+插件只内置会话编排技能 `eng-delivery`，不提供阶段业务技能或业务规则。它由会话预设使用，不显示在阶段技能列表。工作台可以安装或新建项目级、用户级资源。
 
 进入阶段后,`dev_task` 按稳定的资源引用读取并披露该阶段技能和规则的最新正文。新任务离开阶段前会检查 Harness 的 skill 工具成功加载记录;技能可声明证据类型(`command` / `artifact` / `review` / `manual` / `none`)。`manual` 通过宿主人工审批记录，不要求执行命令；`artifact` 需要该阶段有产物定义且必填字段完整。未声明时沿用命令回执。`status.skill_obligations` 中的 `command_receipts_required` 列出需要命令回执的技能。
 
