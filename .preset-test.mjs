@@ -159,3 +159,13 @@ test('the rewritten persona row keeps valid indentation for both shapes', () => 
   assert.match(legacy, /- id: persona\n {2}name: '@deepseek-ai\/dsh-persona'\n {2}config:\n {4}text: [|>]-\n {6}ENGINEER\n/u,
     'the legacy row is indented correctly')
 })
+
+test('DSH 0.2 bundle declares the engineering preset', () => {
+  const patch = readFileSync(resolve('cordis.patch.yml'), 'utf8')
+  assert.match(patch, /id: preset-eng/u)
+  assert.match(patch, /name: '@deepseek-ai\/dsh-agent-preset'/u)
+  assert.match(patch, /id: eng/u)
+  assert.match(patch, /engineering-delivery coding agent/u)
+  assert.match(patch, /id: task-engine-agent/u)
+  assert.match(patch, /name: '@godv61\/dsh-task-engine\/agent'/u)
+})
