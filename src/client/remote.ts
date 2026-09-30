@@ -281,11 +281,57 @@ const resourceRequestSchema = z.object({
 const resourcePreviewSchema = z.object({ ok: z.boolean(), name: z.string(), description: z.string(), content: z.string(), target: z.string(), files: z.number(), bytes: z.number(), hash: z.string(), conflict: z.boolean(), error: z.string().optional() })
 const resourceRootsRequestSchema = z.object({ kind: z.enum(['skill', 'rule']), path: z.string() })
 const resourceRootsSchema = z.object({ project: z.string(), user: z.string() })
+const adaptiveConfigSchema = z.object({
+  meta_bindings: z.record(z.string(), z.array(z.string())).optional(),
+  sonar: z.object({
+    enabled: z.boolean().optional(), host_url: z.string().optional(), project_key: z.string().optional(),
+    mode: z.enum(['branch', 'pull-request']).optional(), token_env: z.string().optional(),
+  }).optional(),
+})
+const adaptiveViewSchema = z.object({
+  ok: z.boolean(), source: z.enum(['default', 'project', 'invalid']), config: adaptiveConfigSchema,
+  hash: z.string(), problems: z.array(z.string()),
+  grades: z.array(z.object({ id: z.string(), label: z.string(), guidance: z.string(), stages: z.array(z.string()) })),
+})
+const adaptiveWriteRequestSchema = z.object({ path: z.string(), config: adaptiveConfigSchema, expected_hash: z.string() })
+const projectSkillProfileRequestSchema = z.object({ path: z.string(), name: z.string() })
+const projectSkillProfileWriteRequestSchema = projectSkillProfileRequestSchema.extend({
+  profile: skillProfileSchema, expected_hash: z.string(),
+})
+const projectSkillProfileViewSchema = z.object({ profile: skillProfileSchema, hash: z.string() })
 const PACKAGE = '@godv61/dsh-task-engine'
 
 export const TYPERT_REMOTE = {
   package: PACKAGE,
   descriptors: [
+    {
+      id: `${PACKAGE}#task-engine/readAdaptive`, service: 'taskEngineController', namespace: 'task-engine', method: 'readAdaptive',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#AdaptiveConfigView`, create: () => adaptiveViewSchema, schema: adaptiveViewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/writeAdaptive`, service: 'taskEngineController', namespace: 'task-engine', method: 'writeAdaptive',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#AdaptiveWriteRequest`, create: () => adaptiveWriteRequestSchema, schema: adaptiveWriteRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#AdaptiveConfigView`, create: () => adaptiveViewSchema, schema: adaptiveViewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/readProjectSkillProfile`, service: 'taskEngineController', namespace: 'task-engine', method: 'readProjectSkillProfile',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectSkillProfileRequest`, create: () => projectSkillProfileRequestSchema, schema: projectSkillProfileRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectSkillProfileView`, create: () => projectSkillProfileViewSchema, schema: projectSkillProfileViewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/writeProjectSkillProfile`, service: 'taskEngineController', namespace: 'task-engine', method: 'writeProjectSkillProfile',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectSkillProfileWriteRequest`, create: () => projectSkillProfileWriteRequestSchema, schema: projectSkillProfileWriteRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectSkillProfileView`, create: () => projectSkillProfileViewSchema, schema: projectSkillProfileViewSchema },
+    },
     ...(['previewResource', 'importResource'] as const).map(method => ({
       id: `${PACKAGE}#task-engine/${method}`, service: 'taskEngineController', namespace: 'task-engine', method,
       invocation: { kind: 'direct' },

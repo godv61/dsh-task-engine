@@ -68,6 +68,17 @@ console.log(`     contract: ${wantsCreate ? 'create() factory' : wantsSchema ? '
 // 2. Our descriptors must satisfy it. Import the built contribution and inspect
 //    every strict codec exactly as the DSH registry would.
 const pluginRoot = fileURLToPath(new URL('..', import.meta.url))
+const controllerSource = readFileSync(join(pluginRoot, 'src', 'controller.ts'), 'utf8')
+const remoteSource = readFileSync(join(pluginRoot, 'src', 'client', 'remote.ts'), 'utf8')
+const exposedMethods = [...controllerSource.matchAll(/@Remote\s+async\s+(\w+)\s*\(/gu)].map(match => match[1])
+const declaredMethods = new Set([...remoteSource.matchAll(/method:\s*'(\w+)'/gu)].map(match => match[1]))
+// previewResource/importResource share a descriptor factory in remote.ts.
+for (const match of remoteSource.matchAll(/\(\['(\w+)',\s*'(\w+)'\]\s+as const\)\.map\(method/gu)) {
+  declaredMethods.add(match[1])
+  declaredMethods.add(match[2])
+}
+check('every host Remote method has a browser descriptor', exposedMethods.every(method => declaredMethods.has(method)),
+  exposedMethods.filter(method => !declaredMethods.has(method)).join(', ') || `${exposedMethods.length} methods`)
 const clientBundle = join(pluginRoot, 'lib', 'client.js')
 if (!existsSync(clientBundle)) {
   check('built client bundle exists', false, 'run `npm run build` first')
