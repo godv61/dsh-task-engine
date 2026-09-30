@@ -57,8 +57,6 @@
 
 Token 只放在运行插件的服务进程环境变量，不能写入配置或任务台账。功能测试通过后，在“测试”检查点提交并推送分支，等待现有 CI 完成扫描。到达“代码审核”后，从 CI 的 `report-task.txt` 取 `ceTaskId`，调用 `dev_task sonar_check`。该操作查询这次 Compute Engine 任务的 `analysisId` 和 Quality Gate，并在配置的分支或合并请求上读取新代码问题。Quality Gate 不是 `OK`、有中高等级问题或代码在审核后变化，都会阻止审核通过与任务完成。修复后重新测试、重新扫描、重新检查。
 
-建议在 CI 的 Sonar job 中保存 `target/sonar/report-task.txt` 为制品，方便取得 `ceTaskId`。你现有的 `sonar.qualitygate.wait=true` 继续作为 CI 门禁；插件读取其分析结果，不重复运行扫描。分支/MR 最新问题列表与指定 `analysisId` 的门禁分别来自 SonarQube API；如果同一分支同时运行多次扫描，应按 CI 的最新扫描重新审核，避免把旧结果当成当前代码。
-
-你提供的 CI `rules` 只覆盖 `qdm_sit` 分支和目标为 `qdm_prod` 的合并请求。普通个人开发分支如果没有额外 Sonar job，就无法执行 `sonar_check`；应先确定团队希望在开发分支扫描，还是在合并请求扫描，并将 `mode`、CI 触发条件及任务的分支/MR 目标配成一致。
+建议在 CI 的 Sonar job 中保存 `target/sonar/report-task.txt` 为制品，方便取得 `ceTaskId`。如果 CI 已配置 `sonar.qualitygate.wait=true`，它可以继续作为 CI 门禁；插件读取分析结果，不重复运行扫描。Sonar 只需针对所选任务实际扫描的分支或合并请求配置 `mode`，具体 CI 触发条件由项目自行决定。分支/MR 最新问题列表与指定 `analysisId` 的门禁分别来自 SonarQube API；如果同一分支同时运行多次扫描，应按 CI 的最新扫描重新审核，避免把旧结果当成当前代码。
 
 失败案例可以用 `dev_task learn_rule phase=propose` 生成项目 Rule 预览，注明 Sonar issue key、可复用原因和正确写法；审阅后用 `phase=apply` 写入项目 Rule 并挂到对应项目代码 Skill。它只影响未来任务，不能把一次误报或整个 Quality Profile 自动复制成规则。
