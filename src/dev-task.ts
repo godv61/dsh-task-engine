@@ -43,6 +43,7 @@ import {
   type ResourceRef,
   type ResourceSource,
   type Result,
+  type SkillProfile,
   type StageBinding,
   type TaskItem,
   type TaskState,
@@ -54,6 +55,10 @@ import {
   flowSatisfies,
   resolveFlow,
 } from './workflows.ts'
+import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
+  type Complexity, type MetaSkill } from './adaptive.ts'
+import { inspectSonar, type SonarPolicy } from './sonar.ts'
+import { scanProject } from './project-init.ts'
 import { hashConfig, hashText } from './snapshot.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
@@ -545,6 +550,127 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
   }
 }
 
+const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
+const META_EVIDENCE: Record<MetaSkill, NonNullable<SkillProfile['evidence']>> = {
+  'requirements-analysis': 'artifact',
+  'architecture-design': 'artifact',
+  'task-orchestration': 'artifact',
+  'code-development': 'none',
+  'test-validation': 'none',
+  'code-review': 'review',
+}
+
+interface AdaptiveConfig {
+  /** Additional logical Skill names per meta-skill. A same-named project Skill replaces the user/bundled Skill. */
+  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+}
+
+async function readAdaptiveConfig(fs: Fs, cwd?: string): Promise<AdaptiveConfig> {
+  const raw = await readText(fs, '.dsh/meta.json', cwd)
+  if (raw === undefined) return {}
+  let config: AdaptiveConfig
+  try { config = JSON.parse(raw) as AdaptiveConfig }
+  catch (error) { throw new Error(`invalid .dsh/meta.json: ${error instanceof Error ? error.message : String(error)}`) }
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new Error('.dsh/meta.json must be an object')
+  if (config.meta_bindings !== undefined) {
+    if (config.meta_bindings === null || typeof config.meta_bindings !== 'object' || Array.isArray(config.meta_bindings)) {
+      throw new Error('.dsh/meta.json meta_bindings must be an object')
+    }
+    for (const [meta, names] of Object.entries(config.meta_bindings)) {
+      if (!(meta in META_STAGES)) throw new Error(`unknown meta-skill "${meta}" in .dsh/meta.json`)
+      if (!Array.isArray(names) || !names.every(name => typeof name === 'string' && RESOURCE_NAME.test(name))) {
+        throw new Error(`meta_bindings.${meta} must be an array of simple Skill names`)
+      }
+    }
+  }
+  if (config.sonar !== undefined) {
+    if (config.sonar === null || typeof config.sonar !== 'object' || Array.isArray(config.sonar)) {
+      throw new Error('.dsh/meta.json sonar must be an object')
+    }
+    if (config.sonar.enabled !== undefined && typeof config.sonar.enabled !== 'boolean') {
+      throw new Error('.dsh/meta.json sonar.enabled must be boolean')
+    }
+  }
+  return config
+}
+
+function sonarPolicyFor(project: AdaptiveConfig): SonarPolicy | undefined {
+  const sonar = project.sonar
+  if (sonar?.enabled !== true) return undefined
+  const host_url = sonar.host_url ?? process.env.SONAR_HOST_URL
+  const project_key = sonar.project_key ?? process.env.SONAR_PROJECT_KEY
+  const token_env = sonar.token_env ?? 'SONAR_TOKEN'
+  if (!host_url || !/^https?:\/\//u.test(host_url) || !project_key?.trim()
+    || !/^[A-Z][A-Z0-9_]*$/u.test(token_env)) {
+    throw new Error('enabled SonarQube needs host_url, project_key, and a valid token_env in .dsh/meta.json or environment')
+  }
+  const parsed = new URL(host_url)
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('SonarQube host_url must not contain credentials, a query, or a fragment')
+  }
+  const mode = sonar.mode ?? 'branch'
+  if (mode !== 'branch' && mode !== 'pull-request') throw new Error('sonar.mode must be branch or pull-request')
+  return { enabled: true, host_url, project_key, token_env, mode }
+}
+
+async function resolveLogicalSkill(name: string, fs: Fs, cwd?: string): Promise<ResourceRef> {
+  if (!RESOURCE_NAME.test(name)) throw new Error(`invalid Skill name "${name}"`)
+  for (const source of ['project', 'codex-project', 'user', 'bundled'] as const) {
+    const ref = { source, name }
+    if (await readSkillAt(ref, fs, cwd) !== undefined) return ref
+  }
+  throw new Error(`Skill "${name}" was not found in project, user or bundled sources`)
+}
+
+async function profileFor(ref: ResourceRef, fs: Fs, cwd?: string): Promise<SkillProfile | undefined> {
+  let raw: string | undefined
+  switch (ref.source) {
+    case 'project': raw = await readText(fs, `.dsh/skills/${ref.name}/profile.json`, cwd); break
+    case 'codex-project': raw = await readText(fs, `.agents/skills/${ref.name}/profile.json`, cwd); break
+    case 'user': raw = readAbsRule(join(dshHome(), 'skills', ref.name, 'profile.json')); break
+    case 'bundled': raw = readAbsRule(join(BUNDLED_SKILLS_DIR, ref.name, 'profile.json')); break
+  }
+  if (raw === undefined) return undefined
+  let value: SkillProfile
+  try { value = JSON.parse(raw) as SkillProfile }
+  catch (error) { throw new Error(`invalid profile for ${formatResourceRef(ref)}: ${error instanceof Error ? error.message : String(error)}`) }
+  if (!value || !Array.isArray(value.rules) || !value.rules.every(rule =>
+    rule && RESOURCE_NAME.test(rule.name) && ['bundled', 'project', 'user'].includes(rule.source))
+    || (value.evidence !== undefined && !['command', 'artifact', 'review', 'manual', 'none'].includes(value.evidence))) {
+    throw new Error(`invalid profile for ${formatResourceRef(ref)}`)
+  }
+  return value
+}
+
+/** Resolve all bound methods once at task creation; references stay source-qualified afterwards. */
+async function resolveAdaptiveWorkflow(grade: Complexity, fs: Fs, cwd?: string, selected?: AdaptiveConfig): Promise<WorkflowConfig> {
+  const config = adaptiveWorkflow(grade)
+  const project = selected ?? await readAdaptiveConfig(fs, cwd)
+  const stage_bindings: NonNullable<WorkflowConfig['stage_bindings']> = {}
+  const skill_profiles: NonNullable<WorkflowConfig['skill_profiles']> = {}
+  for (const stage of config.stages) {
+    const meta = metaForStage(stage)
+    if (meta === undefined) continue
+    const names = [...new Set([meta, ...(project.meta_bindings?.[meta] ?? [])])]
+    const skills = []
+    for (const name of names) {
+      const ref = await resolveLogicalSkill(name, fs, cwd)
+      const profile = await profileFor(ref, fs, cwd) ?? {
+        rules: [], evidence: name === meta ? META_EVIDENCE[meta] : 'none',
+      }
+      skill_profiles[formatResourceRef(ref)] = profile
+      skills.push({ skill: ref, rules: profile.rules, evidence: profile.evidence ?? 'none' })
+    }
+    stage_bindings[stage] = { skills }
+  }
+  config.stage_bindings = stage_bindings
+  config.skill_profiles = skill_profiles
+  const problems = validateWorkflow(config)
+  if (problems.length > 0) throw new Error(`invalid adaptive workflow:\n- ${problems.join('\n- ')}`)
+  return config
+}
+
 /**
  * Capture every skill and rule body the config resolves to at task creation.
  *
@@ -769,7 +895,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
   const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd, frozen)
   const skillPart = skills.length > 0
-    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use the skill tool by name; for codex-project skills use dev_task operation=load_skill with the qualified skill_name)`
+    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use dev_task operation=load_skill with the exact source:name)`
     : 'skills to load: none'
   const currentSkills = await skillBodiesForBinding(binding, fs, cwd)
   const skillInstructions = currentSkills.length > 0
@@ -814,6 +940,14 @@ interface OpArgs {
   branch?: string
   title?: string
   work_size?: 'tiny' | 'standard' | 'complex'
+  complexity?: Complexity
+  complexity_reason?: string
+  ce_task_id?: string
+  pull_request?: string
+  issue_key?: string
+  rule_name?: string
+  learning_reason?: string
+  resources?: InitResource[]
   risk_level?: 'standard' | 'high_risk'
   items?: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[]
   item_id?: string
@@ -868,7 +1002,7 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
 async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise<string> {
   const entries = []
-  for (const path of [...new Set(state.files)].filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(path)).sort()) {
+  for (const path of [...new Set(state.files)].filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(path)).sort()) {
     assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
     const root = state.root ?? cwd
     const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
@@ -913,8 +1047,57 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
 }
 
 async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
-  const blockers = await evidenceBlockers(fs, state, workflow, cwd)
+  const blockers = [...await evidenceBlockers(fs, state, workflow, cwd), ...await sonarBlockers(fs, state, cwd)]
   if (blockers.length) throw new Error(blockers.join('; '))
+}
+
+interface InitResource {
+  kind: 'skill' | 'rule'
+  name: string
+  description?: string
+  content: string
+  /** For Skills: meta skills that load this Skill. */
+  meta_skills?: MetaSkill[]
+  /** For Skills: project Rule names owned by this Skill. */
+  rules?: string[]
+}
+
+function validateInitResources(resources: InitResource[] | undefined): InitResource[] {
+  if (!Array.isArray(resources) || resources.length === 0 || resources.length > 24) {
+    throw new Error('init_project requires 1–24 Skill/Rule resources')
+  }
+  const names = new Set<string>()
+  for (const resource of resources) {
+    if (!resource || !['skill', 'rule'].includes(resource.kind) || !RESOURCE_NAME.test(resource.name)
+      || typeof resource.content !== 'string' || !resource.content.trim() || resource.content.length > 16_000) {
+      throw new Error('each init_project resource needs kind, kebab-case name, and nonempty content under 16,000 characters')
+    }
+    const key = `${resource.kind}:${resource.name}`
+    if (names.has(key)) throw new Error(`duplicate init_project resource ${key}`)
+    names.add(key)
+    if (resource.kind === 'skill') {
+      if (typeof resource.description !== 'string' || !resource.description.trim()) throw new Error(`Skill ${resource.name} needs a description`)
+      if (!Array.isArray(resource.meta_skills) || resource.meta_skills.length === 0 ||
+        !resource.meta_skills.every(meta => meta in META_STAGES)) throw new Error(`Skill ${resource.name} needs valid meta_skills`)
+      if (resource.rules !== undefined && (!Array.isArray(resource.rules) || !resource.rules.every(rule => RESOURCE_NAME.test(rule)))) {
+        throw new Error(`Skill ${resource.name} has invalid rule names`)
+      }
+    }
+  }
+  return resources
+}
+
+async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<string[]> {
+  if (state.sonar_policy === undefined || !['代码审核', '完成'].includes(state.stage)) return []
+  if (state.sonar_audit === undefined) return ['SonarQube audit is enabled but has not been run; call sonar_check in code review']
+  const current = await scopeFingerprint(fs, state, cwd)
+  const problems: string[] = []
+  if (state.sonar_audit.scope_hash !== current) problems.push('SonarQube audit is stale after file changes; rerun CI scan and sonar_check')
+  const commit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
+  if (!commit || state.sonar_audit.commit_hash !== commit) problems.push('SonarQube audit does not match the task\'s latest recorded commit')
+  if (state.sonar_audit.gate !== 'OK') problems.push(`SonarQube Quality Gate is ${state.sonar_audit.gate}`)
+  if (state.sonar_audit.blocking.length) problems.push(`${state.sonar_audit.blocking.length} medium/high SonarQube new-code findings remain`)
+  return problems
 }
 
 /** Resolve one item by id for the item-scoped audit operations. */
@@ -981,7 +1164,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -1013,6 +1196,19 @@ export function registerDevTask(ctx: Context): void {
       branch: { type: 'string', description: 'Current git branch (recorded on create).' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Workload tier (create).' },
+      complexity: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Task-level complexity (assess/create). Select from requirement scope and implementation dependencies; independent of risk_level. Passing this on create selects the adaptive meta-skill flow.' },
+      complexity_reason: { type: 'string', description: 'Evidence-based reason for the selected complexity (create).' },
+      ce_task_id: { type: 'string', description: 'SonarQube Compute Engine task id from the completed CI scan report-task.txt (sonar_check).' },
+      pull_request: { type: 'string', description: 'GitLab merge request IID or PR number when SonarQube mode is pull-request (sonar_check).' },
+      issue_key: { type: 'string', description: 'A blocking SonarQube issue key from this task\'s audit history (learn_rule).' },
+      rule_name: { type: 'string', description: 'New project Rule name (learn_rule).' },
+      learning_reason: { type: 'string', description: 'Why this failure generalizes beyond the current line of code (learn_rule).' },
+      resources: { type: 'array', description: 'Project Skill/Rule drafts for init_project propose/apply; content is reviewed before creation.',
+        items: { type: 'object', additionalProperties: false, properties: {
+          kind: { type: 'string', enum: ['skill', 'rule'] }, name: { type: 'string' }, description: { type: 'string' },
+          content: { type: 'string' }, meta_skills: { type: 'array', items: { type: 'string' } },
+          rules: { type: 'array', items: { type: 'string' } },
+        } } },
       risk_level: { type: 'string', enum: ['standard', 'high_risk'], description: 'Risk tier (create).' },
       items: {
         type: 'array',
@@ -1075,13 +1271,14 @@ export function registerDevTask(ctx: Context): void {
       const session = exec.agent?.session as unknown as SkillSession | undefined
 
       if (a.operation === 'status' && !a.task_id) {
-        const tasks: { id: string; title: string; branch: string; stage: string }[] = []
+        const tasks: { id: string; title: string; branch: string; stage: string; complexity?: Complexity }[] = []
         const names = await projectProbe(fs).list?.(cwd ?? '', '.dsh') ?? []
         for (const name of names.filter(name => /^task-.+\.json$/.test(name))) {
           const raw = await readText(fs, `.dsh/${name}`, cwd)
           if (!raw) continue
           const task = JSON.parse(raw) as TaskState
-          if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage })
+          if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage,
+            ...(task.complexity !== undefined ? { complexity: task.complexity } : {}) })
         }
         return JSON.stringify({ tasks, next_action: tasks.length ? 'Call status with the selected task_id; create a new task for a new requirement.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
       }
@@ -1093,7 +1290,22 @@ export function registerDevTask(ctx: Context): void {
           valid: resolved.problems.length === 0,
           problems: resolved.problems,
           workflow: resolved.config,
+          adaptive: { grades: COMPLEXITY_OPTIONS, config_path: '.dsh/meta.json', task_selected: true },
         }, null, 2)
+      }
+
+      if (a.operation === 'assess') {
+        if (a.complexity === undefined) {
+          return JSON.stringify({ grades: COMPLEXITY_OPTIONS,
+            instruction: 'Analyze the requirement, choose one grade, then call assess with complexity to preview its stages and effective Skill sources. Record the reason on create. Risk is assessed separately.' }, null, 2)
+        }
+        if (!isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
+        const config = await resolveAdaptiveWorkflow(a.complexity, fs, cwd)
+        return JSON.stringify({ complexity: a.complexity, stages: config.stages,
+          meta_skills: Object.fromEntries(Object.entries(config.stage_bindings ?? {}).map(([stage, binding]) =>
+            [stage, (binding.skills ?? []).map(entry => ({ logical_name: entry.skill.name, effective_source: entry.skill.source,
+              rules: entry.rules }))])),
+          artifacts: config.artifacts, review_depth: config.review_depth }, null, 2)
       }
 
       if (a.operation === 'install_hook') {
@@ -1110,6 +1322,72 @@ export function registerDevTask(ctx: Context): void {
           return 'hook integrity OK — installed commit-msg matches the bundled gate'
         }
         throw new Error('hook integrity FAILED — .git/hooks/commit-msg differs from the bundled gate; reinstall with install_hook')
+      }
+
+      if (a.operation === 'init_project') {
+        const root = await detectRoot(projectProbe(fs), cwd ?? '')
+        if (!cwd || resolve(root) !== resolve(cwd)) {
+          throw new Error('init_project must run with the project root as the session workspace')
+        }
+        const phase = a.phase ?? 'inspect'
+        const inventory = await scanProject(projectProbe(fs), root)
+        if (phase === 'inspect') return JSON.stringify(inventory, null, 2)
+        if (phase !== 'propose' && phase !== 'apply') throw new Error('init_project phase must be inspect, propose, or apply')
+        const resources = validateInitResources(a.resources)
+        const metaRaw = await readText(fs, '.dsh/meta.json', cwd)
+        const meta = await readAdaptiveConfig(fs, cwd)
+        const createdRules = new Set(resources.filter(resource => resource.kind === 'rule').map(resource => resource.name))
+        const paths: string[] = []
+        for (const resource of resources) {
+          const path = resource.kind === 'rule' ? `.dsh/rules/${resource.name}.md` : `.dsh/skills/${resource.name}/SKILL.md`
+          assertInsideRoot(root, cwd, path)
+          if (await readText(fs, path, cwd) !== undefined) throw new Error(`init_project will not overwrite ${path}`)
+          paths.push(path)
+          if (resource.kind === 'skill') {
+            const profilePath = `.dsh/skills/${resource.name}/profile.json`
+            if (await readText(fs, profilePath, cwd) !== undefined) throw new Error(`init_project will not overwrite ${profilePath}`)
+            paths.push(profilePath)
+            for (const rule of resource.rules ?? []) {
+              if (!createdRules.has(rule) && await readText(fs, `.dsh/rules/${rule}.md`, cwd) === undefined) {
+                throw new Error(`Skill ${resource.name} references missing project Rule ${rule}`)
+              }
+            }
+          }
+        }
+        const metaHash = hashText(metaRaw ?? '')
+        const proposalHash = hashText(JSON.stringify(resources) + '\n' + metaHash)
+        if (phase === 'propose') return JSON.stringify({ inventory, resources, files_to_create: paths,
+          meta_config: '.dsh/meta.json', existing_hash: metaHash, expected_hash: proposalHash,
+          instruction: 'Review each project-specific claim against the listed evidence. Apply with identical resources and expected_hash; existing files are protected.' }, null, 2)
+        if (a.expected_hash !== proposalHash || a.existing_hash !== metaHash) {
+          throw new Error('init_project draft or meta config changed since propose; inspect and propose again')
+        }
+        const writeMode = await resolveWriteMode(ctx, a, exec)
+        // Publish rules first, then Skills/profiles, then the binding map. A failed final
+        // write can leave unbound resources, but never a live binding to an absent Rule.
+        for (const resource of resources.filter(resource => resource.kind === 'rule')) {
+          await writeText(fs, `.dsh/rules/${resource.name}.md`, resource.content.trimEnd() + '\n', cwd,
+            writeMode, { kind: 'createIfAbsent' })
+        }
+        for (const resource of resources.filter(resource => resource.kind === 'skill')) {
+          const description = resource.description!.replace(/[\r\n]+/gu, ' ').trim()
+          const body = `---\nname: ${resource.name}\ndescription: ${description}\n---\n\n${resource.content.trimEnd()}\n`
+          await writeText(fs, `.dsh/skills/${resource.name}/SKILL.md`, body, cwd,
+            writeMode, { kind: 'createIfAbsent' })
+          const profile: SkillProfile = { rules: (resource.rules ?? []).map(name => ({ source: 'project', name })), evidence: 'none' }
+          await writeText(fs, `.dsh/skills/${resource.name}/profile.json`, JSON.stringify(profile, null, 2) + '\n', cwd,
+            writeMode, { kind: 'createIfAbsent' })
+        }
+        const bindings: NonNullable<AdaptiveConfig['meta_bindings']> = { ...meta.meta_bindings }
+        for (const resource of resources.filter(resource => resource.kind === 'skill')) {
+          for (const skill of resource.meta_skills ?? []) {
+            bindings[skill] = [...new Set([...(bindings[skill] ?? []), resource.name])]
+          }
+        }
+        const info = await (fs as unknown as WriteFs).lstat('.dsh/meta.json', { cwd })
+        await writeText(fs, '.dsh/meta.json', JSON.stringify({ ...meta, meta_bindings: bindings }, null, 2) + '\n', cwd,
+          writeMode, info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version })
+        return JSON.stringify({ created: paths, bindings, next_action: 'Call assess to inspect the effective project Skills before creating a task.' }, null, 2)
       }
 
       if (a.operation === 'init') {
@@ -1197,12 +1475,20 @@ export function registerDevTask(ctx: Context): void {
         if (!a.task_id || !a.title || !a.branch) {
           throw new Error('create requires task_id, title, and branch')
         }
-        const resolved = await resolveWorkflow(fs, cwd)
+        if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
+        if (a.complexity !== undefined && !a.complexity_reason?.trim()) {
+          throw new Error('adaptive create requires complexity_reason explaining the requirement evidence for this grade')
+        }
+        const adaptiveConfig = a.complexity === undefined ? undefined : await readAdaptiveConfig(fs, cwd)
+        const resolved = a.complexity !== undefined
+          ? { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
+              config: await resolveAdaptiveWorkflow(a.complexity, fs, cwd, adaptiveConfig), problems: [] }
+          : await resolveWorkflow(fs, cwd)
         if (resolved.problems.length > 0) {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
         const risk = a.risk_level ?? 'standard'
-        if (risk === 'high_risk' && !flowSatisfies(resolved.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+        if (risk === 'high_risk' && a.complexity === undefined && !flowSatisfies(resolved.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
           throw new Error(
             `high_risk task cannot run on flow "${resolved.flow}" — it lacks the required capabilities ` +
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
@@ -1223,12 +1509,15 @@ export function registerDevTask(ctx: Context): void {
             resources: frozen.resources,
         }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
+        const sonarPolicy = adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
         const state = newTask({
           id: a.task_id,
           title: a.title,
           branch: a.branch,
           work_size: a.work_size ?? 'standard',
           risk_level: risk,
+          ...(a.complexity !== undefined ? { complexity: a.complexity, complexity_reason: a.complexity_reason!.trim() } : {}),
+          ...(sonarPolicy !== undefined ? { sonar_policy: sonarPolicy } : {}),
           flow,
           root,
           project_type: await detectType(projectProbe(fs), root),
@@ -1238,7 +1527,7 @@ export function registerDevTask(ctx: Context): void {
         state.files = a.files ?? []
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.`
+        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
@@ -1247,7 +1536,7 @@ export function registerDevTask(ctx: Context): void {
       if (state.completed !== undefined && a.operation === 'complete') {
         return `task already completed at ${state.completed.at}`
       }
-      if (state.completed !== undefined && a.operation !== 'status' && a.operation !== 'revise') {
+      if (state.completed !== undefined && a.operation !== 'status' && a.operation !== 'revise' && a.operation !== 'learn_rule') {
         throw new Error('task is completed; use revise to reopen it before changing task state')
       }
 
@@ -1256,7 +1545,7 @@ export function registerDevTask(ctx: Context): void {
         if (!obligationStages(state, workflow).includes(stage)) throw new Error(`stage "${stage}" is not currently actionable`)
         const entry = (workflow.stage_bindings?.[stage]?.skills ?? [])
           .find(binding => formatResourceRef(binding.skill) === a.skill_name)
-        if (!entry || entry.skill.source !== 'codex-project') throw new Error('load_skill requires a bound codex-project:name at the current or upcoming terminal stage')
+        if (!entry) throw new Error('load_skill requires an exact source:name bound at the current or upcoming terminal stage')
         const content = await readSkillAt(entry.skill, fs, cwd)
         if (content === undefined) throw new Error(`bound skill ${a.skill_name} cannot be read`)
         const { resolved, missing } = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
@@ -1287,13 +1576,15 @@ export function registerDevTask(ctx: Context): void {
         const completionIssues = state.completed === undefined
           ? [...completionBlockers(state, workflow), ...missingSkills,
             ...skillResourceBlockers(missingSkillFiles, state.stage),
-            ...resourceBlockers(missingRules, state.stage), ...staleEvidence]
+            ...resourceBlockers(missingRules, state.stage), ...staleEvidence, ...await sonarBlockers(fs, state, cwd)]
           : []
         return JSON.stringify({
           id: state.id,
           stage: state.stage,
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
           risk_level: state.risk_level,
+          complexity: state.complexity ?? null,
+          complexity_reason: state.complexity_reason ?? null,
           completed: state.completed ?? null,
           completion_blockers: completionIssues,
           work_size: state.work_size,
@@ -1303,12 +1594,14 @@ export function registerDevTask(ctx: Context): void {
           items: state.items,
           skill_obligations: obligationStages(state, workflow).map(stage => {
             const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
-            const skills = bindings.map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
+            const skills = bindings.map(entry => state.complexity !== undefined || entry.skill.source === 'codex-project'
+              ? formatResourceRef(entry.skill) : entry.skill.name)
             // Only bindings whose evidence is a command owe a command receipt, so a
             // document-producing skill is not told to run something irrelevant.
             const command_receipts_required = bindings
               .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
-              .map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
+              .map(entry => state.complexity !== undefined || entry.skill.source === 'codex-project'
+                ? formatResourceRef(entry.skill) : entry.skill.name)
               .filter(name => needsSkillReceipt(name))
             return { stage, skills, command_receipts_required }
           }),
@@ -1334,6 +1627,12 @@ export function registerDevTask(ctx: Context): void {
           commits: state.commits,
           verification: state.verification,
           review: state.review,
+          sonar: state.sonar_policy === undefined ? { enabled: false } : {
+            enabled: true, mode: state.sonar_policy.mode, project_key: state.sonar_policy.project_key,
+            audit: state.sonar_audit ?? null, blockers: await sonarBlockers(fs, state, cwd),
+            prior_audits: state.sonar_history?.length ?? 0,
+          },
+          learned_rules: state.learned_rules ?? [],
           artifact_requirements: workflow.artifacts.filter(def => def.stage === state.stage).map(def => ({
             id: def.id, name: def.name, fields: def.fields,
             missing_fields: def.fields.filter(field => !(state.artifacts[def.id]?.[field] ?? '').trim()),
@@ -1355,6 +1654,82 @@ export function registerDevTask(ctx: Context): void {
           },
           risk_downgrades: state.risk_downgrades ?? [],
         }, null, 2)
+      }
+
+      if (a.operation === 'sonar_check') {
+        if (!state.sonar_policy) throw new Error('SonarQube is not enabled for this task')
+        if (state.stage !== '代码审核') throw new Error('sonar_check runs only in the 代码审核 stage')
+        if (!state.verification.passed || (await evidenceBlockers(fs, state, workflow, cwd)).length) {
+          throw new Error('functional verification must pass on the current files before sonar_check')
+        }
+        if (!state.commits.some(commit => commit.hash !== undefined)) {
+          throw new Error('sonar_check requires a recorded Git commit; commit at the 测试 checkpoint, push it, and use that CI scan')
+        }
+        if (!a.ce_task_id) throw new Error('sonar_check requires ce_task_id from this task\'s completed CI scan')
+        const target = state.sonar_policy.mode === 'branch' ? state.branch : a.pull_request
+        if (!target) throw new Error('pull-request SonarQube audit requires pull_request')
+        const audit = await inspectSonar(state.sonar_policy, process.env[state.sonar_policy.token_env] ?? '', a.ce_task_id, target,
+          await scopeFingerprint(fs, state, cwd))
+        audit.commit_hash = state.commits.findLast(entry => entry.hash !== undefined)!.hash!
+        if (state.sonar_audit !== undefined) state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
+        state.sonar_audit = audit
+        state.review.outcome = 'pending'
+        await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+        return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
+          analysis_id: audit.analysis_id, next_action: audit.gate === 'OK' && audit.blocking.length === 0
+            ? 'Continue code review, then record review pass.'
+            : 'Record review blocked, fix findings, rerun tests and CI scan, then call sonar_check with the new ce_task_id.' }, null, 2)
+      }
+
+      if (a.operation === 'learn_rule') {
+        const issue = [state.sonar_audit, ...(state.sonar_history ?? [])].filter(entry => entry !== undefined)
+          .flatMap(entry => entry.blocking).find(entry => entry.key === a.issue_key)
+        if (!issue) throw new Error('learn_rule requires a blocking issue_key recorded by this task\'s SonarQube audit')
+        if (!a.rule_name || !RESOURCE_NAME.test(a.rule_name) || !a.content?.trim() || a.content.trim().length < 40
+          || !a.learning_reason?.trim()) {
+          throw new Error('learn_rule needs a new kebab-case rule_name, actionable content of at least 40 characters, and learning_reason')
+        }
+        const codeSkills = workflow.stage_bindings?.['代码开发']?.skills ?? []
+        const binding = codeSkills.find(entry => formatResourceRef(entry.skill) === a.skill_name || entry.skill.name === a.skill_name)
+        if (!binding) throw new Error('learn_rule requires a Skill bound to the 代码开发 meta-skill')
+        const rulePath = `.dsh/rules/${a.rule_name}.md`
+        const skillPath = `.dsh/skills/${binding.skill.name}/SKILL.md`
+        const profilePath = `.dsh/skills/${binding.skill.name}/profile.json`
+        const root = state.root ?? cwd ?? ''
+        if (!cwd || resolve(root) !== resolve(cwd)) throw new Error('learn_rule must run with the task project root as the session workspace')
+        for (const path of [rulePath, skillPath, profilePath]) assertInsideRoot(root, cwd ?? root, path)
+        if (await readText(fs, rulePath, cwd) !== undefined) throw new Error(`project Rule ${a.rule_name} already exists; edit it through the Rule editor instead`)
+        const projectSkill = await readText(fs, skillPath, cwd)
+        const sourceSkill = projectSkill ?? await readSkillAt(binding.skill, fs, cwd)
+        if (sourceSkill === undefined) throw new Error(`Skill ${formatResourceRef(binding.skill)} cannot be read`)
+        const profileRaw = await readText(fs, profilePath, cwd)
+        const baseProfile = projectSkill === undefined ? { rules: binding.rules, evidence: binding.evidence }
+          : await profileFor({ source: 'project', name: binding.skill.name }, fs, cwd) ?? { rules: [], evidence: binding.evidence }
+        const profile: SkillProfile = { rules: [...baseProfile.rules, { source: 'project', name: a.rule_name }],
+          ...(baseProfile.evidence !== undefined ? { evidence: baseProfile.evidence } : {}) }
+        const ruleBody = `# ${a.rule_name}\n\n${a.content.trimEnd()}\n\n` +
+          `> 来源：SonarQube 规则 ${issue.rule}、问题 ${issue.key}。可复用原因：${a.learning_reason.trim()}\n`
+        const proposalHash = hashText(JSON.stringify({ issue: issue.key, skill: binding.skill, name: a.rule_name,
+          body: ruleBody, profile, profile_hash: hashText(profileRaw ?? '') }))
+        const phase = a.phase ?? 'propose'
+        if (phase === 'propose') return JSON.stringify({ issue, target_skill: binding.skill,
+          project_override: projectSkill === undefined, rule_path: rulePath, rule_body: ruleBody,
+          profile_path: profilePath, profile, expected_hash: proposalHash,
+          instruction: 'Review the example and generality before apply. The project Rule will affect future tasks; current task bindings remain frozen.' }, null, 2)
+        if (phase !== 'apply' || a.expected_hash !== proposalHash) throw new Error('learn_rule apply requires the unchanged expected_hash from propose')
+        const mode = await resolveWriteMode(ctx, a, exec)
+        await writeText(fs, rulePath, ruleBody, cwd, mode, { kind: 'createIfAbsent' })
+        if (projectSkill === undefined) {
+          await writeText(fs, skillPath, sourceSkill, cwd, mode, { kind: 'createIfAbsent' })
+        }
+        const info = await (fs as unknown as WriteFs).lstat(profilePath, { cwd })
+        await writeText(fs, profilePath, JSON.stringify(profile, null, 2) + '\n', cwd, mode,
+          info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version })
+        state.learned_rules = [...(state.learned_rules ?? []), { issue_key: issue.key, rule_name: a.rule_name,
+          skill_name: binding.skill.name, at: new Date().toISOString() }]
+        await writeTask(fs, state, cwd, mode)
+        return JSON.stringify({ created_rule: rulePath, attached_to: `project:${binding.skill.name}`,
+          next_action: 'Review this file in Git. New adaptive tasks resolve the project Skill and its Rule automatically.' }, null, 2)
       }
 
       if (a.operation === 'commit') {
@@ -1448,6 +1823,10 @@ export function registerDevTask(ctx: Context): void {
               kind, reason: a.revision_reason.trim(), to: target, from: state.stage,
               at: new Date().toISOString(), invalidated: invalidatedBy(kind),
             })
+            if (state.sonar_audit !== undefined) {
+              state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
+            }
+            delete state.sonar_audit
             await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
             return 'revised (' + kind + ') back to "' + outcome.stage + '"; invalidated: ' + outcome.invalidated.join(', ')
               + '. Re-establish these before advancing again; the history is kept in the task record.'
@@ -1618,7 +1997,8 @@ export function registerDevTask(ctx: Context): void {
         case 'skill_result': {
           const stage = a.target_stage ?? state.stage
           const entry = (workflow.stage_bindings?.[stage]?.skills ?? []).find(binding =>
-            (binding.skill.source === 'codex-project' ? formatResourceRef(binding.skill) : binding.skill.name) === a.skill_name)
+            (state.complexity !== undefined || binding.skill.source === 'codex-project'
+              ? formatResourceRef(binding.skill) : binding.skill.name) === a.skill_name)
           if (!obligationStages(state, workflow).includes(stage) || !entry) throw new Error('skill_result requires a skill bound to this stage or its upcoming terminal stage')
           if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) {
             throw new Error(`bound skill ${formatResourceRef(entry.skill)} resolves nowhere; restore its source before recording a result`)
@@ -1627,9 +2007,11 @@ export function registerDevTask(ctx: Context): void {
           if (unresolvedForSkill.length > 0) {
             throw new Error(`bound rule for ${formatResourceRef(entry.skill)} resolves nowhere: ${unresolvedForSkill.join(', ')}`)
           }
-          const loadKey = entry.skill.source === 'codex-project' ? `${state.id}#${a.skill_name}` : a.skill_name!
-          const loadCall = loadedSkills(session).get(loadKey)
-          if (!loadCall) throw new Error(entry.skill.source === 'codex-project'
+          const exactLoadKey = `${state.id}#${formatResourceRef(entry.skill)}`
+          const loaded = loadedSkills(session)
+          const loadCall = loaded.get(exactLoadKey) ?? (state.complexity === undefined && entry.skill.source !== 'codex-project'
+            ? loaded.get(entry.skill.name) : undefined)
+          if (!loadCall) throw new Error(state.complexity !== undefined || entry.skill.source === 'codex-project'
             ? `load skill "${a.skill_name}" with dev_task operation=load_skill before recording execution`
             : `load skill "${a.skill_name}" successfully before recording execution`)
           if (entry.evidence === 'manual') {
@@ -1660,6 +2042,10 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'review':
           if (a.outcome !== 'pass' && a.outcome !== 'blocked') throw new Error('review requires outcome: pass|blocked')
+          if (a.outcome === 'pass') {
+            const sonar = await sonarBlockers(fs, state, cwd)
+            if (sonar.length) throw new Error(sonar.join('; '))
+          }
           state.review.outcome = a.outcome
           break
         default:

@@ -9,6 +9,7 @@
  */
 
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
+import type { MetaSkill } from '../adaptive.ts'
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -63,6 +64,20 @@ function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding
 }
 
 type RemoteResult<T> = { ok: true; value: T } | { ok: false; error?: unknown }
+
+export interface AdaptiveProjectConfig {
+  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+}
+
+export interface AdaptiveConfigView {
+  ok: boolean
+  source: 'default' | 'project' | 'invalid'
+  config: AdaptiveProjectConfig
+  hash: string
+  problems: string[]
+  grades: { id: string; label: string; guidance: string; stages: string[] }[]
+}
 
 /** The `read`/`write` result: preset flow, resolved workflow, plus validation state. */
 interface EngConfigView {
@@ -135,6 +150,7 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and per-item audit trail. */
 export interface TaskLedgerEntry {
+  complexity?: string
   risk_level?: string
   updated_at?: string
   verification_passed?: boolean
@@ -181,6 +197,10 @@ export interface TaskEngineRemote {
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   importResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   read(path: string): Promise<RemoteResult<EngConfigView>>
+  readAdaptive(path: string): Promise<RemoteResult<AdaptiveConfigView>>
+  writeAdaptive(request: { path: string; config: AdaptiveProjectConfig; expected_hash: string }): Promise<RemoteResult<AdaptiveConfigView>>
+  readProjectSkillProfile(request: { path: string; name: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
+  writeProjectSkillProfile(request: { path: string; name: string; profile: SkillProfile; expected_hash: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile>; materialize_bundled?: 'project' | 'user' }): Promise<RemoteResult<EngConfigView>>
   listSkills(path: string): Promise<RemoteResult<{ skills: SkillCatalogEntry[] }>>
   listRules(path: string): Promise<RemoteResult<{ rules: RuleCatalogEntry[] }>>

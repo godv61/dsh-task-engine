@@ -1,7 +1,7 @@
 {
   "name": "@godv61/dsh-task-engine",
   "version": "0.28.0",
-  "description": "Workflow engine for DeepSeek Harness: a `dev_task` tool that hard-gates stage transitions and commit scope/message, per-node skill bindings with progressive disclosure, and a workbench to configure flows and mount skills. A preset is a flow SKELETON — state control only — and one reasonable engineering setup is offered separately for explicit adoption; which skills run, which rules they follow and what a commit message must look like stay the user's decisions.",
+  "description": "Task-scoped engineering workflows for DeepSeek Harness: four complexity grades, meta skills with project Skill/Rule bindings, repository init, and optional review-time SonarQube quality gates. Legacy project flows remain compatible.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -50,7 +50,8 @@
     ".evidence-test.mjs",
     ".roundtrip-test.mjs",
     ".filter-test.mjs",
-    ".codex-project-test.mjs"
+    ".codex-project-test.mjs",
+    ".adaptive-test.mjs"
   ],
   "license": "MIT",
   "publishConfig": {
@@ -71,7 +72,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-client.mjs && node build-hook.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs .enforce-test.mjs .evidence-test.mjs .roundtrip-test.mjs .filter-test.mjs .codex-project-test.mjs",
+    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs .enforce-test.mjs .evidence-test.mjs .roundtrip-test.mjs .filter-test.mjs .codex-project-test.mjs .adaptive-test.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:dsh": "node scripts/verify-dsh-compat.mjs",
     "prepare": "npm run build"

@@ -16,6 +16,7 @@ import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
 import type { TaskEngineRemote } from './TaskEngineSection.ts'
 import { TaskEngineSection } from './TaskEngineSection.tsx'
+import { AdaptivePanel } from './AdaptivePanel.tsx'
 import { InitPanel } from './InitPanel.tsx'
 import { SkillManager } from './SkillManager.tsx'
 import { RuleManager } from './RuleManager.tsx'
@@ -82,7 +83,8 @@ const closeStyle: CSSProperties = {
 }
 const TABS = [
   { id: 'init', label: '项目初始化' },
-  { id: 'flow', label: '流程配置' },
+  { id: 'adaptive', label: '自适应流程' },
+  { id: 'flow', label: '旧版流程' },
   { id: 'tasks', label: '任务台账' },
   { id: 'skills', label: '技能' },
   { id: 'rules', label: '规则' },
@@ -98,7 +100,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
 }): null | ReturnType<typeof createElement> {
   const open = useStore((s) => s.open)
   const workspaces = useWorkspaces((s) => s.items)
-  const [tab, setTab] = useState<TabId>('init')
+  const [tab, setTab] = useState<TabId>('adaptive')
   const [workspace, setWorkspace] = useState('')
 
   if (!open) return null
@@ -111,8 +113,8 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
       createElement('div', { style: headerBrand },
         createElement(IconSettings, { size: 18 }),
         createElement('div', { style: headerText },
-          createElement('span', { style: headerTitle }, '工程流程'),
-          createElement('p', { style: headerSub }, '工程化交付工作台 · 需求评审 → 设计 → 开发 → 交付 → 代码审核'),
+          createElement('span', { style: headerTitle }, '工程任务'),
+          createElement('p', { style: headerSub }, '按需求复杂度选择任务流程 · 元技能挂载项目 Skill 与 Rule'),
         ),
       ),
       createElement('button', {
@@ -139,9 +141,11 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
       createElement('div', { className: 'te-content', key: current },
       createElement('p', { style: { ...styles.hint, marginBottom: 10 }, title: current }, '工作区 · ' + current),
       current === ''
-        ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区，再回来配置流程。')
+        ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区。')
         : tab === 'init'
           ? createElement(InitPanel, { workspace: current, remote })
+          : tab === 'adaptive'
+            ? createElement(AdaptivePanel, { workspace: current, remote })
           : tab === 'flow'
             ? createElement(TaskEngineSection, { workspace: current, remote })
             : tab === 'tasks'

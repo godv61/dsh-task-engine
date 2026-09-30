@@ -26,6 +26,56 @@ import type { ArtifactDef, CommitRule, ParsedProjectConfig, ResourceRef, Resourc
 import { formatResourceRef, validateWorkflow, type StageBinding, type TaskState, type WorkflowConfig } from './engine.ts'
 import { compactProjectConfig, materializeBundledReferences, resolveFlow, type ProjectConfig, type RecommendedResourceCopy } from './workflows.ts'
 import { saveUserSkillProfile, userSkillProfilePath, withUserSkillProfiles } from './user-skill-profiles.ts'
+import { COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, type MetaSkill } from './adaptive.ts'
+import { hashText } from './snapshot.ts'
+
+export interface AdaptiveProjectConfig {
+  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+}
+
+export interface AdaptiveConfigView {
+  ok: boolean
+  source: 'default' | 'project' | 'invalid'
+  config: AdaptiveProjectConfig
+  hash: string
+  problems: string[]
+  grades: { id: string; label: string; guidance: string; stages: string[] }[]
+}
+
+function adaptiveGrades(): AdaptiveConfigView['grades'] {
+  return COMPLEXITY_OPTIONS.map(option => ({ ...option, stages: adaptiveWorkflow(option.id).stages }))
+}
+
+function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>): string[] {
+  const problems: string[] = []
+  if (config === null || typeof config !== 'object' || Array.isArray(config)) return ['自适应配置必须是对象']
+  if (config.meta_bindings !== undefined) {
+    if (config.meta_bindings === null || typeof config.meta_bindings !== 'object' || Array.isArray(config.meta_bindings)) {
+      problems.push('meta_bindings 必须是对象')
+    } else for (const [meta, names] of Object.entries(config.meta_bindings)) {
+      if (!(meta in META_STAGES)) problems.push(`未知元技能 ${meta}`)
+      if (!Array.isArray(names) || !names.every(name => typeof name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name))) {
+        problems.push(`${meta} 的挂载技能必须是合法名称数组`)
+      } else {
+        if (new Set(names).size !== names.length) problems.push(`${meta} 重复挂载同名技能`)
+        for (const name of names) if (!available.has(name)) problems.push(`挂载技能 ${name} 不存在`)
+      }
+    }
+  }
+  if (config.sonar !== undefined && (config.sonar === null || typeof config.sonar !== 'object' || Array.isArray(config.sonar))) {
+    problems.push('sonar 必须是对象')
+  }
+  if (config.sonar?.enabled !== undefined && typeof config.sonar.enabled !== 'boolean') problems.push('sonar.enabled 必须是布尔值')
+  if (config.sonar?.enabled === true) {
+    if (!config.sonar.host_url || !/^https?:\/\//u.test(config.sonar.host_url) || !config.sonar.project_key?.trim()) {
+      problems.push('启用 SonarQube 时需配置服务地址和项目 Key')
+    }
+    if (config.sonar.mode !== 'branch' && config.sonar.mode !== 'pull-request') problems.push('SonarQube 模式必须是分支或合并请求')
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(config.sonar.token_env ?? 'SONAR_TOKEN')) problems.push('SonarQube Token 环境变量名无效')
+  }
+  return problems
+}
 
 /** Merged workflow plus its validation state, returned by both config methods. */
 export interface EngConfigView {
@@ -511,6 +561,80 @@ export default class TaskEngineController extends TypertRemoteService {
     }
   }
 
+  /** Read task-scoped flow policy; legacy eng.json is intentionally separate. */
+  @Remote
+  async readAdaptive(path: string): Promise<AdaptiveConfigView> {
+    path = await this.authorizedPath(path)
+    const raw = await readTextAt(this.fs(), path, '.dsh/meta.json')
+    if (raw === undefined) return { ok: true, source: 'default', config: {}, hash: hashText(''), problems: [], grades: adaptiveGrades() }
+    try {
+      const config = JSON.parse(raw) as AdaptiveProjectConfig
+      const available = new Set((await this.listSkills(path)).skills.map(skill => skill.name))
+      const problems = adaptiveProblems(config, available)
+      return { ok: problems.length === 0, source: problems.length ? 'invalid' : 'project', config,
+        hash: hashText(raw), problems, grades: adaptiveGrades() }
+    } catch (error) {
+      return { ok: false, source: 'invalid', config: {}, hash: hashText(raw),
+        problems: [`meta.json 无法解析：${error instanceof Error ? error.message : String(error)}`], grades: adaptiveGrades() }
+    }
+  }
+
+  /** Save only meta-skill attachments and optional review-time SonarQube policy. */
+  @Remote
+  async writeAdaptive(request: { path: string; config: AdaptiveProjectConfig; expected_hash: string }): Promise<AdaptiveConfigView> {
+    const path = await this.authorizedPath(request.path)
+    const fs = this.fs()
+    const raw = await readTextAt(fs, path, '.dsh/meta.json')
+    if (request.expected_hash !== hashText(raw ?? '')) throw new Error('自适应配置已被其他会话修改，请刷新后重试')
+    const available = new Set((await this.listSkills(path)).skills.map(skill => skill.name))
+    const problems = adaptiveProblems(request.config, available)
+    if (problems.length) return { ok: false, source: 'invalid', config: request.config,
+      hash: hashText(raw ?? ''), problems, grades: adaptiveGrades() }
+    const target = await fs.resolve('.dsh/meta.json', { cwd: path })
+    const info = await fs.lstat('.dsh/meta.json', { cwd: path })
+    await fs.writeText(target, JSON.stringify(request.config, null, 2) + '\n',
+      info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version },
+      undefined, { mode: 'workspace-write', workspaceRoot: path })
+    return this.readAdaptive(path)
+  }
+
+  /** Read the Rule method that belongs to a project Skill in adaptive tasks. */
+  @Remote
+  async readProjectSkillProfile(request: { path: string; name: string }): Promise<{ profile: SkillProfile; hash: string }> {
+    const path = await this.authorizedPath(request.path)
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(request.name)) throw new Error('技能名称无效')
+    if (await readTextAt(this.fs(), path, `.dsh/skills/${request.name}/SKILL.md`) === undefined) throw new Error('项目级技能不存在')
+    const raw = await readTextAt(this.fs(), path, `.dsh/skills/${request.name}/profile.json`)
+    const profile = raw === undefined ? { rules: [] } : JSON.parse(raw) as SkillProfile
+    if (!Array.isArray(profile.rules)) throw new Error('技能规则档案无效')
+    return { profile, hash: hashText(raw ?? '') }
+  }
+
+  /** Save a project Skill's adaptive Rule list beside its SKILL.md, with CAS. */
+  @Remote
+  async writeProjectSkillProfile(request: { path: string; name: string; profile: SkillProfile; expected_hash: string }): Promise<{ profile: SkillProfile; hash: string }> {
+    const path = await this.authorizedPath(request.path)
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(request.name)) throw new Error('技能名称无效')
+    const fs = this.fs()
+    if (await readTextAt(fs, path, `.dsh/skills/${request.name}/SKILL.md`) === undefined) throw new Error('项目级技能不存在')
+    const profilePath = `.dsh/skills/${request.name}/profile.json`
+    const raw = await readTextAt(fs, path, profilePath)
+    if (request.expected_hash !== hashText(raw ?? '')) throw new Error('技能规则档案已改变，请刷新后重试')
+    if (!Array.isArray(request.profile.rules) || request.profile.rules.some(rule => !rule ||
+      !['project', 'user', 'bundled'].includes(rule.source) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(rule.name))
+      || (request.profile.evidence !== undefined && !['none', 'manual', 'artifact', 'review', 'command'].includes(request.profile.evidence))) {
+      throw new Error('技能规则档案无效')
+    }
+    const available = new Set((await this.listRules(path)).rules.map(rule => formatResourceRef(rule.ref)))
+    for (const rule of request.profile.rules) if (!available.has(formatResourceRef(rule))) throw new Error(`规则 ${formatResourceRef(rule)} 不存在`)
+    const target = await fs.resolve(profilePath, { cwd: path })
+    const info = await fs.lstat(profilePath, { cwd: path })
+    await fs.writeText(target, JSON.stringify(request.profile, null, 2) + '\n',
+      info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version },
+      undefined, { mode: 'workspace-write', workspaceRoot: path })
+    return this.readProjectSkillProfile({ path, name: request.name })
+  }
+
   /**
    * Resolve one workspace's effective workflow: a preset flow plus the project's
    * stage-binding override.
@@ -737,6 +861,7 @@ export default class TaskEngineController extends TypertRemoteService {
         }
         if (!state || ['id', 'title', 'stage', 'branch'].some(key => typeof (state as unknown as Record<string, unknown>)[key] !== 'string') || (state.items !== undefined && !Array.isArray(state.items))) throw new Error('任务记录格式无效：' + entry.name)
         tasks.push({
+          ...(state.complexity ? { complexity: state.complexity } : {}),
           ...(state.risk_level ? { risk_level: state.risk_level } : {}),
           ...(state.updated_at ? { updated_at: state.updated_at } : {}),
           verification_passed: state.verification?.passed ?? false,

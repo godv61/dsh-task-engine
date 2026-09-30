@@ -134,6 +134,7 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { style: { fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, task.task_id),
               createElement('span', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, task.title),
               createElement('span', { style: badge }, task.stage),
+              task.complexity ? createElement('span', { style: badge }, `复杂度：${{ low: '低', medium: '中', high: '高', ultra: '超高' }[task.complexity] ?? task.complexity}`) : null,
               createElement('span', { style: badge }, task.branch),
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
               createElement('span', { className: 'te-badge' }, task.verification_passed ? '验证通过' : '待验证'),

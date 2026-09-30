@@ -411,12 +411,14 @@ test('同名技能与规则在项目和个人目录各自保留管理入口', as
   assert.match(read.content, /Run tests/)
 })
 
-test('安装包只注册会话编排技能，阶段目录不展示它', async () => {
+test('安装包注册会话编排和元技能，阶段目录只隐藏会话编排技能', async () => {
   const registered = []
   registerShippedSkills({ get: name => name === 'skills' ? { register: skill => { registered.push(skill); return () => {} } } : undefined })
-  const expected = ['eng-delivery']
+  const expected = ['architecture-design', 'code-development', 'code-review', 'eng-delivery',
+    'requirements-analysis', 'task-orchestration', 'test-validation']
   assert.deepEqual(registered.map(skill => skill.name).sort(), expected)
   assert.ok(registered.every(skill => skill.content.trim().length > 0))
   const catalog = await Controller.prototype.listSkills.call({ authorizedPath: async path => path }, '')
-  assert.deepEqual(catalog.skills.filter(skill => skill.source === 'bundled').map(skill => skill.name).sort(), [])
+  assert.deepEqual(catalog.skills.filter(skill => skill.source === 'bundled').map(skill => skill.name).sort(),
+    expected.filter(name => name !== 'eng-delivery'))
 })

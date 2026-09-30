@@ -26,7 +26,7 @@ import {
   type ReviewDepth,
 } from './engine.ts'
 import { resolveFlow, type ProjectConfig } from './workflows.ts'
-import { hashConfig } from './snapshot.ts'
+import { hashConfig, hashText } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY } from './project.ts'
 
 const messageFile = process.argv[2]
@@ -59,6 +59,9 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     branch: String(task.branch ?? ''),
     work_size: (task.work_size as TaskState['work_size']) ?? 'standard',
     risk_level: (task.risk_level as TaskState['risk_level']) ?? 'standard',
+    ...(task.complexity !== undefined ? { complexity: task.complexity as NonNullable<TaskState['complexity']> } : {}),
+    ...(task.sonar_policy !== undefined ? { sonar_policy: task.sonar_policy as NonNullable<TaskState['sonar_policy']> } : {}),
+    ...(task.sonar_audit !== undefined ? { sonar_audit: task.sonar_audit as NonNullable<TaskState['sonar_audit']> } : {}),
     stage: String(task.stage ?? ''),
     requirement_confirmed: task.requirement_confirmed === true,
     solution_confirmed: task.solution_confirmed === true,
@@ -166,7 +169,21 @@ function extractTaskId(message: string): string | undefined {
 
 /** Engine-owned state files are exempt from scope and risk checks. */
 function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
+}
+
+function scopeHash(state: TaskState, root: string): string {
+  const entries = [...new Set(state.files)].filter(file => !isEngineMeta(file)).sort().map(file => {
+    const target = path.resolve(root, file)
+    const inside = path.relative(root, target)
+    if (inside.startsWith('..') || path.isAbsolute(inside)) refuse(`任务范围路径越界: ${file}`)
+    try { return [file, hashText(fs.readFileSync(target, 'utf8'))] }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [file, null]
+      refuse(`无法读取任务文件 ${file}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  })
+  return hashText(JSON.stringify(entries))
 }
 
 /** Staged paths that hit the risk policy's sensitive paths (engine files exempt). */
@@ -229,34 +246,13 @@ function defaultConfig(): WorkflowConfig {
   return resolved.config
 }
 
-// --- gather project state (fallback config) ---
-const cwd = process.cwd()
-const configPath = path.join(cwd, '.dsh', 'eng.json')
-let config: WorkflowConfig
-if (fs.existsSync(configPath)) {
-  let raw = ''
-  try {
-    raw = fs.readFileSync(configPath, 'utf8')
-  } catch {
-    raw = ''
-  }
-  let parsed: { flow?: string; stage_bindings?: unknown }
-  try {
-    parsed = JSON.parse(raw) as { flow?: string; stage_bindings?: unknown }
-  } catch (error) {
-    refuse('invalid JSON in .dsh/eng.json: ' + (error instanceof Error ? error.message : String(error)))
-  }
-  config = loadWorkflow(parsed)
-} else {
-  config = loadWorkflow(undefined)
-}
-
 // --- the gate ---
 if (!messageFile) {
   process.exit(0)
 }
 
 const message = readCommitMessage(messageFile)
+const cwd = process.cwd()
 const tasks = loadTasks()
 
 // Locate the task by id from the summary first; only then read its frozen config.
@@ -279,11 +275,18 @@ if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.fl
   refuse(`任务 ${state.id} 的流程快照 hash 不匹配——task 记录在创建后被改动过，修复或重建任务后再提交`)
 }
 
-// Check this task against its frozen snapshot, not the live .dsh/eng.json
-// (which may have drifted mid-task). Fall back to the live config only for
-// legacy records that predate the snapshot field.
+// A task snapshot is authoritative. Only pre-snapshot records consult eng.json.
+let config: WorkflowConfig
 if (state.flow !== undefined && state.flow.config !== undefined) {
   config = state.flow.config
+} else {
+  const configPath = path.join(cwd, '.dsh', 'eng.json')
+  if (fs.existsSync(configPath)) {
+    let parsed: { flow?: string; stage_bindings?: unknown }
+    try { parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { flow?: string; stage_bindings?: unknown } }
+    catch (error) { refuse('invalid JSON in .dsh/eng.json: ' + (error instanceof Error ? error.message : String(error))) }
+    config = loadWorkflow(parsed)
+  } else config = loadWorkflow(undefined)
 }
 
 const verdict = validateCommitMessage(message, config)
@@ -294,6 +297,15 @@ if (!verdict.ok) {
 const checkpoint = commitCheckpoint(state, config)
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
+}
+
+if (state.sonar_policy?.enabled) {
+  const audit = state.sonar_audit
+  const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
+  if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd)
+    || !lastCommit || audit.commit_hash !== lastCommit) {
+    refuse('SonarQube 审核未通过或已过期——在代码审核阶段完成新一次 CI 扫描并调用 dev_task operation=sonar_check')
+  }
 }
 
 const entries = stagedEntries()

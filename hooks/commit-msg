@@ -148,7 +148,7 @@ function commitCheckpoint(state2, config2) {
   return { allowed: false, reason: "no commit is due at this stage under the current policy" };
 }
 function isEngineMeta(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file);
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
 }
 function checkFileScope(state2, committing, config2) {
   if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
@@ -419,6 +419,9 @@ function normalizeTask(task) {
     branch: String(task.branch ?? ""),
     work_size: task.work_size ?? "standard",
     risk_level: task.risk_level ?? "standard",
+    ...task.complexity !== void 0 ? { complexity: task.complexity } : {},
+    ...task.sonar_policy !== void 0 ? { sonar_policy: task.sonar_policy } : {},
+    ...task.sonar_audit !== void 0 ? { sonar_audit: task.sonar_audit } : {},
     stage: String(task.stage ?? ""),
     requirement_confirmed: task.requirement_confirmed === true,
     solution_confirmed: task.solution_confirmed === true,
@@ -501,7 +504,21 @@ function extractTaskId(message2) {
   return match ? match[1] : void 0;
 }
 function isEngineMeta2(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file);
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
+}
+function scopeHash(state2, root) {
+  const entries2 = [...new Set(state2.files)].filter((file) => !isEngineMeta2(file)).sort().map((file) => {
+    const target = import_node_path.default.resolve(root, file);
+    const inside = import_node_path.default.relative(root, target);
+    if (inside.startsWith("..") || import_node_path.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
+    try {
+      return [file, hashText(import_node_fs.default.readFileSync(target, "utf8"))];
+    } catch (error) {
+      if (error.code === "ENOENT") return [file, null];
+      refuse(`\u65E0\u6CD5\u8BFB\u53D6\u4EFB\u52A1\u6587\u4EF6 ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  });
+  return hashText(JSON.stringify(entries2));
 }
 function riskyPaths(entries2) {
   return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => entry.path === prefix || entry.path.startsWith(`${prefix}/`))).map((entry) => entry.path);
@@ -536,30 +553,11 @@ function loadWorkflow(parsed) {
   }
   return resolved.config;
 }
-var cwd = process.cwd();
-var configPath = import_node_path.default.join(cwd, ".dsh", "eng.json");
-var config;
-if (import_node_fs.default.existsSync(configPath)) {
-  let raw = "";
-  try {
-    raw = import_node_fs.default.readFileSync(configPath, "utf8");
-  } catch {
-    raw = "";
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
-  }
-  config = loadWorkflow(parsed);
-} else {
-  config = loadWorkflow(void 0);
-}
 if (!messageFile) {
   process.exit(0);
 }
 var message = readCommitMessage(messageFile);
+var cwd = process.cwd();
 var tasks = loadTasks();
 var taskId = extractTaskId(message);
 var state;
@@ -578,8 +576,20 @@ if (!state) {
 if (state.flow?.hash !== void 0 && hashConfig(state.flow.config) !== state.flow.hash) {
   refuse(`\u4EFB\u52A1 ${state.id} \u7684\u6D41\u7A0B\u5FEB\u7167 hash \u4E0D\u5339\u914D\u2014\u2014task \u8BB0\u5F55\u5728\u521B\u5EFA\u540E\u88AB\u6539\u52A8\u8FC7\uFF0C\u4FEE\u590D\u6216\u91CD\u5EFA\u4EFB\u52A1\u540E\u518D\u63D0\u4EA4`);
 }
+var config;
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
+} else {
+  const configPath = import_node_path.default.join(cwd, ".dsh", "eng.json");
+  if (import_node_fs.default.existsSync(configPath)) {
+    let parsed;
+    try {
+      parsed = JSON.parse(import_node_fs.default.readFileSync(configPath, "utf8"));
+    } catch (error) {
+      refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
+    }
+    config = loadWorkflow(parsed);
+  } else config = loadWorkflow(void 0);
 }
 var verdict = validateCommitMessage(message, config);
 if (!verdict.ok) {
@@ -588,6 +598,13 @@ if (!verdict.ok) {
 var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? "commit checkpoint rejected") + "\uFF08\u5F53\u524D\u9636\u6BB5: " + state.stage + "\uFF09");
+}
+if (state.sonar_policy?.enabled) {
+  const audit = state.sonar_audit;
+  const lastCommit = state.commits.findLast((entry) => entry.hash !== void 0)?.hash;
+  if (!audit || audit.gate !== "OK" || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd) || !lastCommit || audit.commit_hash !== lastCommit) {
+    refuse("SonarQube \u5BA1\u6838\u672A\u901A\u8FC7\u6216\u5DF2\u8FC7\u671F\u2014\u2014\u5728\u4EE3\u7801\u5BA1\u6838\u9636\u6BB5\u5B8C\u6210\u65B0\u4E00\u6B21 CI \u626B\u63CF\u5E76\u8C03\u7528 dev_task operation=sonar_check");
+  }
 }
 var entries = stagedEntries();
 var scope = checkFileScope(state, entries.map((entry) => entry.path), config);

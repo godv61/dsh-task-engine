@@ -77,7 +77,7 @@ async function main() {
   await writeFile(
     join(target, 'preset.yml'),
     'name: 工程化开发引擎\n'
-    + 'description: 通过 dev_task 工具硬性持有需求评审→设计→开发→交付→代码审核的状态机，按项目 .dsh/eng.json 配置流转与提交门禁。\n',
+    + 'description: 按需求复杂度选择任务级流程，使用元技能、项目规则与 dev_task 门禁推进开发。\n',
     'utf8',
   )
 

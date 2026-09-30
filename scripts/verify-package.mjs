@@ -40,11 +40,15 @@ const pkgDir = join(tmp, 'package')
 const listing = execSync(`tar -tzf "${tgzPath}"`, { encoding: 'utf8' })
   .trim().split(/\r?\n/u).map(line => line.replace(/^package\//u, ''))
 check('extract', existsSync(join(pkgDir, 'package.json')))
-check('only the orchestration skill ships', listing.filter(line => /^skills\/[^/]+\/SKILL\.md$/u.test(line)).join(',') === 'skills/eng-delivery/SKILL.md')
+const bundledSkills = ['architecture-design', 'code-development', 'code-review', 'eng-delivery',
+  'requirements-analysis', 'task-orchestration', 'test-validation']
+check('orchestration and six meta Skills ship',
+  JSON.stringify(listing.filter(line => /^skills\/[^/]+\/SKILL\.md$/u.test(line)).sort())
+    === JSON.stringify(bundledSkills.map(name => `skills/${name}/SKILL.md`).sort()))
 check('no bundled business rules ship', !listing.some(line => line.startsWith('rules/')))
 
 // 3. files whitelist sanity
-for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs', '.roundtrip-test.mjs', '.filter-test.mjs']) {
+for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs', '.roundtrip-test.mjs', '.filter-test.mjs', '.adaptive-test.mjs']) {
   check(`tarball contains ${required}`, listing.includes(required))
 }
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
@@ -114,7 +118,7 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
 } catch (error) { check('in-package resource, workflow and hook behavior', false, String(error.stderr ?? error)) }
 

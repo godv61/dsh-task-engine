@@ -4,8 +4,10 @@
 
 <h1 align="center">DSH Task Engine</h1>
 
-<p align="center">把开发步骤、技能规则和交付记录，放进一个个人工作台。</p>
-<p align="center"><sub>A personal engineering workflow workbench for DeepSeek Harness.</sub></p>
+> 本分支的自适应流程、项目技能初始化与 SonarQube 审核仍在开发验证中；npm 上的 `0.28.0` 尚未包含这些功能。下方的新流程说明面向本分支源码。
+
+<p align="center">按每个需求选择工程路径，用项目 Skill 与 Rule 复用团队开发规范。</p>
+<p align="center"><sub>Task-scoped engineering workflows for DeepSeek Harness.</sub></p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@godv61/dsh-task-engine"><img src="https://img.shields.io/npm/v/%40godv61%2Fdsh-task-engine?style=flat-square&amp;color=238636" alt="npm version" /></a>
@@ -24,9 +26,9 @@
 
 ## 为什么用它
 
-让 AI 修改代码时，你可以先明确需求，再检查方案、推进实施、验证结果，最后审核提交。DSH Task Engine 把这些步骤组织成可检查、可追踪的任务流程，适合在本机使用 DeepSeek Harness 开发个人项目。
+让 AI 在持续开发的项目中处理不同需求时，按这次需求的复杂度选择低、中、高、超高四档任务流程。元技能规定交接产物，项目 Skill/Rule 承载团队编码规范；同一项目下的多个会话可以各自推进不同任务。
 
-- **知道下一步做什么**：按所选流程推进，当前阶段需要的条件和产物清楚可查。
+- **知道下一步做什么**：任务创建时选择复杂度并冻结流程，当前阶段的条件和产物清楚可查。
 - **复用自己的工作方法**：把技能和规则安装到项目或个人目录，将规则配置在技能下，再把技能挂到节点上；同一技能在任何节点都使用同一套约束。
 - **找得到过程记录**：任务台账集中查看阶段、实施项、验证与审核状态。
 
@@ -38,29 +40,32 @@
 dsh plugin --profile web add @godv61/dsh-task-engine
 ```
 
-1. 重启 Harness Web，打开侧边栏的 **工程流程**。
-2. 选择工作区，在 **流程配置** 中选择一套流程。
+1. 重启 Harness Web，打开侧边栏的 **工程任务**。
+2. 选择工作区，在 **自适应流程** 中查看四档路径，按需挂载项目技能。
 3. 新建会话，选择 **工程化开发引擎** 预设，描述要完成的开发任务。
 
-看到“工程流程”入口和“工程化开发引擎”会话预设，就说明工作台与任务工具已接入。使用 Harness 源码启动的安装方式见[安装与启用](docs/getting-started.md)。
+看到“工程任务”入口和“工程化开发引擎”会话预设，就说明工作台与任务工具已接入。使用 Harness 源码启动的安装方式见[安装与启用](docs/getting-started.md)。
 
-> 工作台中的“流程预设”决定任务怎么推进；会话中的“工程化开发引擎”预设负责启用 `dev_task` 工具。两者作用不同。
+> 工程化会话先分析需求复杂度，再以 `dev_task assess` 预览并创建任务；`.dsh/meta.json` 只配置元技能挂载和可选 SonarQube 审核，不强迫项目所有会话走同一条流程。
 
 ## 工作台里有什么
 
 | 页面 | 你可以做什么 |
 | :--- | :--- |
-| **项目初始化** | 查看或编辑 `AGENTS.md`，让 AI 生成项目说明，预览后保存。 |
-| **流程配置** | 选择流程骨架，给节点挂技能，并在技能上配置它遵循的规则。需要现成起点时可「采用推荐配置」。 |
+| **项目初始化** | 维护 `AGENTS.md`；工程会话可用 `dev_task init_project` 扫描仓库、预览并生成项目 Skill/Rule。 |
+| **自适应流程** | 查看四档任务路径、元技能绑定与可选 SonarQube 审核配置。 |
+| **旧版流程** | 维护旧项目的 `.dsh/eng.json`；已有任务继续按冻结快照执行。 |
 | **任务台账** | 查看实施、验证和审核记录，按关键词、阶段或风险筛选。 |
 | **技能** | 安装、编辑技能，并集中维护每个技能唯一的规则列表。 |
 | **规则** | 选择 Markdown 文件安装规则，维护项目或个人开发约定。 |
 
-插件只内置负责会话编排的 `eng-delivery`。阶段技能和规则由使用者创建或安装，可放在项目或个人目录；安装、删除都会明确展示目标位置。
+插件内置会话编排 Skill `eng-delivery` 和六个通用元技能 Skill。项目知识、领域编码方法和 Rule 由使用者创建或通过 init 生成，可放在项目或个人目录；同名项目 Skill 在新任务中覆盖用户级 Skill。
+
+新路径的四档顺序、元技能交接契约、`init_project` 和可选 SonarQube 审核见[自适应工程任务](docs/adaptive-workflows.md)。
 
 **流程与工作方法是两回事。** 流程只决定工作怎么流转（阶段顺序与门禁），预设不自带任何技能或提交格式。要用什么技能、遵守哪些规则，都由你配置。「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度，不改变技能与规则绑定。同一条规则可由多个技能共享。用户级技能及其规则配置由所有项目和会话共用。任务的流程与资源引用在创建时确定；Skill/Rule 正文在每次交互读取最新版本，创建时副本仅用于审计。[配置细节](docs/configuration.md)
 
-## 选择适合这次任务的流程
+## 旧版流程兼容
 
 | 预设 | 阶段顺序 | 适用场景 |
 | :--- | :--- | :--- |
@@ -68,7 +73,7 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 | **日常迭代** `agile` | 需求 → 开发 → 交付 → 审查 | 目标明确的日常开发任务。 |
 | **快速修改** `minimal` | 开发 → 交付 | 已明确做法的小改动。 |
 
-阶段顺序和检查条件由预设固定；技能与规则由用户配置。空绑定也能运行流程。需要提交文本和产物字段的起点时可显式采用推荐配置。**可视化自定义流程不在计划内**，详见[功能规划](docs/roadmap.md)。
+旧版阶段顺序和检查条件继续有效；没有传入 `complexity` 的旧调用仍按 `.dsh/eng.json` 执行。新任务通过 `complexity` 使用四档自适应流程；旧任务不迁移或改写。
 
 ## 把自己的技能和规则带进来
 
@@ -90,7 +95,8 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 | 想了解什么 | 从这里开始 |
 | :--- | :--- |
 | 安装、启用与第一次使用 | [快速上手](docs/getting-started.md) |
-| 项目配置与阶段绑定 | [流程配置](docs/configuration.md) |
+| 任务级流程、元技能与 SonarQube | [自适应工程任务](docs/adaptive-workflows.md) |
+| 旧项目配置与阶段绑定 | [流程配置](docs/configuration.md) |
 | 技能文件夹与 Markdown 规则 | [资源安装](docs/resource-install.md) |
 | 完整操作说明 | [HTML 手册](docs/manual.html)（下载后在浏览器打开） |
 | 当前能力与常见问题 | [常见问题](docs/faq.md) |

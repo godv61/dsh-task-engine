@@ -11,6 +11,8 @@
  */
 
 import type { ProjectType } from './project.ts'
+import type { Complexity } from './adaptive.ts'
+import type { SonarAudit, SonarPolicy } from './sonar.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -382,6 +384,16 @@ export interface TaskState {
   branch: string
   work_size: WorkSize
   risk_level: RiskLevel
+  /** Model-assessed task complexity; separate from operational risk. */
+  complexity?: Complexity
+  /** Why this requirement was placed in that grade. */
+  complexity_reason?: string
+  /** Optional review-only SonarQube policy frozen for this task. No token is stored. */
+  sonar_policy?: SonarPolicy
+  sonar_audit?: SonarAudit
+  /** Prior scans, including failed findings that may become reviewed Rule examples. */
+  sonar_history?: SonarAudit[]
+  learned_rules?: { issue_key: string; rule_name: string; skill_name: string; at: string }[]
   /** Frozen workflow captured at create time; gates re-read this, not the live config. Absent on pre-snapshot task records. */
   flow?: FlowSnapshot
   stage: string
@@ -1098,7 +1110,7 @@ export interface FileScopeResult {
  * so the file-scope gate never counts them as out-of-scope.
  */
 function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json)$/.test(file)
+  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
 }
 
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
@@ -1117,6 +1129,9 @@ export function newTask(input: {
   branch: string
   work_size: WorkSize
   risk_level: RiskLevel
+  complexity?: Complexity
+  complexity_reason?: string
+  sonar_policy?: SonarPolicy
   flow: FlowSnapshot
   root?: string
   project_type?: ProjectType
@@ -1128,6 +1143,9 @@ export function newTask(input: {
     branch: input.branch,
     work_size: input.work_size,
     risk_level: input.risk_level,
+    ...(input.complexity !== undefined ? { complexity: input.complexity } : {}),
+    ...(input.complexity_reason !== undefined ? { complexity_reason: input.complexity_reason } : {}),
+    ...(input.sonar_policy !== undefined ? { sonar_policy: input.sonar_policy } : {}),
     flow: input.flow,
     stage: input.flow.config.start_stage,
     requirement_confirmed: false,
