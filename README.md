@@ -4,7 +4,7 @@
 
 <h1 align="center">DSH Task Engine</h1>
 
-> 本分支的自适应流程、项目技能初始化与 SonarQube 审核仍在开发验证中；npm 上的 `0.28.0` 尚未包含这些功能。下方的新流程说明面向本分支源码。
+> `0.29.0` 新增自适应流程、项目技能初始化与可选 SonarQube CI 审核。SonarQube 集成目前读取提交后的 CI 分析结果，不提供未提交代码的本地 Sonar 审核。
 
 <p align="center">按每个需求选择工程路径，用项目 Skill 与 Rule 复用团队开发规范。</p>
 <p align="center"><sub>Task-scoped engineering workflows for DeepSeek Harness.</sub></p>
@@ -63,7 +63,7 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 新路径的四档顺序、元技能交接契约、`init_project` 和可选 SonarQube 审核见[自适应工程任务](docs/adaptive-workflows.md)。
 
-**流程与工作方法是两回事。** 流程只决定工作怎么流转（阶段顺序与门禁），预设不自带任何技能或提交格式。要用什么技能、遵守哪些规则，都由你配置。「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度，不改变技能与规则绑定。同一条规则可由多个技能共享。用户级技能及其规则配置由所有项目和会话共用。任务的流程与资源引用在创建时确定；Skill/Rule 正文在每次交互读取最新版本，创建时副本仅用于审计。[配置细节](docs/configuration.md)
+**流程与工作方法各有职责。** 四档流程规定阶段与门禁，并在相应阶段加载内置元技能；项目业务技能和规则由使用者配置。旧版三个流程不自带技能或提交格式，「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度。同一条规则可由多个技能共享。任务的流程与资源引用在创建时确定；Skill/Rule 正文在每次交互读取最新版本，创建时副本仅用于审计。[新流程说明](docs/adaptive-workflows.md) · [旧版配置细节](docs/configuration.md)
 
 ## 旧版流程兼容
 

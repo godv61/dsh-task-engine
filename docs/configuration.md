@@ -2,7 +2,7 @@
 
 [← 文档导航](README.md)
 
-本页描述兼容保留的 `standard`、`agile`、`minimal` 与 `.dsh/eng.json`。开发分支的新任务可按需求选择四档自适应流程，元技能挂载和可选 SonarQube 位于 `.dsh/meta.json`；见[自适应工程任务](adaptive-workflows.md)。旧任务继续按自己的快照执行。
+本页描述兼容保留的 `standard`、`agile`、`minimal` 与 `.dsh/eng.json`。新任务可按需求选择四档自适应流程，元技能挂载和可选 SonarQube 位于 `.dsh/meta.json`；见[自适应工程任务](adaptive-workflows.md)。旧任务继续按自己的快照执行。
 
 ## 选择流程
 
@@ -53,7 +53,7 @@
 
 **预设不带任何绑定。** 一个只写了 `flow` 的配置就是字面意思：节点没有绑定，阶段仍按流程骨架流转。工作台的「采用推荐配置」只填写可修改的提交文本、产物字段和评审深度，不添加或覆盖技能与规则。项目级技能和规则放在 `.dsh/skills/` 与 `.dsh/rules/`；同一份规则可由多个技能引用。
 
-旧版流程的阶段绑定不自动获得业务技能或规则。开发分支另外内置六个通用元技能；两种路径都由使用者提供项目业务技能与 Rule。工作台可以安装或新建项目级、用户级资源。
+旧版流程的阶段绑定不自动获得业务技能或规则。新流程另外内置六个通用元技能；两种路径都由使用者提供项目业务技能与 Rule。工作台可以安装或新建项目级、用户级资源。
 
 进入阶段后,`dev_task` 按稳定的资源引用读取并披露该阶段技能和规则的最新正文。DSH 技能仍检查 Harness 的 skill 工具成功加载记录；Codex 项目技能使用 `dev_task operation=load_skill`（`skill_name` 传 `codex-project:<名称>`）加载技能及所挂规则，并检查这次加载记录。技能可声明证据类型(`command` / `artifact` / `review` / `manual` / `none`)。`manual` 通过宿主人工审批记录，不要求执行命令；`artifact` 需要该阶段有产物定义且必填字段完整。未声明时沿用命令回执。`status.skill_obligations` 中的 `command_receipts_required` 列出需要命令回执的技能。
 

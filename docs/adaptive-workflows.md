@@ -1,6 +1,6 @@
-# 自适应工程任务（开发分支）
+# 自适应工程任务
 
-本页描述 `feature/adaptive-meta-skills` 的当前实现。npm 已发布的 `0.28.0` 尚未包含这些功能。当前可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
+本页描述 `0.29.0` 的任务级流程。可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
 
 此文描述待发布的任务级流程。旧 `.dsh/eng.json`、三个旧流程与已创建任务的快照继续可读；新需求在工程化会话中先评估复杂度，调用 `dev_task assess` 预览，再用 `create` 的 `complexity` 与 `complexity_reason` 创建任务。复杂度由需求范围和实现依赖决定，`risk_level` 单独判断。
 

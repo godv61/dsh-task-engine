@@ -2,7 +2,7 @@
 
 [← 返回项目首页](../README.md)
 
-DSH Task Engine 是 DeepSeek Harness 的工程任务工作台。先完成安装，再按需要配置技能和规则。`feature/adaptive-meta-skills` 分支新增任务级流程；npm `0.28.0` 尚未包含它。
+DSH Task Engine 是 DeepSeek Harness 的工程任务工作台。先完成安装，再按需要配置技能和规则。`0.29.0` 新增任务级流程、项目初始化与可选 SonarQube CI 审核。
 
 ## 开始使用
 
@@ -13,7 +13,7 @@ DSH Task Engine 是 DeepSeek Harness 的工程任务工作台。先完成安装�
 | [旧版流程配置](configuration.md) | 旧三流程、阶段绑定、配置文件与任务快照。 |
 | [技能与规则安装](resource-install.md) | 系统文件选择、安装预览、项目/个人范围和格式要求。 |
 | [常见问题](faq.md) | 预设区别、资源使用、项目目录与能力限制。 |
-| [完整 HTML 手册](manual.html) | 当前开发分支功能与旧版兼容说明；下载后在浏览器中打开。 |
+| [完整 HTML 手册](manual.html) | 当前功能与旧版兼容说明；下载后在浏览器中打开。 |
 
 ## 参与开发
 
