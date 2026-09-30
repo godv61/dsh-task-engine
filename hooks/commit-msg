@@ -599,7 +599,7 @@ var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? "commit checkpoint rejected") + "\uFF08\u5F53\u524D\u9636\u6BB5: " + state.stage + "\uFF09");
 }
-if (state.sonar_policy?.enabled) {
+if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].includes(state.stage)) {
   const audit = state.sonar_audit;
   const lastCommit = state.commits.findLast((entry) => entry.hash !== void 0)?.hash;
   if (!audit || audit.gate !== "OK" || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd) || !lastCommit || audit.commit_hash !== lastCommit) {

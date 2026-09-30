@@ -299,7 +299,9 @@ if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
 }
 
-if (state.sonar_policy?.enabled) {
+// Adaptive tasks commit at the Test checkpoint so CI can produce the Sonar
+// analysis. The audit only becomes a gate in Code Review and Completion.
+if (state.sonar_policy?.enabled && ['代码审核', '完成'].includes(state.stage)) {
   const audit = state.sonar_audit
   const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
   if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd)

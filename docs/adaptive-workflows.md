@@ -55,7 +55,7 @@
 }
 ```
 
-Token 只放在运行插件的服务进程环境变量，不能写入配置或任务台账。功能测试通过并到达“代码审核”后，先让现有 CI 完成扫描，从 CI 的 `report-task.txt` 取 `ceTaskId`，调用 `dev_task sonar_check`。该操作查询这次 Compute Engine 任务的 `analysisId` 和 Quality Gate，并在配置的分支或合并请求上读取新代码问题。Quality Gate 不是 `OK`、有中高等级问题或代码在审核后变化，都会阻止审核通过与受控提交。修复后重新测试、重新扫描、重新检查。
+Token 只放在运行插件的服务进程环境变量，不能写入配置或任务台账。功能测试通过后，在“测试”检查点提交并推送分支，等待现有 CI 完成扫描。到达“代码审核”后，从 CI 的 `report-task.txt` 取 `ceTaskId`，调用 `dev_task sonar_check`。该操作查询这次 Compute Engine 任务的 `analysisId` 和 Quality Gate，并在配置的分支或合并请求上读取新代码问题。Quality Gate 不是 `OK`、有中高等级问题或代码在审核后变化，都会阻止审核通过与任务完成。修复后重新测试、重新扫描、重新检查。
 
 建议在 CI 的 Sonar job 中保存 `target/sonar/report-task.txt` 为制品，方便取得 `ceTaskId`。你现有的 `sonar.qualitygate.wait=true` 继续作为 CI 门禁；插件读取其分析结果，不重复运行扫描。分支/MR 最新问题列表与指定 `analysisId` 的门禁分别来自 SonarQube API；如果同一分支同时运行多次扫描，应按 CI 的最新扫描重新审核，避免把旧结果当成当前代码。
 

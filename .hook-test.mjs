@@ -194,3 +194,20 @@ test('touching a sensitive path without a high-risk receipt is refused', async (
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('adaptive task can make its first CI commit before Sonar review', async () => {
+  const { adaptiveWorkflow } = await import('./lib/adaptive.js')
+  const config = adaptiveWorkflow('medium')
+  const root = repo('adaptive-sonar', approvedTask({
+    stage: '测试',
+    review: { outcome: 'pending' },
+    sonar_policy: { enabled: true, host_url: 'https://sonar.example.test', project_key: 'example', mode: 'branch', token_env: 'SONAR_TOKEN' },
+    flow: { flow: 'adaptive-medium', version: 1, config },
+  }))
+  try {
+    const result = tryCommit(root, 'first CI scan')
+    assert.equal(result.allowed, true, `the commit must precede its Sonar analysis: ${result.stderr}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
