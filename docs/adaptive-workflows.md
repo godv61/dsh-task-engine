@@ -59,4 +59,6 @@ Token 只放在运行插件的服务进程环境变量，不能写入配置或�
 
 建议在 CI 的 Sonar job 中保存 `target/sonar/report-task.txt` 为制品，方便取得 `ceTaskId`。你现有的 `sonar.qualitygate.wait=true` 继续作为 CI 门禁；插件读取其分析结果，不重复运行扫描。分支/MR 最新问题列表与指定 `analysisId` 的门禁分别来自 SonarQube API；如果同一分支同时运行多次扫描，应按 CI 的最新扫描重新审核，避免把旧结果当成当前代码。
 
+你提供的 CI `rules` 只覆盖 `qdm_sit` 分支和目标为 `qdm_prod` 的合并请求。普通个人开发分支如果没有额外 Sonar job，就无法执行 `sonar_check`；应先确定团队希望在开发分支扫描，还是在合并请求扫描，并将 `mode`、CI 触发条件及任务的分支/MR 目标配成一致。
+
 失败案例可以用 `dev_task learn_rule phase=propose` 生成项目 Rule 预览，注明 Sonar issue key、可复用原因和正确写法；审阅后用 `phase=apply` 写入项目 Rule 并挂到对应项目代码 Skill。它只影响未来任务，不能把一次误报或整个 Quality Profile 自动复制成规则。
