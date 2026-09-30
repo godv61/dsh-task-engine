@@ -1,8 +1,8 @@
 # 自适应工程任务
 
-本页描述 `0.29.0` 的任务级流程。可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
+本页描述 `0.29.2` 的任务级流程。可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
 
-此文描述待发布的任务级流程。旧 `.dsh/eng.json`、三个旧流程与已创建任务的快照继续可读；新需求在工程化会话中先评估复杂度，调用 `dev_task assess` 预览，再用 `create` 的 `complexity` 与 `complexity_reason` 创建任务。复杂度由需求范围和实现依赖决定，`risk_level` 单独判断。
+旧 `.dsh/eng.json` 与已创建任务的快照继续可读，工作台不再提供旧版流程配置页。新需求在工程化会话中先评估复杂度，调用 `dev_task assess` 预览，再用 `create` 的 `complexity` 与 `complexity_reason` 创建任务。复杂度由需求范围和实现依赖决定，`risk_level` 单独判断。
 
 | 复杂度 | 适用情形 | 元技能顺序 |
 | :--- | :--- | :--- |
@@ -25,6 +25,8 @@
 | 代码审核 | 变更和测试结果 | 审核结论；启用 SonarQube 时包含该次 CI 扫描的结果 |
 
 每个节点始终加载同名核心 Skill。`.dsh/meta.json` 的 `meta_bindings` 只增加项目需要的 Skill 名称，不决定整个项目所有会话的流程。相同名称按 `.dsh/skills` → `.agents/skills` → `$DSH_HOME/skills` → 插件内置解析。生效 Skill 的 `profile.json` 持有 Rule 引用；项目同名覆盖用户级时采用项目 Skill 自身的 Rule，不暗中合并。
+
+工作台中点击“配置核心 Skill 的 Rule”即可编辑。若核心 Skill 当前来自内置、用户级或 `.agents/skills`，保存时会先复制为同名 `.dsh/skills` 项目 Skill，再写入该项目 Skill 的 Rule 档案；打开编辑器不会写入文件。
 
 ```json
 {

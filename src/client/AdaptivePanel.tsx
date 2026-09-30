@@ -5,7 +5,7 @@ import { META_STAGES, type MetaSkill } from '../adaptive.ts'
 import type { ResourceRef, SkillProfile } from '../engine.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
-import type { AdaptiveConfigView, AdaptiveProjectConfig, RuleCatalogEntry, SkillCatalogEntry, TaskEngineRemote } from './TaskEngineSection.tsx'
+import type { AdaptiveConfigView, AdaptiveProjectConfig, ReadSkillResult, RuleCatalogEntry, SkillCatalogEntry, TaskEngineRemote } from './TaskEngineSection.tsx'
 import { SkillRuleDialog } from './SkillRuleDialog.tsx'
 
 const card: CSSProperties = { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
@@ -27,7 +27,8 @@ export function AdaptivePanel({ workspace, remote }: { workspace: string; remote
   const [draft, setDraft] = useState<AdaptiveProjectConfig>({})
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([])
   const [rules, setRules] = useState<RuleCatalogEntry[]>([])
-  const [selected, setSelected] = useState<{ skill: ResourceRef; profile: SkillProfile; hash: string } | null>(null)
+  const [selected, setSelected] = useState<{ skill: ResourceRef; profile: SkillProfile; hash: string;
+    template?: ReadSkillResult; templateSource?: string } | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -63,20 +64,42 @@ export function AdaptivePanel({ workspace, remote }: { workspace: string; remote
     update({ ...draft, sonar: { mode: 'branch', token_env: 'SONAR_TOKEN', ...draft.sonar, ...patch } })
   }
   const openRules = (name: string) => {
-    if (effectiveSource(skills, name) !== 'project') {
-      setMessage(`当前 ${name} 来自非项目级；请先在“技能”页创建同名项目 Skill，再编辑它的 Rule。`)
+    setMessage('')
+    const source = skills.filter(skill => skill.name === name)
+      .sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source))[0]?.ref.source
+    if (!source) { setMessage(`技能 ${name} 不在当前目录中，请刷新后重试。`); return }
+    if (source === 'project') {
+      void remote.readProjectSkillProfile({ path: workspace, name }).then(result => {
+        if (!result.ok) { setMessage('读取技能规则失败：' + describeError(result.error)); return }
+        setSelected({ skill: { source: 'project', name }, profile: result.value.profile, hash: result.value.hash })
+      }, error => setMessage('读取技能规则失败：' + describeError(error)))
       return
     }
-    void remote.readProjectSkillProfile({ path: workspace, name }).then(result => {
-      if (!result.ok) { setMessage('读取技能规则失败：' + describeError(result.error)); return }
-      setSelected({ skill: { source: 'project', name }, profile: result.value.profile, hash: result.value.hash })
-    }, error => setMessage('读取技能规则失败：' + describeError(error)))
+    void remote.readSkill({ path: workspace, name, level: source }).then(result => {
+      if (!result.ok) { setMessage('读取技能失败：' + describeError(result.error)); return }
+      if (!result.value.ok) { setMessage('读取技能失败：' + describeError(result.value.error)); return }
+      setSelected({ skill: { source: 'project', name }, profile: { rules: [] }, hash: '',
+        template: result.value, templateSource: source })
+    }, error => setMessage('读取技能失败：' + describeError(error)))
   }
   const saveRules = async (profile: SkillProfile) => {
     if (!selected) return
+    let hash = selected.hash
+    if (selected.template) {
+      const template = selected.template
+      const created = await remote.writeSkill({ path: workspace, level: 'project', name: selected.skill.name,
+        description: template.description, whenToUse: template.whenToUse, content: template.content, createOnly: true })
+      if (!created.ok) throw new Error('创建项目技能失败：' + describeError(created.error))
+      if (!created.value.ok) throw new Error('创建项目技能失败：' + describeError(created.value.error))
+      const initial = await remote.readProjectSkillProfile({ path: workspace, name: selected.skill.name })
+      if (!initial.ok) throw new Error('读取新项目技能失败：' + describeError(initial.error))
+      hash = initial.value.hash
+      setSelected({ ...selected, hash, template: undefined, templateSource: undefined })
+    }
     const result = await remote.writeProjectSkillProfile({ path: workspace, name: selected.skill.name,
-      profile, expected_hash: selected.hash })
+      profile, expected_hash: hash })
     if (!result.ok) throw new Error('保存技能规则失败：' + describeError(result.error))
+    void remote.listSkills(workspace).then(catalog => { if (catalog.ok) setSkills(catalog.value.skills) }, () => {})
     setSelected(null)
     setMessage(`已保存 ${selected.skill.name} 的项目 Rule；新任务将读取此配置。`)
   }
@@ -163,7 +186,11 @@ export function AdaptivePanel({ workspace, remote }: { workspace: string; remote
     message ? createElement('p', { role: 'status', style: styles.status }, message) : null,
     view?.problems.length ? createElement('p', { role: 'alert', style: styles.status }, view.problems.join('；')) : null,
     selected ? createElement(SkillRuleDialog, { key: `${selected.skill.source}:${selected.skill.name}`, skill: selected.skill,
-      profile: selected.profile, rules, description: '项目 Skill 的规则档案保存在其 profile.json，影响之后创建的自适应任务。',
+      profile: selected.profile, rules,
+      description: selected.template
+        ? `当前来自 ${selected.templateSource}。保存时会先复制为同名项目 Skill，再写入项目 Rule；新任务优先使用项目版本。`
+        : '项目 Skill 的规则档案保存在其 profile.json，影响之后创建的自适应任务。',
+      saveLabel: selected.template ? '创建项目 Skill 并保存规则' : '保存配置',
       onSave: saveRules, onClose: () => setSelected(null) }) : null,
   )
 }

@@ -129,6 +129,7 @@ const writeSkillRequestSchema = z.object({
   content: z.string(),
   level: z.enum(['project', 'user']),
   path: z.string().optional(),
+  createOnly: z.boolean().optional(),
 })
 
 /** `installSkill` request: an existing directory-bundle skill plus target level. */

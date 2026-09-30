@@ -44,6 +44,22 @@ test('Codex project Skills are discovered separately; new DSH Skills stay in .ds
   assert.equal(readFileSync(join(root, '.dsh/skills/new-one/SKILL.md'), 'utf8').includes('body'), true)
 })
 
+test('a project Skill can shadow a bundled meta Skill without replacing an existing project copy', async t => {
+  const root = fixture(t)
+  const receiver = { authorizedPath: async path => path }
+  const request = { level: 'project', name: 'requirements-analysis', description: 'Team requirements method',
+    whenToUse: 'During requirement analysis', content: 'Project method', path: root, createOnly: true }
+  const first = await Controller.prototype.writeSkill.call(receiver, request)
+  assert.equal(first.ok, true)
+  const file = join(root, '.dsh/skills/requirements-analysis/SKILL.md')
+  assert.match(readFileSync(file, 'utf8'), /Project method/)
+  const second = await Controller.prototype.writeSkill.call(receiver, { ...request, content: 'Should not replace' })
+  assert.equal(second.ok, false)
+  assert.match(readFileSync(file, 'utf8'), /Project method/)
+  const catalog = await Controller.prototype.listSkills.call(receiver, root)
+  assert.deepEqual(catalog.skills.filter(skill => skill.name === 'requirements-analysis').map(skill => skill.ref.source).sort(), ['bundled', 'project'])
+})
+
 test('a bound Codex Skill loads its attached DSH Rule and reads edits next time', async t => {
   const root = fixture(t)
   const skillFile = join(root, '.agents/skills/sample/SKILL.md')

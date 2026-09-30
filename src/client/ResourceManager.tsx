@@ -157,8 +157,11 @@ export function ResourceManager({ workspace, remote, kind, onConfigureSkill }: {
     if (busy) return
     setBusy(true); setError('')
     try {
-      if (editing === 'new' && rows.some(r => r.name === name && (levelOf(r) === level || levelOf(r) === 'bundled'))) throw new Error('同名资源已存在，请换名或编辑现有资源')
-      const r = kind === 'skill' ? await remote.writeSkill({ name, description, whenToUse, content: body, level, path: workspace }) : await remote.writeRule({ name, content: body, level, path: workspace })
+      if (editing === 'new' && rows.some(r => r.name === name &&
+        ((levelOf(r) === level && r.source !== 'codex-project') || (kind === 'rule' && levelOf(r) === 'bundled')))) {
+        throw new Error('同名资源已存在，请换名或编辑现有资源')
+      }
+      const r = kind === 'skill' ? await remote.writeSkill({ name, description, whenToUse, content: body, level, path: workspace, createOnly: editing === 'new' }) : await remote.writeRule({ name, content: body, level, path: workspace })
       if (!r.ok) throw new Error(fail(r))
       if (!r.value.ok) throw new Error(r.value.error ?? '保存失败')
       const copied = templateSource !== null

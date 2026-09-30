@@ -155,6 +155,8 @@ export interface WriteSkillRequest {
   level: 'project' | 'user'
   /** Absolute workspace directory (required when level is `project`). */
   path?: string
+  /** Refuse to replace an existing project Skill when creating an override. */
+  createOnly?: boolean
 }
 
 /** Install an existing directory-bundle skill (SKILL.md + assets) into a level root. */
@@ -1014,14 +1016,11 @@ export default class TaskEngineController extends TypertRemoteService {
     if (name === '' || request.description.trim() === '') {
       return { ok: false, name, path: '', error: 'skill name and description must not be empty' }
     }
-    if (bundledSkillExists(name)) {
-      return { ok: false, name, path: '', error: `"${name}" is a bundled skill and cannot be overridden; choose a distinct name` }
-    }
     const base = request.level === 'project'
       ? join(request.path ?? '', '.dsh/skills')
       : join(dshHome(), 'skills')
     const file = join(base, name, 'SKILL.md')
-    return writeResourceFile(file, renderSkillFile(name, request.description, request.whenToUse, request.content), name)
+    return writeResourceFile(file, renderSkillFile(name, request.description, request.whenToUse, request.content), name, request.createOnly)
   }
 
   /**
@@ -1242,10 +1241,10 @@ function copyRecommendedResources(
 }
 
 /** Write a resource file, creating parent directories; never throws to the wire. */
-function writeResourceFile(file: string, content: string, name: string): WriteResourceResult {
+function writeResourceFile(file: string, content: string, name: string, createOnly = false): WriteResourceResult {
   try {
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, content, 'utf8')
+    writeFileSync(file, content, { encoding: 'utf8', flag: createOnly ? 'wx' : 'w' })
     return { ok: true, name, path: file }
   } catch (error) {
     return { ok: false, name, path: file, error: error instanceof Error ? error.message : String(error) }

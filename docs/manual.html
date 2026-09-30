@@ -17,7 +17,7 @@
 </head>
 <body>
   <header>
-    <p>DeepSeek Harness · 0.29.1</p>
+    <p>DeepSeek Harness · 0.29.2</p>
     <h1>DSH Task Engine 使用手册</h1>
     <p>按每个需求选择工程路径，用项目 Skill 和 Rule 复用团队规范；SonarQube 审核由项目自行选择。</p>
   </header>
@@ -31,14 +31,13 @@
       <a href="#init">项目初始化</a>
       <a href="#sonar">可选 SonarQube</a>
       <a href="#commit">为什么当前要提交</a>
-      <a href="#legacy">旧版流程</a>
       <a href="#limits">验证边界</a>
     </nav>
     <main>
       <section id="status">
         <h2>版本状态</h2>
-        <div class="note">本手册描述 <code>0.29.1</code> 的自适应流程、项目 Skill/Rule 初始化与可选 SonarQube CI 接入。Sonar 审核当前需要先提交并完成 CI 扫描，尚不支持未提交代码的本地 Sonar 审核。</div>
-        <p>本手册替换了旧版 HTML 说明。旧版三流程的详细操作保存在<a href="manual-legacy.html">历史手册</a>，现行新功能的技术细节见<a href="adaptive-workflows.md">自适应流程说明</a>。</p>
+        <div class="note">本手册描述 <code>0.29.2</code> 的自适应流程、项目 Skill/Rule 初始化与可选 SonarQube CI 接入。Sonar 审核当前需要先提交并完成 CI 扫描，尚不支持未提交代码的本地 Sonar 审核。</div>
+        <p>本手册替换了旧版 HTML 说明。旧任务快照仍可读，工作台已移除旧版流程页。历史操作保存在<a href="manual-legacy.html">历史手册</a>，现行技术细节见<a href="adaptive-workflows.md">自适应流程说明</a>。</p>
       </section>
       <section id="start">
         <h2>开始使用</h2>
@@ -66,7 +65,7 @@
       <section id="skills">
         <h2>元技能、Skill 与 Rule</h2>
         <p>内置六个通用元技能：需求分析、架构设计、任务编排、代码开发、测试、代码审核。每个阶段加载同名核心 Skill；使用者可为阶段增加项目 Skill。每个 Skill 的 <code>profile.json</code> 保存它引用的 Rule 和证据要求。</p>
-        <p>同名 Skill 的选择顺序是 <code>.dsh/skills</code> → <code>.agents/skills</code> → 用户目录 → 插件内置。项目同名 Skill 采用自己的 Rule，不混合用户级同名 Skill 的规则。工作台可编辑项目 Skill 的 Rule 绑定。</p>
+        <p>同名 Skill 的选择顺序是 <code>.dsh/skills</code> → <code>.agents/skills</code> → 用户目录 → 插件内置。项目同名 Skill 采用自己的 Rule，不混合用户级同名 Skill 的规则。点击“配置核心 Skill 的 Rule”即可编辑；若当前是内置或用户级 Skill，保存时先复制为同名项目 Skill，再写入规则档案。</p>
         <pre><code>{
   "meta_bindings": {
     "requirements-analysis": ["my-project-map"],
@@ -106,10 +105,6 @@
         <p>当前插件采用「复用 CI 扫描」的实现：CI 通常扫描已推送的提交，所以当前流程先提交后读取结果。这是本版接入方式的限制。SonarQube for IDE 的 Connected Mode 可以在本地未提交代码上应用服务端 Quality Profile 的部分规则，但它的本地分析不等于完整服务端 Quality Gate；本插件当前没有接入这种本地分析。</p>
         <div class="note warn">如果团队要求「功能通过 → 未提交代码审核 → 修复 → 审核通过 → 再提交」，当前 Sonar 接入还不满足这一顺序。不要把本版 CI 检查描述为提交前 Sonar 审核。</div>
         <p>参考：<a href="https://docs.sonarsource.com/sonarqube-for-intellij/using/rules">SonarQube for IntelliJ 规则与 Connected Mode</a>、<a href="https://docs.sonarsource.com/sonarqube-server/2025.4/user-guide/connected-mode">SonarQube Server 的本地分析说明</a>。</p>
-      </section>
-      <section id="legacy">
-        <h2>旧版流程兼容</h2>
-        <p>已有 <code>.dsh/eng.json</code> 的项目仍可在「旧版流程」管理 <code>standard</code>、<code>agile</code>、<code>minimal</code>。未带 <code>complexity</code> 的旧调用继续按旧配置运行；旧任务继续使用创建时的快照。细节见<a href="configuration.md">旧流程配置</a>和<a href="manual-legacy.html">历史 HTML 手册</a>。</p>
       </section>
       <section id="limits">
         <h2>验证边界</h2>

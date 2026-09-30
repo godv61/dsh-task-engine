@@ -15,7 +15,6 @@ import { workbenchTheme } from './workbench-theme.ts'
 import { styles } from './styles.ts'
 import type { WorkspaceItem } from './shared.ts'
 import type { TaskEngineRemote } from './TaskEngineSection.ts'
-import { TaskEngineSection } from './TaskEngineSection.tsx'
 import { AdaptivePanel } from './AdaptivePanel.tsx'
 import { InitPanel } from './InitPanel.tsx'
 import { SkillManager } from './SkillManager.tsx'
@@ -84,7 +83,6 @@ const closeStyle: CSSProperties = {
 const TABS = [
   { id: 'init', label: '项目初始化' },
   { id: 'adaptive', label: '自适应流程' },
-  { id: 'flow', label: '旧版流程' },
   { id: 'tasks', label: '任务台账' },
   { id: 'skills', label: '技能' },
   { id: 'rules', label: '规则' },
@@ -146,9 +144,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
           ? createElement(InitPanel, { workspace: current, remote })
           : tab === 'adaptive'
             ? createElement(AdaptivePanel, { workspace: current, remote })
-          : tab === 'flow'
-            ? createElement(TaskEngineSection, { workspace: current, remote })
-            : tab === 'tasks'
+          : tab === 'tasks'
               ? createElement(TaskLedger, { workspace: current, remote })
               : tab === 'skills'
                 ? createElement(SkillManager, { workspace: current, remote })
