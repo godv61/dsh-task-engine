@@ -17,7 +17,7 @@
 </head>
 <body>
   <header>
-    <p>DeepSeek Harness · 0.29.2</p>
+    <p>DeepSeek Harness · 0.29.3</p>
     <h1>DSH Task Engine 使用手册</h1>
     <p>按每个需求选择工程路径，用项目 Skill 和 Rule 复用团队规范；SonarQube 审核由项目自行选择。</p>
   </header>
@@ -36,7 +36,7 @@
     <main>
       <section id="status">
         <h2>版本状态</h2>
-        <div class="note">本手册描述 <code>0.29.2</code> 的自适应流程、项目 Skill/Rule 初始化与可选 SonarQube CI 接入。Sonar 审核当前需要先提交并完成 CI 扫描，尚不支持未提交代码的本地 Sonar 审核。</div>
+        <div class="note">本手册描述 <code>0.29.3</code> 的自适应流程、项目 Skill/Rule 初始化与可选 SonarQube CI 接入。Sonar 审核当前需要先提交并完成 CI 扫描，尚不支持未提交代码的本地 Sonar 审核。</div>
         <p>本手册替换了旧版 HTML 说明。旧任务快照仍可读，工作台已移除旧版流程页。历史操作保存在<a href="manual-legacy.html">历史手册</a>，现行技术细节见<a href="adaptive-workflows.md">自适应流程说明</a>。</p>
       </section>
       <section id="start">
@@ -47,7 +47,7 @@
           <li>新建「工程化开发引擎」会话并描述需求。模型先分析复杂度，用 <code>dev_task assess</code> 预览，再在创建任务时给出 <code>complexity</code> 和理由。</li>
           <li>在「任务台账」查看阶段、验证、审核及 Sonar 记录。每个任务独立选择流程；同一项目里的其他会话不会被统一推入同一流程。</li>
         </ol>
-        <p>工作台的「项目初始化」仍可维护 <code>AGENTS.md</code>；生成项目 Skill/Rule 使用会话中的 <code>dev_task init_project</code>。</p>
+        <p>工作台「项目初始化」页分开显示项目 Skill/Rule 初始化与 <code>AGENTS.md</code> 生成。前者可复制请求到工程化开发引擎会话，再由 <code>dev_task init_project</code> 执行；页面本身不会直接生成项目 Skill/Rule。</p>
       </section>
       <section id="flows">
         <h2>四档任务流程</h2>
@@ -76,6 +76,7 @@
       </section>
       <section id="init">
         <h2>项目初始化</h2>
+        <p>从「自适应流程」页顶部点击「初始化项目 Skill / Rule」，或直接进入「项目初始化」页。点击「复制初始化请求」，在项目根工作区的新「工程化开发引擎」会话中粘贴发送。此页下方的 <code>AGENTS.md</code> 生成是另一项独立功能。</p>
         <p>在项目工作区用 <code>dev_task init_project phase=inspect</code> 扫描目录和常见构建清单，取得项目结构、技术栈及可证实版本。模型再检查代表性源码，拟定项目地图、技术栈、后端或前端开发等 Skill 与 Rule。</p>
         <ol>
           <li><code>phase=inspect</code>：只读扫描并返回建议。</li>

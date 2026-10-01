@@ -1,6 +1,6 @@
 # 自适应工程任务
 
-本页描述 `0.29.2` 的任务级流程。可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
+本页描述 `0.29.3` 的任务级流程。可选 SonarQube 接入复用 CI 扫描，要求先提交并推送才能审核；它还不能对未提交代码执行 Sonar 检查。
 
 旧 `.dsh/eng.json` 与已创建任务的快照继续可读，工作台不再提供旧版流程配置页。新需求在工程化会话中先评估复杂度，调用 `dev_task assess` 预览，再用 `create` 的 `complexity` 与 `complexity_reason` 创建任务。复杂度由需求范围和实现依赖决定，`risk_level` 单独判断。
 
@@ -40,6 +40,8 @@
 任务创建时冻结实际的流程、Skill 来源和 Rule 引用。运行时仍读取相同来源的最新正文并报告漂移，因此团队修改规范后，进行中的任务应重新核查已有结论。
 
 ## 初始化项目知识
+
+工作台“项目初始化”页将项目 Skill/Rule 与 `AGENTS.md` 分为两个区域。“自适应流程”页顶部也有“初始化项目 Skill / Rule”入口。点击“复制初始化请求”后，在项目根工作区的新“工程化开发引擎”会话中粘贴发送；页面本身不会启动模型或写入 Skill/Rule。
 
 在项目根目录运行 `dev_task init_project phase=inspect`。扫描读取一级目录与常见构建清单，返回结构、可证实的技术栈版本及建议的多个项目 Skill 名称，例如 `eam-project-map`、`eam-tech-stack`、`eam-code-backend`。模型结合实际源码、测试和现有治理文件拟定 Skill/Rule 内容；`phase=propose` 预览文件与挂载关系；用相同内容及哈希调用 `phase=apply` 才写入 `.dsh/skills`、`.dsh/rules` 和 `.dsh/meta.json`。已有同名资源不会被 init 覆盖。扫描结果只提供证据，旧代码中的偶发写法不能自动成为团队规则。
 

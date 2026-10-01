@@ -22,7 +22,8 @@ function effectiveSource(entries: SkillCatalogEntry[], name: string): string {
     .sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source))[0]?.source ?? '缺失'
 }
 
-export function AdaptivePanel({ workspace, remote }: { workspace: string; remote: TaskEngineRemote }): ReturnType<typeof createElement> {
+export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: string; remote: TaskEngineRemote;
+  onOpenInit: () => void }): ReturnType<typeof createElement> {
   const [view, setView] = useState<AdaptiveConfigView | null>(null)
   const [draft, setDraft] = useState<AdaptiveProjectConfig>({})
   const [skills, setSkills] = useState<SkillCatalogEntry[]>([])
@@ -121,6 +122,9 @@ export function AdaptivePanel({ workspace, remote }: { workspace: string; remote
     name !== 'eng-delivery' && !(name in META_STAGES)).sort()
   const sonar = draft.sonar ?? {}
   return createElement('div', { style: { ...styles.section, display: 'flex', flexDirection: 'column', gap: 16 } },
+    createElement('div', { style: row },
+      createElement(Button, { variant: 'outline', size: 'sm', onClick: onOpenInit }, '初始化项目 Skill / Rule'),
+      createElement('span', { style: label }, '扫描项目后先预览，确认后写入。')),
     createElement('div', { style: card },
       createElement('strong', null, '按需求选择流程'),
       createElement('span', { style: label }, '每个任务由大模型分析后选择复杂度，任务创建时冻结阶段和生效技能；不同会话可走不同流程。风险等级独立判断。'),
@@ -181,7 +185,7 @@ export function AdaptivePanel({ workspace, remote }: { workspace: string; remote
       createElement(Button, { variant: 'outline', size: 'sm', disabled: loading || saving, onClick: refresh }, '刷新'),
       createElement(Button, { variant: 'primary', size: 'sm', disabled: loading || saving || !dirty, onClick: save },
         saving ? '保存中…' : '保存自适应配置'),
-      createElement('span', { style: label }, '新项目可在工程会话中调用 dev_task init_project：扫描 → 预览 → 写入项目技能与规则。'),
+      createElement('span', { style: label }, '项目 Skill / Rule 初始化入口位于“项目初始化”页。'),
     ),
     message ? createElement('p', { role: 'status', style: styles.status }, message) : null,
     view?.problems.length ? createElement('p', { role: 'alert', style: styles.status }, view.problems.join('；')) : null,

@@ -143,7 +143,7 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
         : tab === 'init'
           ? createElement(InitPanel, { workspace: current, remote })
           : tab === 'adaptive'
-            ? createElement(AdaptivePanel, { workspace: current, remote })
+            ? createElement(AdaptivePanel, { workspace: current, remote, onOpenInit: () => setTab('init') })
           : tab === 'tasks'
               ? createElement(TaskLedger, { workspace: current, remote })
               : tab === 'skills'

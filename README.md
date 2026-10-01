@@ -52,7 +52,7 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 
 | 页面 | 你可以做什么 |
 | :--- | :--- |
-| **项目初始化** | 维护 `AGENTS.md`；工程会话可用 `dev_task init_project` 扫描仓库、预览并生成项目 Skill/Rule。 |
+| **项目初始化** | 分开管理 `AGENTS.md` 与项目 Skill/Rule。后者可在页面复制初始化请求，发给“工程化开发引擎”会话后由 `dev_task init_project` 扫描、预览并应用。 |
 | **自适应流程** | 查看四档任务路径、元技能绑定与可选 SonarQube 审核配置。 |
 | **任务台账** | 查看实施、验证和审核记录，按关键词、阶段或风险筛选。 |
 | **技能** | 安装、编辑技能，并集中维护每个技能唯一的规则列表。 |

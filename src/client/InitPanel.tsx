@@ -25,6 +25,9 @@ const card: CSSProperties = {
   border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '12px 14px',
 }
 
+const projectInitPrompt = (workspace: string): string =>
+  `请在当前项目根工作区 ${workspace} 使用工程化开发引擎初始化项目 Skill 和 Rule。先调用 dev_task init_project（phase=inspect），结合代表性源码、构建文件、测试和已有规范核实扫描结果。按项目实际情况拟定项目结构地图、技术栈、编码方法等 Skill 和必要的 Rule，并标明适用的元技能。调用 phase=propose 展示拟创建的文件、内容和挂载关系；等我审阅确认后再调用 phase=apply。不要覆盖同名资源，也不要把偶发代码写法当成团队规范。`
+
 export function InitPanel({ workspace, remote }: {
   workspace: string
   remote: TaskEngineRemote
@@ -36,6 +39,7 @@ export function InitPanel({ workspace, remote }: {
   const [editing, setEditing] = useState(false)
   const [body, setBody] = useState('')
   const [msg, setMsg] = useState('')
+  const [projectInitMsg, setProjectInitMsg] = useState('')
 
   useEffect(() => {
     if (!generating) {
@@ -106,9 +110,30 @@ export function InitPanel({ workspace, remote }: {
 
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
+      createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill / Rule 初始化'),
+      createElement('p', { style: styles.muted },
+        '扫描代码库并拟定项目地图、技术栈、编码 Skill 和 Rule。先预览生成内容，确认后才写入项目；已有同名资源不会被覆盖。'),
+      createElement('p', { style: styles.muted },
+        '使用方法：关闭此面板，在当前项目根工作区选择“工程化开发引擎”，把下面的请求发给新会话。'),
+      createElement('textarea', { style: { ...styles.textarea, minHeight: 100 }, readOnly: true,
+        'aria-label': '项目 Skill 和 Rule 初始化请求', value: projectInitPrompt(workspace) }),
+      createElement('div', { style: styles.row },
+        createElement(Button, { variant: 'primary', size: 'md', onClick: () => {
+          if (!navigator.clipboard?.writeText) {
+            setProjectInitMsg('当前浏览器不支持一键复制。请直接选中上方请求文本并复制。')
+            return
+          }
+          void navigator.clipboard.writeText(projectInitPrompt(workspace)).then(
+            () => setProjectInitMsg('已复制初始化请求。请在工程化开发引擎会话中粘贴发送。'),
+            () => setProjectInitMsg('复制失败。请直接选中上方请求文本并复制。'))
+        } }, '复制初始化请求'),
+        projectInitMsg ? createElement('span', { role: 'status', style: styles.status }, projectInitMsg) : null),
+    ),
+    createElement('div', { style: card },
+      createElement('h2', { style: { margin: 0, fontSize: 17 } }, 'AGENTS.md 初始化'),
       createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
         createElement(StateDot, { state: exists ? 'done' : 'ongoing' }),
-        createElement('span', { style: styles.bindingLabel }, exists ? `已初始化 · ${view!.lines} 行（上限 200）` : '未初始化'),
+        createElement('span', { style: styles.bindingLabel }, exists ? `AGENTS.md 已存在 · ${view!.lines} 行（上限 200）` : 'AGENTS.md 未创建'),
         view?.path !== undefined
           ? createElement('span', { style: styles.sourceBadge }, `已定位到 ${view.path}`)
           : null,
@@ -172,7 +197,7 @@ export function InitPanel({ workspace, remote }: {
               disabled: generating,
               title: exists ? '用 AI 重新扫描项目并覆盖现有 AGENTS.md' : '用 AI 扫描项目并生成 AGENTS.md',
               onClick: () => { void generate() },
-            }, exists ? '重新初始化（AI 扫描覆盖）' : '让 AI 初始化'),
+            }, exists ? '重新生成 AGENTS.md' : '生成 AGENTS.md'),
             exists
               ? createElement(Button, { variant: 'outline', size: 'md', onClick: startEdit }, '手动编辑')
               : null,
