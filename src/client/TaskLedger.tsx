@@ -92,18 +92,22 @@ function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createElement> | n
   const audit = task.sonar.audit
   if (!audit) return createElement('div', { style: metaLine }, 'SonarQube 已启用，尚未运行代码审核。')
   const source = ({ 'ide-local': '本地规则审核', local: '本机上传扫描', ci: 'CI 扫描' } as Record<string, string>)[task.sonar.source] ?? task.sonar.source
-  const outcome = audit.gate === 'OK' ? '通过' : '未通过'
+  const reviewGate = audit.review_gate ?? audit.gate
+  const outcome = reviewGate === 'OK' ? '通过' : '未通过'
+  const unresolved = audit.unresolved_count ?? audit.blocking_count
   return createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
     createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } },
-      `最近一次 SonarQube 审核：${outcome} · 阻断 ${audit.blocking_count} 条 · 全部 ${audit.findings.length} 条 · ${timeText(audit.checked_at)}`),
+      `最近一次 SonarQube 审核：${outcome} · 未解决 ${unresolved} 条 · 原始命中 ${audit.blocking_count} 条 · ${timeText(audit.checked_at)}`),
     createElement('p', { style: metaLine },
-      `来源：${source}；分析目标：${audit.target}。这是该次审核记录；代码或规则变更后需重新测试并审核。`),
+      `来源：${source}；分析目标：${audit.target}；原始结果：${audit.gate}。这是该次审核记录；代码或规则变更后需重新测试并审核。`),
     audit.report_path ? createElement('p', { style: metaLine }, `审核文件：${audit.report_path}`) : null,
     audit.scanned_files?.length ? createElement('details', null,
       createElement('summary', { style: { cursor: 'pointer', fontSize: 12 } }, `本次分析文件（${audit.scanned_files.length}）`),
       ...audit.scanned_files.map(file => createElement('div', { key: file, style: metaLine }, file))) : null,
     ...audit.uncovered_files.map(file => createElement('div', { key: `uncovered-${file}`, style: metaLine },
       `未覆盖：${file}`)),
+    ...(audit.dispositions ?? []).map(entry => createElement('div', { key: `disposition-${entry.issue_key}`, style: metaLine },
+      `人工确认误报：${entry.issue_key} · ${entry.reason} · ${entry.approved_at}`)),
     audit.findings.length === 0
       ? createElement('p', { style: metaLine }, '没有新增代码问题。')
       : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },

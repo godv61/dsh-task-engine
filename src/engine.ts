@@ -13,6 +13,7 @@
 import type { ProjectType } from './project.ts'
 import type { Complexity } from './adaptive.ts'
 import type { SonarAudit, SonarPolicy } from './sonar.ts'
+import { receiptHasRequiredTests } from './verification-tests.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -372,6 +373,8 @@ export interface VerificationReceipt {
   stdout: string
   /** Captured stderr tail. */
   stderr: string
+  /** Largest nonzero Surefire/Failsafe method count observed in Maven test output; null means no summary. */
+  test_summary?: { count: number | null }
   sandbox?: { mode: string; denied: boolean; enforcement?: string; runnerFailed?: boolean }
   /** Fingerprint of declared task files after validation; code edits invalidate the receipt. */
   scope_hash?: string
@@ -644,6 +647,7 @@ function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConf
       return todosBlockers(state, config).length === 0
     case 'verified': {
       if (!state.verification.passed) return false
+      if (state.verification.receipt && !receiptHasRequiredTests(state.verification.receipt)) return false
       if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
         // A high-risk task's `verified` gate demands a real command receipt, not
         // a model-declared pass: the receipt must come from a run that exited 0
@@ -806,6 +810,9 @@ export function verificationBlockers(state: TaskState, config: WorkflowConfig): 
   const blockers: string[] = []
   if (!state.verification.passed) {
     blockers.push('this flow requires a passing verification at this stage, and the current verification is not passing')
+  }
+  if (state.verification.receipt && !receiptHasRequiredTests(state.verification.receipt)) {
+    blockers.push('Maven verification has no nonzero Surefire/Failsafe test summary; rerun tests with visible results')
   }
   if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
     const receipt = state.verification.receipt

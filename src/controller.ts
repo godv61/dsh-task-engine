@@ -29,7 +29,7 @@ import { saveUserSkillProfile, userSkillProfilePath, withUserSkillProfiles } fro
 import { COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, type MetaSkill } from './adaptive.ts'
 import { hashText } from './snapshot.ts'
 import { sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
-import { validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
+import { localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
@@ -307,11 +307,14 @@ export interface TaskLedgerEntry {
     source: string
     audit?: {
       gate: string
+      review_gate?: string
       checked_at: string
       target: string
       findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
       blocking_count: number
+      unresolved_count?: number
       uncovered_files: string[]
+      dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
       report_path?: string
       scanned_files?: string[]
     }
@@ -931,11 +934,16 @@ export default class TaskEngineController extends TypertRemoteService {
             source: state.sonar_policy.source ?? 'ci',
             ...(state.sonar_audit ? { audit: {
               gate: state.sonar_audit.gate,
+              ...(state.sonar_policy.source === 'ide-local' ? {
+                review_gate: localReviewGate(state.sonar_audit),
+                unresolved_count: unresolvedBlockingFindings(state.sonar_audit).length,
+              } : {}),
               checked_at: state.sonar_audit.checked_at,
               target: state.sonar_audit.target,
               findings: state.sonar_audit.findings.map(({ key, rule, message, severity, file, line }) =>
                 ({ key, rule, message, severity, file, ...(line === undefined ? {} : { line }) })),
               blocking_count: state.sonar_audit.blocking.length,
+              dispositions: state.sonar_audit.dispositions ?? [],
               uncovered_files: state.sonar_audit.uncovered_files ?? [],
               ...(state.sonar_audit.report_path ? { report_path: state.sonar_audit.report_path } : {}),
               ...(state.sonar_audit.scanned_files ? { scanned_files: state.sonar_audit.scanned_files } : {}),

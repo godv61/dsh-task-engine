@@ -57,13 +57,14 @@ import {
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
   type Complexity, type MetaSkill } from './adaptive.ts'
-import { assertLocalSonarReady, inspectSonar, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
+import { assertLocalSonarReady, inspectSonar, localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
 import { inspectLocalRules } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
 import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject } from './project-init.ts'
 import { hashConfig, hashText } from './snapshot.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
+import { mavenTestEvidence } from './verification-tests.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
@@ -1020,9 +1021,11 @@ interface OpArgs {
   issue_key?: string
   rule_name?: string
   learning_reason?: string
+  disposition_reason?: string
   resources?: InitResource[]
   risk_level?: 'standard' | 'high_risk'
   items?: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[]
+  items_mode?: 'merge' | 'replace'
   item_id?: string
   description?: string
   spec_outcome?: 'pass' | 'fail'
@@ -1053,7 +1056,8 @@ interface OpArgs {
 }
 
 /** Normalize the tool's `items` argument into complete TaskItem records. */
-function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[] | undefined, previous: TaskItem[] = []): TaskItem[] {
+function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 'doing' | 'done' }[] | undefined,
+  previous: TaskItem[] = [], mode: 'merge' | 'replace' = 'merge'): TaskItem[] {
   const ids = new Set<string>()
   const result = (items ?? []).map(item => {
     const id = String(item.id ?? '').trim()
@@ -1068,13 +1072,16 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
     const unchanged = old?.title === title && !(old.status === 'done' && status !== 'done')
     return { ...(unchanged ? old : {}), id, title, status }
   })
-  // Replanning untouched work must not silently erase completed items or their audit.
-  const retained = previous.filter(item => !ids.has(item.id)
-    && (item.status === 'done' || item.dispatch !== undefined || item.review !== undefined))
-  if ([...result, ...retained].filter(item => item.status === 'doing').length > 1) {
+  // Incremental updates retain all prior items; an explicit replacement may remove only untouched work.
+  const merged = mode === 'merge'
+    ? [...previous.map(item => result.find(next => next.id === item.id) ?? item),
+      ...result.filter(item => !previous.some(old => old.id === item.id))]
+    : [...result, ...previous.filter(item => !ids.has(item.id)
+      && (item.status === 'done' || item.dispatch !== undefined || item.review !== undefined))]
+  if (merged.filter(item => item.status === 'doing').length > 1) {
     throw new Error('only one implementation item may be doing')
   }
-  return [...result, ...retained]
+  return merged
 }
 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
@@ -1109,7 +1116,7 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   const receipt = state.verification.receipt
   if (receipt !== undefined && receipt.scope_hash !== current) {
     blockers.push('verification is stale after file/scope changes; rerun verify with a real command')
-  } else if (!state.verification.passed && verificationBlockers(state, workflow).length > 0) {
+  } else if (verificationBlockers(state, workflow).length > 0) {
     // Only where the flow actually holds a verification requirement: a task that
     // has not reached a verification gate yet has nothing to re-verify, and
     // reporting it there would block the flow from starting at all.
@@ -1175,9 +1182,14 @@ async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<st
   if (state.sonar_policy.source !== 'ide-local' && (!commit || state.sonar_audit.commit_hash !== commit)) {
     problems.push('SonarQube audit does not match the task\'s latest recorded commit')
   }
-  if (state.sonar_audit.gate !== 'OK') problems.push(state.sonar_policy.source === 'ide-local'
-    ? '本地规则审核未通过' : `SonarQube Quality Gate is ${state.sonar_audit.gate}`)
-  if (state.sonar_audit.blocking.length) problems.push(`${state.sonar_audit.blocking.length} medium/high SonarQube new-code findings remain`)
+  if (state.sonar_policy.source === 'ide-local') {
+    if (localReviewGate(state.sonar_audit) !== 'OK') problems.push('本地规则审核尚有未解决问题或未覆盖文件')
+    const unresolved = unresolvedBlockingFindings(state.sonar_audit)
+    if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`)
+  } else {
+    if (state.sonar_audit.gate !== 'OK') problems.push(`SonarQube Quality Gate is ${state.sonar_audit.gate}`)
+    if (state.sonar_audit.blocking.length) problems.push(`${state.sonar_audit.blocking.length} medium/high SonarQube new-code findings remain`)
+  }
   if (state.sonar_audit.uncovered_files?.length) problems.push(`本地规则审核未覆盖 ${state.sonar_audit.uncovered_files.length} 个新增代码文件`)
   return problems
 }
@@ -1205,10 +1217,11 @@ function taskPlanItemBlockers(state: TaskState): string[] {
 function ruleLearningCandidates(state: TaskState): { rule: string; count: number; example: SonarFinding }[] {
   const audits = [...(state.sonar_history ?? []), state.sonar_audit].filter((audit): audit is SonarAudit => audit !== undefined)
   const learnedKeys = new Set((state.learned_rules ?? []).map(entry => entry.issue_key))
-  const learnedRules = new Set(audits.flatMap(audit => audit.blocking)
+  const eligible = audits.flatMap(audit => unresolvedBlockingFindings(audit))
+  const learnedRules = new Set(eligible
     .filter(issue => learnedKeys.has(issue.key)).map(issue => issue.rule))
   const byRule = new Map<string, { rule: string; count: number; example: SonarFinding; keys: Set<string> }>()
-  for (const issue of audits.flatMap(audit => audit.blocking)) {
+  for (const issue of eligible) {
     if (learnedRules.has(issue.rule)) continue
     const candidate = byRule.get(issue.rule) ?? { rule: issue.rule, count: 0, example: issue, keys: new Set<string>() }
     if (!candidate.keys.has(issue.key)) { candidate.keys.add(issue.key); candidate.count++ }
@@ -1224,6 +1237,15 @@ async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd
   await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
     { kind: 'createIfAbsent' })
   audit.report_path = path
+}
+
+async function updateSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  if (!state.sonar_policy || !audit.report_path) throw new Error('the current Sonar audit has no report to update')
+  const info = await (fs as unknown as WriteFs).lstat(audit.report_path, cwd === undefined ? undefined : { cwd })
+  if (!info) throw new Error('the current Sonar report is missing; rerun sonar_check')
+  await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+    { kind: 'replaceIfVersion', version: info.version })
 }
 
 async function inspectCompletedSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
@@ -1307,7 +1329,7 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
@@ -1343,7 +1365,8 @@ export function registerDevTask(ctx: Context): void {
       complexity_reason: { type: 'string', description: 'Evidence-based reason for the selected complexity (create).' },
       ce_task_id: { type: 'string', description: 'SonarQube Compute Engine task id from a CI scan (sonar_check in CI mode). Omit for local mode: the plugin runs the scanner and reads its task id.' },
       pull_request: { type: 'string', description: 'GitLab merge request IID or PR number when SonarQube mode is pull-request (sonar_check).' },
-      issue_key: { type: 'string', description: 'A blocking SonarQube issue key from this task\'s audit history (learn_rule).' },
+      issue_key: { type: 'string', description: 'A SonarQube finding key: current local audit for sonar_disposition, or audit history for learn_rule.' },
+      disposition_reason: { type: 'string', description: 'Specific explanation of why the current local finding is a false positive (sonar_disposition). Requires human approval and supporting evidence.' },
       rule_name: { type: 'string', description: 'New project Rule name (learn_rule).' },
       learning_reason: { type: 'string', description: 'Why this failure generalizes beyond the current line of code (learn_rule).' },
       resources: { type: 'array', description: 'Project Skill/Rule drafts for init_project propose/apply; content is reviewed before creation.',
@@ -1355,7 +1378,7 @@ export function registerDevTask(ctx: Context): void {
       risk_level: { type: 'string', enum: ['standard', 'high_risk'], description: 'Risk tier (create).' },
       items: {
         type: 'array',
-        description: 'Implementation item list (create/replace). Completed or audited items are retained even when omitted; omitted untouched items are removed. For an existing id, omit title to preserve its title and audit. Changing a reviewed title requires reopening as todo/doing and reviewing again.',
+        description: 'Implementation items (create/items). items defaults to merge by id, retaining omitted entries. Use items_mode=replace only for deliberate replanning; completed or audited items are still retained. For an existing id, omit title to preserve its title and audit.',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -1366,6 +1389,7 @@ export function registerDevTask(ctx: Context): void {
           },
         },
       },
+      items_mode: { type: 'string', enum: ['merge', 'replace'], description: 'items operation: merge by id (default) or explicitly replace untouched items and reorder the supplied list.' },
       item_id: { type: 'string', description: 'Item id to start or review (dispatch/review_item).' },
       description: { type: 'string', description: 'Implementation intent (dispatch); the current agent may execute it directly.' },
       spec_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Specification-conformance verdict (review_item).' },
@@ -1894,9 +1918,50 @@ export function registerDevTask(ctx: Context): void {
             : 'Record review blocked, fix findings, rerun tests and the scan, then call sonar_check again.' }, null, 2)
       }
 
+      if (a.operation === 'sonar_disposition') {
+        if (state.stage !== '代码审核' || state.sonar_policy?.source !== 'ide-local' || !state.sonar_audit) {
+          throw new Error('sonar_disposition only applies to the current ide-local audit in the 代码审核 stage')
+        }
+        if (state.sonar_audit.scope_hash !== await scopeFingerprint(fs, state, cwd)) {
+          throw new Error('the local audit is stale after code changes; rerun verification and sonar_check')
+        }
+        const issue = state.sonar_audit.blocking.find(entry => entry.key === a.issue_key)
+        if (!issue) throw new Error('issue_key must identify a blocking finding in the current local audit')
+        if (state.sonar_audit.dispositions?.some(entry => entry.issue_key === issue.key)) {
+          throw new Error('this finding already has an approved disposition')
+        }
+        if (!a.disposition_reason?.trim() || a.disposition_reason.trim().length < 30
+          || a.disposition_reason.length > 2000 || !a.evidence?.length || a.evidence.length > 6
+          || a.evidence.some(item => !item.trim() || item.length > 500)) {
+          throw new Error('false-positive disposition needs a specific reason of at least 30 characters and non-empty supporting evidence')
+        }
+        const approval = ctx.get('approval') as ApprovalAsk | undefined
+        if (!approval || !exec.agent) throw new Error('false-positive disposition requires the human approval service')
+        const outcome = await approval.request({ agent: exec.agent, toolName: 'dev_task', callId: exec.callId,
+          reason: `本地 Sonar 误报复核：${issue.rule} · ${issue.file}${issue.line === undefined ? '' : `:${issue.line}`}（${issue.key}）。\n原因：${a.disposition_reason.trim()}\n证据：${a.evidence.join('；')}\n仅对此次未变化的本地审核结果有效，不修改服务端规则或原始结果。是否批准？`,
+          signal: exec.signal })
+        if (outcome !== 'allowed-once') throw new Error(`false-positive disposition was not approved (${outcome})`)
+        if (state.sonar_audit.scope_hash !== await scopeFingerprint(fs, state, cwd)) {
+          throw new Error('code changed during false-positive approval; rerun verification and sonar_check')
+        }
+        state.sonar_audit.dispositions = [...(state.sonar_audit.dispositions ?? []), {
+          issue_key: issue.key, kind: 'false_positive', reason: a.disposition_reason.trim(),
+          evidence: a.evidence, approved_at: new Date().toISOString(),
+        }]
+        state.review.outcome = 'pending'
+        const mode = await resolveWriteMode(ctx, a, exec)
+        await updateSonarReport(fs, state, state.sonar_audit, cwd, mode)
+        await writeTask(fs, state, cwd, mode)
+        return JSON.stringify({ approved_issue: issue.key, raw_gate: state.sonar_audit.gate,
+          review_gate: localReviewGate(state.sonar_audit),
+          unresolved_blocking: unresolvedBlockingFindings(state.sonar_audit).length,
+          report_path: state.sonar_audit.report_path,
+          next_action: '其余问题仍需修复或逐项复核；代码或规则变化后重新测试并运行 sonar_check。' }, null, 2)
+      }
+
       if (a.operation === 'learn_rule') {
-        const issue = [state.sonar_audit, ...(state.sonar_history ?? [])].filter(entry => entry !== undefined)
-          .flatMap(entry => entry.blocking).find(entry => entry.key === a.issue_key)
+        const issue = [state.sonar_audit, ...(state.sonar_history ?? [])].filter((entry): entry is SonarAudit => entry !== undefined)
+          .flatMap(entry => unresolvedBlockingFindings(entry)).find(entry => entry.key === a.issue_key)
         if (!issue) throw new Error('learn_rule requires a blocking issue_key recorded by this task\'s SonarQube audit')
         if (!a.rule_name || !RESOURCE_NAME.test(a.rule_name) || !a.content?.trim() || a.content.trim().length < 40
           || !a.learning_reason?.trim()) {
@@ -2077,7 +2142,7 @@ export function registerDevTask(ctx: Context): void {
           note = `file scope set to ${state.files.length} files${state.files.length > 0 ? ': ' + state.files.join(', ') : ' (empty — commits are blocked until files are declared)'}`
           break
         case 'items':
-          state.items = normalizeItems(a.items, state.items)
+          state.items = normalizeItems(a.items, state.items, a.items_mode ?? 'merge')
           note = `items set: ${state.items.map(i => `${i.id}:${i.status}`).join(', ') || 'none'}`
           break
         case 'dispatch': {
@@ -2197,8 +2262,11 @@ export function registerDevTask(ctx: Context): void {
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
             }
+            const testSummary = mavenTestEvidence(command, `${receipt.stdout}\n${receipt.stderr}`)
+            if (testSummary) receipt.test_summary = testSummary
             state.verification = {
-              passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied && !receipt.sandbox?.runnerFailed,
+              passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied
+                && !receipt.sandbox?.runnerFailed && (testSummary === null || (testSummary.count ?? 0) > 0),
               evidence: a.evidence ?? [],
               receipt,
             }

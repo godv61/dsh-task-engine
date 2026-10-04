@@ -23,6 +23,15 @@ export interface SonarFinding {
   line?: number
 }
 
+/** One human-approved exception for a single finding in one unchanged local audit. */
+export interface SonarDisposition {
+  issue_key: string
+  kind: 'false_positive'
+  reason: string
+  evidence: string[]
+  approved_at: string
+}
+
 export interface SonarAudit {
   ce_task_id: string
   analysis_id: string
@@ -34,6 +43,8 @@ export interface SonarAudit {
   commit_hash?: string
   findings: SonarFinding[]
   blocking: SonarFinding[]
+  /** Local-only decisions; never rewrite the analyzer's original gate or server Quality Gate. */
+  dispositions?: SonarDisposition[]
   /** Changed code files for which the local analyzer could not run. */
   uncovered_files?: string[]
   /** Branch or merge request used for new-code findings. */
@@ -106,6 +117,16 @@ export async function assertLocalSonarReady(policy: SonarPolicy, token: string, 
 /** Both SonarQube severity schemes: Standard and Multi-Quality Rule. */
 export function isBlockingFinding(finding: SonarFinding): boolean {
   return ['MAJOR', 'CRITICAL', 'BLOCKER', 'MEDIUM', 'HIGH'].includes(finding.severity.toUpperCase())
+}
+
+export function unresolvedBlockingFindings(audit: SonarAudit): SonarFinding[] {
+  const approved = new Set((audit.dispositions ?? []).filter(entry => entry.kind === 'false_positive')
+    .map(entry => entry.issue_key))
+  return audit.blocking.filter(finding => !approved.has(finding.key))
+}
+
+export function localReviewGate(audit: SonarAudit): 'OK' | 'ERROR' {
+  return unresolvedBlockingFindings(audit).length === 0 && !(audit.uncovered_files?.length) ? 'OK' : 'ERROR'
 }
 
 /** Resolve an exact CI Compute Engine task to its analysis and Quality Gate. */

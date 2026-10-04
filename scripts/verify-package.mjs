@@ -46,6 +46,8 @@ check('orchestration and six meta Skills ship',
   JSON.stringify(listing.filter(line => /^skills\/[^/]+\/SKILL\.md$/u.test(line)).sort())
     === JSON.stringify(bundledSkills.map(name => `skills/${name}/SKILL.md`).sort()))
 check('no bundled business rules ship', !listing.some(line => line.startsWith('rules/')))
+check('only current documentation ships', JSON.stringify(listing.filter(line => line.startsWith('docs/')).sort())
+  === JSON.stringify(['docs/development.md', 'docs/manual.html']))
 
 // 3. files whitelist sanity
 for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs', '.roundtrip-test.mjs', '.filter-test.mjs', '.adaptive-test.mjs']) {

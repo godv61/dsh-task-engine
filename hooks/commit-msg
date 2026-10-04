@@ -29,6 +29,20 @@ var import_node_child_process = require("node:child_process");
 var import_node_fs = __toESM(require("node:fs"), 1);
 var import_node_path = __toESM(require("node:path"), 1);
 
+// src/verification-tests.ts
+function mavenTestEvidence(command, output) {
+  const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
+  const testGoal = /(?:^|\s)(?:test|verify|package|install)(?=\s|$)/iu.test(command);
+  if (!maven || !testGoal) return null;
+  const counts = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:/giu)].map((match) => Number(match[1]));
+  return { count: counts.length ? Math.max(...counts) : null };
+}
+function receiptHasRequiredTests(receipt) {
+  const evidence = mavenTestEvidence(receipt.command, `${receipt.stdout}
+${receipt.stderr}`);
+  return evidence === null || (evidence.count ?? 0) > 0;
+}
+
 // src/engine.ts
 function formatResourceRef(ref) {
   return `${ref.source}:${ref.name}`;
@@ -66,6 +80,7 @@ function guardSatisfied(guard, state2, config2) {
       return todosBlockers(state2, config2).length === 0;
     case "verified": {
       if (!state2.verification.passed) return false;
+      if (state2.verification.receipt && !receiptHasRequiredTests(state2.verification.receipt)) return false;
       if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
         const receipt = state2.verification.receipt;
         return receipt !== void 0 && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted;
@@ -112,6 +127,9 @@ function verificationBlockers(state2, config2) {
   const blockers = [];
   if (!state2.verification.passed) {
     blockers.push("this flow requires a passing verification at this stage, and the current verification is not passing");
+  }
+  if (state2.verification.receipt && !receiptHasRequiredTests(state2.verification.receipt)) {
+    blockers.push("Maven verification has no nonzero Surefire/Failsafe test summary; rerun tests with visible results");
   }
   if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
     const receipt = state2.verification.receipt;

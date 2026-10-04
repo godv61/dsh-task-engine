@@ -3,125 +3,174 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DSH Task Engine 使用手册</title>
+  <title>DSH Task Engine · 使用手册</title>
   <style>
-    :root{--ink:#172535;--muted:#526477;--line:#d8e1eb;--blue:#2155b4;--pale:#edf4ff;--paper:#f5f7fa;--white:#fff}
+    :root{--ink:#172535;--muted:#526477;--line:#d8e1eb;--blue:#2155b4;--pale:#edf4ff;--paper:#f5f7fa;--white:#fff;--warn:#fff2dc}
     *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
-    a{color:var(--blue)}code,pre{font-family:Consolas,"Cascadia Code",monospace}code{background:#eef2f6;padding:.1em .35em;border-radius:.25em}pre{overflow:auto;padding:1rem;background:#14243c;color:#fff;border-radius:.6rem}pre code{padding:0;background:none}
+    a{color:var(--blue)}code,pre{font-family:Consolas,"Cascadia Code",monospace}code{background:#eef2f6;padding:.1em .35em;border-radius:.25em}pre{overflow:auto;padding:1rem;background:#14243c;color:#fff;border-radius:.6rem}pre code{padding:0;background:none;color:inherit}
     header{padding:2.5rem max(1rem,calc((100vw - 1120px)/2));background:linear-gradient(120deg,#143775,#2760bc);color:#fff}header h1{margin:.1rem 0;font-size:2.3rem}header p{max-width:850px;margin:.4rem 0}
-    .layout{width:min(1120px,calc(100% - 2rem));margin:2rem auto;display:grid;grid-template-columns:230px minmax(0,1fr);gap:1.5rem}nav{position:sticky;top:1rem;align-self:start;background:var(--white);border:1px solid var(--line);border-radius:.7rem;padding:1rem}nav a{display:block;padding:.25rem 0}
-    main{min-width:0}section{background:var(--white);border:1px solid var(--line);border-radius:.8rem;padding:1.4rem;margin-bottom:1rem}h2{margin:0 0 .8rem}h3{margin:1.35rem 0 .35rem}p{margin:.5rem 0 1rem}.note{background:var(--pale);border-left:4px solid var(--blue);padding:.75rem 1rem;border-radius:.3rem}.warn{background:#fff2dc;border-left-color:#bc7821}
+    .layout{width:min(1120px,calc(100% - 2rem));margin:2rem auto;display:grid;grid-template-columns:235px minmax(0,1fr);gap:1.5rem}nav{position:sticky;top:1rem;align-self:start;background:var(--white);border:1px solid var(--line);border-radius:.7rem;padding:1rem}nav a{display:block;padding:.24rem 0}
+    main{min-width:0}section{background:var(--white);border:1px solid var(--line);border-radius:.8rem;padding:1.4rem;margin-bottom:1rem}h2{margin:0 0 .8rem}h3{margin:1.35rem 0 .35rem}p{margin:.5rem 0 1rem}.note{background:var(--pale);border-left:4px solid var(--blue);padding:.75rem 1rem;border-radius:.3rem}.warn{background:var(--warn);border-left-color:#bc7821}
     table{border-collapse:collapse;width:100%;font-size:.94rem}th,td{border:1px solid var(--line);padding:.55rem;text-align:left;vertical-align:top}th{background:#edf4ff}ul,ol{padding-left:1.45rem}li+li{margin-top:.3rem}.scroll{overflow-x:auto}
     @media(max-width:760px){.layout{display:block}nav{position:static;margin-bottom:1rem}nav a{display:inline-block;margin-right:.8rem}header{padding:1.5rem 1rem}}@media print{nav{display:none}.layout{display:block;width:100%}section{break-inside:avoid}}
   </style>
 </head>
 <body>
   <header>
-    <p>DeepSeek Harness · 0.29.3</p>
-    <h1>DSH Task Engine 使用手册</h1>
-    <p>按每个需求选择工程路径，用项目 Skill 和 Rule 复用团队规范；SonarQube 审核由项目自行选择。</p>
+    <p>DeepSeek Harness · 当前使用手册</p>
+    <h1>DSH Task Engine</h1>
+    <p>按每次需求选择流程，使用项目 Skill 与 Rule 复用团队规范；需要时再启用 SonarQube 审核。</p>
   </header>
   <div class="layout">
     <nav aria-label="目录">
       <strong>目录</strong>
-      <a href="#status">版本状态</a>
-      <a href="#start">开始使用</a>
-      <a href="#flows">四档任务流程</a>
-      <a href="#skills">元技能与规则</a>
-      <a href="#init">项目初始化</a>
-      <a href="#sonar">可选 SonarQube</a>
-      <a href="#commit">为什么当前要提交</a>
-      <a href="#limits">验证边界</a>
+      <a href="#overview">先理解工作方式</a>
+      <a href="#install">安装与检查</a>
+      <a href="#first-project">首次初始化项目</a>
+      <a href="#skills">Skill 与 Rule</a>
+      <a href="#flows">四档流程与交接</a>
+      <a href="#task">执行一个任务</a>
+      <a href="#tests">测试和证据</a>
+      <a href="#sonar">配置 SonarQube</a>
+      <a href="#findings">审核结果与误报</a>
+      <a href="#ledger">任务台账与文件</a>
+      <a href="#help">常见问题</a>
     </nav>
     <main>
-      <section id="status">
-        <h2>版本状态</h2>
-        <div class="note">本手册描述自适应流程、项目 Skill/Rule 初始化与可选 SonarQube 审核。可复用 CI 结果、上传式本机扫描，也可在未提交工作区运行本地规则审核；新代码范围由参考分支确定。</div>
-        <p>本手册替换了旧版 HTML 说明。旧任务快照仍可读，工作台已移除旧版流程页。历史操作保存在<a href="manual-legacy.html">历史手册</a>，现行技术细节见<a href="adaptive-workflows.md">自适应流程说明</a>。</p>
+      <section id="overview">
+        <h2>先理解工作方式</h2>
+        <p>一个项目可以有很多会话和任务。项目配置保存团队通用的 Skill、Rule 与可选 SonarQube 连接；每个<strong>新任务</strong>由模型根据需求复杂度选择一条流程，创建时冻结阶段顺序。项目配置不会把普通会话或该项目的所有任务强制放进同一流程。</p>
+        <p>元技能负责本阶段要做什么、交给下一阶段什么；项目 Skill 说明如何在该项目做；Rule 给出具体约束。任务台账保存实施项、验证回执与审核记录。模型可以执行工作，但阶段和质量门禁由 <code>dev_task</code> 检查。</p>
+        <div class="note">首次使用的最短路径：安装并重启 → 在工作台选择项目 → 初始化项目 Skill/Rule → 进入“工程化开发引擎”会话描述需求 → 查看任务台账。</div>
       </section>
-      <section id="start">
-        <h2>开始使用</h2>
+
+      <section id="install">
+        <h2>安装与检查</h2>
+        <p>插件必须安装到你实际启动的 DSH Web profile。以下以 <code>web</code> 为例：</p>
+        <pre><code>dsh plugin --profile web add @godv61/dsh-task-engine</code></pre>
+        <p>如果通过 DSH 源码运行，在 DSH 根目录可使用：</p>
+        <pre><code>pnpm dsh plugin --profile web add @godv61/dsh-task-engine
+pnpm dsh web --no-open</code></pre>
         <ol>
-          <li>在使用的 Web profile 中启用插件，重启 Harness Web。</li>
-          <li>进入「工程任务」工作台并选择项目工作区。「自适应流程」用于查看四档路径、给元技能挂载项目 Skill，以及设置可选 SonarQube。</li>
-          <li>新建「工程化开发引擎」会话并描述需求。模型先分析复杂度，用 <code>dev_task assess</code> 预览，再在创建任务时给出 <code>complexity</code> 和理由。</li>
-          <li>在「任务台账」查看阶段、验证、审核及 Sonar 记录。每个任务独立选择流程；同一项目里的其他会话不会被统一推入同一流程。</li>
+          <li>关闭已有的 DSH Web 进程，再用相同 profile 启动，避免旧进程继续加载旧包。</li>
+          <li>侧边栏找到<strong>工程任务</strong>；新建会话能选<strong>工程化开发引擎</strong>。</li>
+          <li>在工作台顶部选择项目工作区。项目路径应是代码库根目录；先确认当前 Git 分支。</li>
         </ol>
-        <p>台账中的实施项按实现先后执行。“已开始”只记录该项进入开发，当前会话可以直接完成，无需派给其他开发者；“待审查”表示该实施项还没有规格与质量审查记录，它与最后的整项代码审核阶段不同。已完成或已有实施/审查记录的项，在重排列表时会保留。高、超高任务离开任务编排前，实施项 ID 必须与计划中逐行列出的 ID 一致。</p>
-        <p>工作台「项目初始化」页分开显示项目 Skill/Rule 初始化与 <code>AGENTS.md</code> 生成。前者可复制请求到工程化开发引擎会话，再由 <code>dev_task init_project</code> 执行；页面本身不会直接生成项目 Skill/Rule。</p>
+        <p>只在某个目录执行 <code>npm install</code> 不会把插件挂进 DSH profile。没有入口时先核对安装和启动的 profile，再查看 Web 启动日志。</p>
       </section>
-      <section id="flows">
-        <h2>四档任务流程</h2>
-        <div class="scroll"><table>
-          <thead><tr><th>档次</th><th>适用情况</th><th>阶段顺序</th></tr></thead>
-          <tbody>
-            <tr><td>低</td><td>边界明确的局部修改</td><td>代码开发 → 测试 → 代码审核 → 完成</td></tr>
-            <tr><td>中</td><td>常规功能或缺陷修复</td><td>需求分析 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
-            <tr><td>高</td><td>跨模块且存在实现先后依赖</td><td>需求分析 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
-            <tr><td>超高</td><td>完整新模块或大范围重构</td><td>需求分析 → 架构设计 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
-          </tbody>
-        </table></div>
-        <p>高档的任务编排按实现先后拆解，记录依赖和交接产物，不按人员分工。风险级别与复杂度分开判断。阶段顺序和门禁在任务创建时冻结，Skill/Rule 正文更新后会在下一次读取时生效并提示漂移。</p>
+
+      <section id="first-project">
+        <h2>首次初始化项目</h2>
+        <p>打开“工程任务 → 项目初始化”，在“项目 Skill / Rule 初始化”复制请求，把它发送到以该项目为工作区的“工程化开发引擎”会话。页面提供入口；实际扫描和写入由会话中的 <code>dev_task init_project</code> 完成。</p>
+        <div class="scroll"><table><thead><tr><th>阶段</th><th>会发生什么</th><th>你要检查什么</th></tr></thead><tbody>
+          <tr><td><code>inspect</code></td><td>只读扫描目录、构建清单与可证明的版本。</td><td>是否看到了主要后端、前端、脚本模块。</td></tr>
+          <tr><td><code>propose</code></td><td>预览拟生成的 Skill、Rule、挂载关系与项目地图覆盖检查。</td><td>技术栈是否来自实际清单；项目地图是否总结整个仓库，而非当前需求。</td></tr>
+          <tr><td><code>apply</code></td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
+        </tbody></table></div>
+        <p>常见产物是 <code>.dsh/skills/&lt;项目名&gt;-project-map/SKILL.md</code>、技术栈和后端/前端开发 Skill，以及 <code>.dsh/rules/</code> 下的项目规则。项目地图写模块职责、依赖、通用入口与版本证据；某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
+        <p>团队共享时，审阅后将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code>、<code>.dsh/meta.json</code> 纳入 Git。Token 和本地审核报告不应随代码提交。</p>
       </section>
+
       <section id="skills">
-        <h2>元技能、Skill 与 Rule</h2>
-        <p>内置六个通用元技能：需求分析、架构设计、任务编排、代码开发、测试、代码审核。每个阶段加载同名核心 Skill；使用者可为阶段增加项目 Skill。每个 Skill 的 <code>profile.json</code> 保存它引用的 Rule 和证据要求。</p>
-        <p>同名 Skill 的选择顺序是 <code>.dsh/skills</code> → <code>.agents/skills</code> → 用户目录 → 插件内置。项目同名 Skill 采用自己的 Rule，不混合用户级同名 Skill 的规则。点击“配置核心 Skill 的 Rule”即可编辑；若当前是内置或用户级 Skill，保存时先复制为同名项目 Skill，再写入规则档案。</p>
-        <pre><code>{
-  "meta_bindings": {
-    "requirements-analysis": ["my-project-map"],
-    "code-development": ["my-project-map", "my-code-backend"]
-  }
-}</code></pre>
-        <p>这个配置位于项目根目录 <code>.dsh/meta.json</code>，只增加技能挂载；四档流程由每个任务自己的复杂度决定。</p>
+        <h2>Skill 与 Rule 如何生效</h2>
+        <p>内置核心 Skill 对应需求分析、架构设计、任务编排、代码开发、测试和代码审核。你可以给这些元技能挂载项目 Skill，并在 Skill 的 <code>profile.json</code> 配置 Rule。项目 Skill 可来自 <code>.dsh/skills/</code>，工作台也能发现 <code>.agents/skills/</code> 中的 Codex 项目技能；用户级资源可跨项目复用。</p>
+        <p><strong>同名 Skill 的优先级：</strong>项目级优先于用户级，用户级优先于插件内置。项目同名版本使用自己的 Rule 列表，不把低优先级版本的 Rule 自动混进来。Rule 挂在 Skill 下，不是给某个阶段随意叠加；同一个 Skill 被不同元技能使用时遵守同一组 Rule。</p>
+        <p>项目挂载保存在 <code>.dsh/meta.json</code>；工作台“自适应流程”可完成配置。编辑正文后，下一次加载读取最新文件，但已创建任务仍按创建时的阶段图和资源引用运行。删除正在引用的 Skill/Rule 会阻止流转。</p>
+        <p>初始化生成的 Rule 应有明确触发条件、适用边界和正确示例。Sonar 审核失败后，只有<strong>真实、已修复、可复用</strong>的案例才适合用 <code>learn_rule propose → apply</code> 写入项目 Rule；误报不应被教给下一次开发。</p>
       </section>
-      <section id="init">
-        <h2>项目初始化</h2>
-        <p>从「自适应流程」页顶部点击「初始化项目 Skill / Rule」，或直接进入「项目初始化」页。点击「复制初始化请求」，在项目根工作区的新「工程化开发引擎」会话中粘贴发送。此页下方的 <code>AGENTS.md</code> 生成是另一项独立功能。</p>
-        <p>在项目工作区用 <code>dev_task init_project phase=inspect</code> 扫描目录和常见构建清单，取得项目结构、技术栈及可证实版本。扫描结果只提供证据和建议名称；模型再检查代表性源码，拟定项目地图、技术栈、后端或前端开发等 Skill 与 Rule。项目地图应总结整个仓库，供不同需求复用；当前需求的专属调用链与方案应写入任务产物或单独的领域 Skill。<code>phase=propose</code> 会检查草稿是否覆盖扫描发现的主要模块和构建清单；应用前仍需审阅职责、依赖与事实。</p>
+
+      <section id="flows">
+        <h2>四档流程与阶段交接</h2>
+        <div class="scroll"><table><thead><tr><th>复杂度</th><th>典型范围</th><th>阶段顺序</th></tr></thead><tbody>
+          <tr><td>低</td><td>边界明确的局部修改</td><td>代码开发 → 测试 → 代码审核 → 完成</td></tr>
+          <tr><td>中</td><td>常规功能或缺陷修复</td><td>需求分析 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
+          <tr><td>高</td><td>跨模块且存在实现先后依赖</td><td>需求分析 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
+          <tr><td>超高</td><td>完整新模块或大范围重构</td><td>需求分析 → 架构设计 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
+        </tbody></table></div>
+        <p>需求分析交付目标、范围、非目标和可验证的验收条件；架构设计交付边界、影响与取舍；任务编排交付按实现先后排列的实施项 ID、依赖和交接产物；代码开发交付变更文件及逐项规格/质量审查；测试交付真实命令与覆盖说明；代码审核交付结论及可选 Sonar 报告。<strong>实施项是推进顺序，不是给团队成员派活。</strong>风险等级与复杂度独立判断。</p>
+      </section>
+
+      <section id="task">
+        <h2>执行一个任务</h2>
         <ol>
-          <li><code>phase=inspect</code>：只读扫描并返回建议。</li>
-          <li><code>phase=propose</code>：预览拟写入的资源及挂载关系。</li>
-          <li><code>phase=apply</code>：使用相同草稿与哈希写入项目目录；已有同名文件不会被覆盖。</li>
+          <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
+          <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
+          <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；已完成或有审查记录的项仍受保护。</li>
+          <li>实现每项时记录 <code>dispatch</code>、<code>review_item</code>；开发者可在当前会话直接实施，不要求分派给别人。变更文件登记在任务 <code>files</code> 范围内。修改代码后旧测试和审核回执会失效。</li>
+          <li>测试阶段调用 <code>verify</code> 执行真实命令；代码审核阶段运行 <code>sonar_check</code>（若启用 Sonar），处理问题后记录 <code>review</code>。通过门禁后按 <code>status.commit</code> 的提示提交并完成任务。</li>
         </ol>
-        <p>应用结果会列出团队配置文件。需要在团队中复用时，将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code> 与 <code>.dsh/meta.json</code> 纳入 Git；任务审核报告可以继续留在本地。</p>
+        <h3>给会话的第一条需求示例</h3>
+        <pre><code>请在当前项目实现“设备授权范围”需求。先读取现有项目 Skill/Rule，
+评估这次需求的复杂度，说明验收条件。需要任务编排时按实现先后列
+实施项和依赖；开发、真实测试、代码审核都按任务台账推进。
+只在当前分支工作，不要推送。</code></pre>
+        <p>会话应先展示复杂度依据和任务状态。若发现已有任务，先核对任务 ID 与分支，避免把这条需求写进其他任务。你可以随时在“任务台账”查看它记录的实施项和下一门禁。</p>
+        <p>一个任务只负责其记录的分支、文件范围和流程。多会话并行时应给不同任务使用独立分支或工作区，避免另一任务的未提交代码混进本次审核。</p>
       </section>
+
+      <section id="tests">
+        <h2>测试和证据</h2>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；对于 Maven <code>test</code>、<code>verify</code>、<code>package</code> 或 <code>install</code> 命令，输出还必须显示 Surefire/Failsafe 至少运行一个测试。输出显示 0 个或没有测试摘要时，任务验证不通过。请使用能输出测试摘要的命令，并核对实际测试报告；不要用只编译、跳过测试的命令冒充功能验证。</p>
+        <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
+      </section>
+
       <section id="sonar">
-        <h2>可选 SonarQube 审核</h2>
-        <p><strong>不使用：</strong>「自适应流程」中的 SonarQube 开关保持关闭，或不在 <code>.dsh/meta.json</code> 写 <code>sonar</code>。不需要 Sonar 服务、Token 或扫描任务；代码审核仍按审核元技能及项目 Rule 进行。</p>
-        <p><strong>使用 SonarQube：</strong>打开开关，填写 SonarQube 地址、项目 Key、扫描来源和分析对象，保存配置。Token 可在同页单独输入并保存到 DSH 本机凭据存储，按项目工作区隔离，重启后仍可用；页面只显示是否已配置，不回显值。原有的 Token 环境变量仍可作为后备来源。新建任务会冻结该选项，已建任务不会被自动修改。</p>
-        <pre><code>{
-  "sonar": {
-    "enabled": true,
-    "host_url": "https://sonarqube.example.com",
-    "project_key": "my-project",
-    "mode": "branch",
-    "source": "ide-local",
-    "reference_branch": "main",
-    "token_env": "SONAR_TOKEN"
-  }
-}</code></pre>
-        <p>Token 不写入项目仓库、任务台账，也不会在页面回显。DSH 的本地凭据是当前操作系统用户可读的本机文件，不能隔离同一用户运行的其他程序。功能验证通过后，在「代码审核」阶段调用 <code>dev_task sonar_check</code>。<strong>本地规则审核（<code>ide-local</code>）：</strong>从项目 Quality Profile 同步可本地运行的规则，只审核当前任务登记文件中相对 Git 参考分支新增的 Java、JS/TS、Vue、CSS、HTML 和 XML 代码；无需 <code>ceTaskId</code>、提交或推送，审核通过后再提交。<strong>CI 结果（<code>ci</code>）：</strong>测试后提交并推送，从 <code>report-task.txt</code> 取 <code>ceTaskId</code>。<strong>上传式本机扫描（<code>local</code>）：</strong>测试后提交，本机运行扫描器并上传分析，无需推送；要求 Developer Edition 或更高版本。后两种方式仅用新代码问题和 <code>new_*</code> Gate 条件阻断；本地规则审核用本地中高级问题和未覆盖文件作为门禁，不代表服务端 Quality Gate。</p>
-        <p>本地规则审核需要在 DSH 服务进程配置 <code>DSH_SONARLINT_JAVA</code>、<code>DSH_SONARLINT_LIB</code> 和 <code>DSH_SONARLINT_PLUGINS</code>，分别指向 Java 运行时、SonarLint 后台 JAR 目录和内置分析器 JAR；Windows 多个插件路径以分号分隔。JS/TS、Vue 和 CSS 分析还需要本机 Node.js。其他语言文件只有在该项目的服务端 Quality Profile 存在生效规则、本地却无法分析时才列为未覆盖并阻止审核；QMS 项目目前没有 SQL 语言的 Quality Profile，SQL 迁移文件仍需单独数据库验证。部分服务端规则无法在本地执行，完整 Quality Gate 仍需 CI 扫描。</p>
-        <p>Quality Profile 决定规则，CI 扫描配置决定分析范围。本地规则审核可在项目配置的 <code>sonar.include_paths</code> 中逐行填写后端目录或文件，与 CI 范围对齐；留空时分析任务登记的全部代码。QMS 当前服务端分析索引只有后端 Java 和 XML 文件。</p>
-        <p>审核结果可在当前项目工作台的「任务台账」中展开“最近一次 SonarQube 审核”查看：包含通过状态、阻断数量、规则、严重程度和文件行号。每次 <code>sonar_check</code> 还会在项目 <code>.dsh/reviews/&lt;任务 ID&gt;/</code> 生成 Markdown 审核文件；结构化记录保存在 <code>.dsh/task-&lt;任务 ID&gt;.json</code>，不包含 Token。可以把报告目录加入项目 <code>.gitignore</code>。代码或 Skill/Rule 变更后须重新测试和审核；旧记录只代表当时的结果。</p>
-        <p><code>sonar_check</code> 和 <code>status</code> 会列出尚未沉淀的阻断案例。失败问题可用 <code>dev_task learn_rule phase=propose</code> 生成项目 Rule 草稿，人工核对是真实且可复用的问题后，再用 <code>phase=apply</code> 挂到项目代码 Skill。误报或一次性问题不会自动变成永久团队规范。</p>
+        <h2>按项目配置 SonarQube</h2>
+        <p><strong>不需要 Sonar：</strong>保持“自适应流程”中的 Sonar 开关关闭；不必填写地址、Key 或 Token。代码审核元技能和项目 Rule 仍会运行。</p>
+        <p><strong>需要 Sonar：</strong>先在工作台顶部选对项目，再开启 Sonar，填写服务地址、项目 Key、分析对象与扫描来源。项目 Key 在 Sonar 项目设置中查；Token 在 Sonar 个人安全设置生成，并需具备所选方式需要的分析或读取权限。Token 在同页单独保存到本机 DSH 凭据存储，按项目工作区隔离，只显示“已配置”，不会写入 <code>.dsh/meta.json</code> 或审核报告。换项目应分别配置。环境变量名可作为后备设置。</p>
+        <div class="scroll"><table><thead><tr><th>页面字段</th><th>怎样填写</th></tr></thead><tbody>
+          <tr><td>服务地址</td><td>填 SonarQube 根地址，例如 <code>https://sonar.example.com</code>，不带项目页面路径。</td></tr>
+          <tr><td>项目 Key</td><td>填当前代码库在 SonarQube 中的项目标识；每个项目可不同。</td></tr>
+          <tr><td>扫描来源</td><td>提交前检查选 <code>ide-local</code>；已有 CI 分析选 <code>ci</code>；本机上传选 <code>local</code>。</td></tr>
+          <tr><td>分析对象</td><td>分支或合并请求，与实际扫描目标一致。本地规则审核使用分支模式。</td></tr>
+          <tr><td>参考分支、审核路径</td><td>本地规则审核填写新代码基线和项目实际扫描的相对目录；不必把其他项目的配置复制过来。</td></tr>
+          <tr><td>Token</td><td>当前项目单独保存；保存后只显示是否已配置，不会回显原值。</td></tr>
+        </tbody></table></div>
+        <div class="scroll"><table><thead><tr><th>扫描来源</th><th>何时适用</th><th>提交/推送</th><th>结果边界</th></tr></thead><tbody>
+          <tr><td><code>ide-local</code> 本地规则审核</td><td>希望在提交前检查未提交的新代码；本机有 SonarLint 后台组件。</td><td>无需提交、无需推送。</td><td>同步项目 Quality Profile 中可本地执行的规则；不产生服务端 CE task，也不等同完整服务端 Quality Gate。</td></tr>
+          <tr><td><code>ci</code> CI 结果</td><td>已有 CI 扫描，能取得该次分析的 CE task ID。</td><td>按 CI 触发条件提交并推送。</td><td>读取本次服务端分析的新代码问题及 Quality Gate 条件。</td></tr>
+          <tr><td><code>local</code> 上传式本机扫描</td><td>本机能运行扫描器，SonarQube 支持保存任务分支分析。</td><td>先提交；不要求推送。</td><td>扫描上传到 Sonar 服务端，Community Build 的分支扫描会被预先拒绝。</td></tr>
+        </tbody></table></div>
+        <h3>本地规则审核的额外设置</h3>
+        <p>选择 Git 参考分支或提交作为“新代码”基线；<code>include_paths</code> 填项目实际扫描的目录，例如仅后端 Maven 模块。代码审核会先用 Git 差异核对这些目录中的变更是否全部登记到任务 <code>files</code>；漏登时直接报出文件名并要求补齐，避免“只扫一部分却显示全部覆盖”。项目范围之外的前端或 SQL 不能被误称为已通过本次后端审核。</p>
+        <p>DSH 服务进程需配置 <code>DSH_SONARLINT_JAVA</code>、<code>DSH_SONARLINT_LIB</code>、<code>DSH_SONARLINT_PLUGINS</code>，分别指向 Java、SonarLint 后台 JAR 目录和分析器 JAR；Windows 多个插件路径用分号分隔。JS/TS/Vue/CSS 分析还需要 Node.js。若项目为某种语言启用了规则而本地无法分析，报告列“未覆盖”并阻断。部分服务端规则本身无法在本地执行；需要完全相同的服务端结论时使用 CI 扫描。</p>
+        <div class="note warn">Sonar 配置是每项目独立的；启用规则不保证规则本身适用于所有代码。碰到疑似自定义规则误报，应核对语义和证据，不应为了让计数归零而破坏业务实现。</div>
       </section>
-      <section id="commit">
-        <h2>分支与提交的关系</h2>
-        <p>CI 和上传式扫描把结果保存在 SonarQube 的分支或合并请求下，因此需要提交并按目标查询。<strong>本地规则审核只使用 Git 参考分支计算新增行，不在 Sonar 服务端创建分支分析。</strong>它可以在首次提交之前运行，适用于 Community Build。</p>
-        <p>上传式本机扫描需要本机扫描器和构建环境、SonarQube Server Developer Edition 或更高版本，并已分析参考分支；Community Build 会在上传前拒绝。本地规则审核使用独立 SonarLint 后台运行服务端 Quality Profile 可支持的规则，无需打开 IDEA。</p>
-        <div class="note warn">本地规则审核当前覆盖 Java、常见前端与 XML 差异，无法替代服务端 Quality Gate；如需与服务端规则执行结果完全一致，仍需使用 CI 扫描。</div>
-        <p>参考：<a href="https://docs.sonarsource.com/sonarqube-for-intellij/using/rules">SonarQube for IntelliJ 规则与 Connected Mode</a>、<a href="https://docs.sonarsource.com/sonarqube-server/2025.4/user-guide/connected-mode">SonarQube Server 的本地分析说明</a>。</p>
+
+      <section id="findings">
+        <h2>查看问题、处理误报与沉淀规则</h2>
+        <p>测试通过后，在“代码审核”阶段运行 <code>dev_task sonar_check</code>。任务台账可展开最近一次审核，查看来源、原始结果、问题规则、严重程度、文件位置、人工复核状态与未解决数量。每次扫描在项目 <code>.dsh/reviews/&lt;任务 ID&gt;/</code> 生成一份 Markdown 报告；项目可将该报告目录加入 <code>.gitignore</code>。结构化结果保存在 <code>.dsh/task-&lt;任务 ID&gt;.json</code>。</p>
+        <p>真实问题：修复代码，重新验证并复扫。<strong>仅本地规则审核的误报：</strong>使用 <code>dev_task sonar_disposition</code> 指定当前报告中的 <code>issue_key</code>，说明具体误报原因并提供证据；DSH 请求人工逐条批准。批准记录写回本次任务与报告，原始规则结果仍显示原来的 <code>ERROR</code>，任务门禁另显示复核后的未解决数量。未批准、证据不足、代码变化或重新扫描后都不能沿用该处置。CI 和上传式扫描的服务端 Quality Gate 不能通过该操作绕过，应在 SonarQube 中按组织流程处理。</p>
+        <p>你可以直接对会话说：“请打开任务台账中这条 Sonar 告警，核对代码语义并给出理由和源码证据。确认是误报后发起逐项人工复核；未经我批准不要放行，也不要修改代码来藏掉告警。”审批请求会列出规则、文件、问题编号、理由和证据。多条告警需要分别审查；一条被批准不会自动豁免同规则的其他位置。</p>
+        <p>真实且具有通用性的修复案例，可以先用 <code>learn_rule phase=propose</code> 预览项目 Rule，再用 <code>phase=apply</code> 挂到对应开发 Skill；会影响之后创建的任务。已确认误报不列为学习候选，不自动转成团队规范。发现服务器自定义规则本身过宽时，应把例子反馈给规则维护者修正其实现或适用范围。</p>
       </section>
-      <section id="limits">
-        <h2>验证边界</h2>
-        <ul>
-          <li>本地规则审核已在 QMS 真实 SonarQube 项目用未提交的需求代码走到 <code>dev_task sonar_check</code>，发现中高级问题并正确阻止审核通过；SQL 迁移与安装包端到端验证仍待完成。</li>
-          <li>服务端扫描的新代码问题列表取自查询时的目标分支或请求；同一目标并发扫描时，应使用当前扫描的 <code>ceTaskId</code> 重新核对。</li>
-          <li>本地钩子与任务门禁只约束受控操作；远程合并、发布以及组织级 CI 策略由项目自行管理。</li>
-        </ul>
-        <p>详细的字段、交接契约和状态说明见<a href="adaptive-workflows.md">自适应工程任务</a>。最后更新：2026-10-02。</p>
+
+      <section id="ledger">
+        <h2>任务台账与项目文件</h2>
+        <p>“待开始”表示实施项还没执行；“实施中”表示已记录开始；“待审查”表示缺逐项规格或质量审查；“代码审核”是整个任务的后续阶段。它们是不同层级的状态，不代表已经把任务分派给团队成员。任务台账会显示当前阶段、实施项、验证回执、审核结果和可选 Sonar 明细。</p>
+        <div class="scroll"><table><thead><tr><th>位置</th><th>用途</th><th>团队共享建议</th></tr></thead><tbody>
+          <tr><td><code>.dsh/meta.json</code></td><td>项目元技能挂载与可选 Sonar 非秘密配置。</td><td>审阅后提交。</td></tr>
+          <tr><td><code>.dsh/skills/</code>、<code>.dsh/rules/</code></td><td>项目 Skill、Rule 与各 Skill 的 <code>profile.json</code>。</td><td>审阅后提交。</td></tr>
+          <tr><td><code>.dsh/task-&lt;id&gt;.json</code></td><td>该任务的阶段、实施项、回执和审核状态。</td><td>按团队任务留痕政策决定。</td></tr>
+          <tr><td><code>.dsh/reviews/</code></td><td>逐次 Sonar Markdown 报告及误报处置。</td><td>可忽略，保留本机；不含 Token。</td></tr>
+          <tr><td>本机 DSH 项目凭据</td><td>Sonar Token。</td><td>不提交、不回显。</td></tr>
+        </tbody></table></div>
+      </section>
+
+      <section id="help">
+        <h2>常见问题</h2>
+        <h3>装好后看不到入口？</h3>
+        <p>检查插件是否装在正在运行的 Web profile，关闭旧 Web 进程并重启，查看启动日志。普通预设与“工程化开发引擎”预设的工具不同。</p>
+        <h3>为什么初始化没有直接生成文件？</h3>
+        <p>工作台提供复制请求；在项目根目录的工程化会话中执行 <code>init_project inspect → propose → apply</code>，应用前需审阅提案。</p>
+        <h3>为什么 Maven 显示构建成功，任务仍不能前进？</h3>
+        <p>如果验证命令是 Maven 测试目标，插件还要求输出中有至少一个实际测试。检查 Surefire 版本、是否跳过测试、JUnit 引擎和测试摘要；重新运行可见摘要的命令。</p>
+        <h3>为什么 Sonar 报了业务上必须创建的对象？</h3>
+        <p>自定义规则可能过宽。保留告警，核查每行对象是否必须独立；本地分析可逐条提交证据由人批准，服务端规则仍应由维护者修正。不要复用同一个实体或挪代码隐藏告警。</p>
+        <h3>为什么审核提示补文件范围？</h3>
+        <p>本次项目扫描范围内有 Git 新增/修改文件未登记到任务 <code>files</code>。核对提示的文件是否属于本任务；属于则补进 <code>scope</code> 并重新验证，不属于则使用独立分支或工作区隔离任务。</p>
+        <h3>已有任务会随着项目配置改变吗？</h3>
+        <p>不会更换创建时冻结的阶段图和资源引用；所引用 Skill/Rule 的正文下一次读取会更新。代码、范围或规则变化后，应重新检查证据、测试和审核。</p>
       </section>
     </main>
   </div>

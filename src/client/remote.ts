@@ -234,8 +234,10 @@ const taskLedgerViewSchema = z.object({
     sonar: z.object({
       source: z.string(),
       audit: z.object({
-        gate: z.string(), checked_at: z.string(), target: z.string(),
-        blocking_count: z.number(), uncovered_files: z.array(z.string()),
+        gate: z.string(), review_gate: z.string().optional(), checked_at: z.string(), target: z.string(),
+        blocking_count: z.number(), unresolved_count: z.number().optional(), uncovered_files: z.array(z.string()),
+        dispositions: z.array(z.object({ issue_key: z.string(), kind: z.string(), reason: z.string(),
+          evidence: z.array(z.string()), approved_at: z.string() })).optional(),
         report_path: z.string().optional(), scanned_files: z.array(z.string()).optional(),
         findings: z.array(z.object({
           key: z.string(), rule: z.string(), message: z.string(), severity: z.string(),

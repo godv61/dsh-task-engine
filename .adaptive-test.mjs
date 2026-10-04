@@ -340,3 +340,45 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
     [{ source: 'project', name: 'handle-null-boundary' }])
   assert.deepEqual(JSON.parse(await f.call({ operation: 'status', task_id: 'L-1' })).rule_learning_candidates, [])
 })
+
+test('a local false positive needs human approval, keeps the raw gate, and expires after code changes', async () => {
+  let allow = false
+  const approvals = []
+  const shell = { resolve: request => request, execute: async () => ({ result: async () => ({
+    exitCode: 0, timedOut: false, aborted: false, stdout: { text: 'checks passed' }, stderr: { text: '' },
+  }) }) }
+  const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true,
+    host_url: 'https://sonar.example', project_key: 'project', mode: 'branch', source: 'ide-local',
+    reference_branch: 'main' } }) }, { shell,
+    approval: { request: async request => { approvals.push(request); return allow ? 'allowed-once' : 'rejected' } } })
+  await f.call({ operation: 'create', task_id: 'FP-1', title: 'one local finding', branch: 'feature',
+    complexity: 'low', complexity_reason: 'Local correction', files: ['app.js'] })
+  await f.call({ operation: 'verify', task_id: 'FP-1', command: 'check' })
+  const state = f.state('FP-1')
+  state.stage = '代码审核'
+  const finding = { key: 'local-fp-1', rule: 'mycompany-java:AvoidObjectCreationInLoop',
+    message: 'Avoid allocation', severity: 'MAJOR', file: 'app.js', line: 3 }
+  state.sonar_audit = { ce_task_id: 'local', analysis_id: 'LOCAL-1', gate: 'ERROR',
+    checked_at: '2026-10-05T00:00:00.000Z', scope_hash: state.verification.receipt.scope_hash,
+    findings: [finding], blocking: [finding], target: 'main', scanned_files: ['app.js'],
+    report_path: '.dsh/reviews/FP-1/local.md' }
+  f.files.set(join(f.cwd, '.dsh/reviews/FP-1/local.md'), 'original report')
+  f.files.set(join(f.cwd, '.dsh/task-FP-1.json'), JSON.stringify(state))
+  const args = { operation: 'sonar_disposition', task_id: 'FP-1', issue_key: finding.key,
+    disposition_reason: '每次循环需要独立实体对象，复用同一个实例会让多条授权记录互相覆盖，属于规则误报。',
+    evidence: ['授权实体逐行添加到集合，复用对象会导致所有行指向末次值'] }
+  await assert.rejects(f.call(args), /not approved/)
+  assert.equal(f.state('FP-1').sonar_audit.dispositions, undefined)
+  allow = true
+  const result = JSON.parse(await f.call(args))
+  assert.equal(result.raw_gate, 'ERROR')
+  assert.equal(result.review_gate, 'OK')
+  assert.equal(f.state('FP-1').sonar_audit.dispositions.length, 1)
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status', task_id: 'FP-1' })).rule_learning_candidates, [])
+  assert.match(approvals.at(-1).reason, /local-fp-1/)
+  assert.match(f.files.get(join(f.cwd, state.sonar_audit.report_path)), /逐项误报复核/)
+  await f.call({ operation: 'review', task_id: 'FP-1', outcome: 'pass' })
+  await assert.rejects(f.call({ operation: 'learn_rule', task_id: 'FP-1', issue_key: finding.key }), /blocking issue_key/)
+  f.files.set(join(f.cwd, 'app.js'), 'new source')
+  await assert.rejects(f.call({ operation: 'review', task_id: 'FP-1', outcome: 'pass' }), /stale/)
+})

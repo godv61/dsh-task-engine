@@ -160,11 +160,14 @@ export interface TaskLedgerEntry {
     source: string
     audit?: {
       gate: string
+      review_gate?: string
       checked_at: string
       target: string
       findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
       blocking_count: number
+      unresolved_count?: number
       uncovered_files: string[]
+      dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
       report_path?: string
       scanned_files?: string[]
     }

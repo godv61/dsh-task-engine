@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { changedLines, uncoveredLocalFiles } from './lib/sonarlint-local.js'
+import { changedLines, missingLocalAuditScope, uncoveredLocalFiles } from './lib/sonarlint-local.js'
 import { isIncludedAuditPath, validAuditIncludePaths } from './lib/sonar.js'
 import { renderSonarReport, sonarReportPath } from './lib/sonar-report.js'
 
@@ -40,6 +40,12 @@ test('unsupported files block only when the project has active rules for their l
   assert.deepEqual(uncoveredLocalFiles(paths, profiles), ['script.py'])
   assert.deepEqual(uncoveredLocalFiles(paths, [...profiles, { language: 'plsql', activeRuleCount: 5 }]),
     ['migration.sql', 'script.py'])
+})
+
+test('local audit detects changed backend files omitted from the task scope', () => {
+  assert.deepEqual(missingLocalAuditScope(['fp-bussiness/A.java', 'fp-bussiness/B.java'],
+    ['fp-bussiness/A.java', 'fp-ruoyi-ui/view.vue']), ['fp-bussiness/B.java'])
+  assert.deepEqual(missingLocalAuditScope(['fp-bussiness/A.java'], ['./FP-BUSSINESS\\A.java']), [])
 })
 
 test('local Sonar audit considers Git new code but excludes generated DSH records', async () => {

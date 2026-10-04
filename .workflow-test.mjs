@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask, validateWorkflow } from './lib/engine.js'
+import { newTask, validateWorkflow, verificationBlockers } from './lib/engine.js'
 import { adoptRecommendation, resolveFlow, retainStageBindings } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
@@ -217,10 +217,40 @@ test('重排实施项时不静默丢弃已完成项和审查记录', async () =>
   await f.call({ operation: 'review_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass' })
   await f.call({ operation: 'items', items: [{ id: 'I1', status: 'done' }, { id: 'I2' }] })
   await f.call({ operation: 'items', items: [{ id: 'I3', title: 'service', status: 'todo' }] })
+  assert.deepEqual(f.state().items.map(item => item.id), ['I1', 'I2', 'I3'])
+  assert.equal(f.state().items[0].status, 'done')
+  assert.equal(f.state().items[0].review.quality.outcome, 'pass')
+  assert.equal(f.state().items[0].dispatch.description, 'direct implementation')
+  await f.call({ operation: 'items', items_mode: 'replace', items: [{ id: 'I3', title: 'service', status: 'todo' }] })
   assert.deepEqual(f.state().items.map(item => item.id), ['I3', 'I1'])
-  assert.equal(f.state().items[1].status, 'done')
-  assert.equal(f.state().items[1].review.quality.outcome, 'pass')
-  assert.equal(f.state().items[1].dispatch.description, 'direct implementation')
+})
+
+test('Maven verify rejects zero or missing Surefire tests even when the command exits zero', async () => {
+  let output = 'Tests run: 0, Failures: 0, Errors: 0, Skipped: 0'
+  const shell = { resolve: request => request, execute: async () => ({ result: async () => ({
+    exitCode: 0, timedOut: false, aborted: false, stdout: { text: output }, stderr: { text: '' },
+  }) }) }
+  const f = fixture('交付', {}, { shell })
+  await f.call({ operation: 'verify', command: 'mvn -q test' })
+  assert.equal(f.state().verification.passed, false)
+  assert.equal(f.state().verification.receipt.test_summary.count, 0)
+  output = 'BUILD SUCCESS'
+  await f.call({ operation: 'verify', command: 'mvn -q test' })
+  assert.equal(f.state().verification.passed, false)
+  assert.equal(f.state().verification.receipt.test_summary.count, null)
+  output = 'Tests run: 23, Failures: 0, Errors: 0, Skipped: 0'
+  await f.call({ operation: 'verify', command: 'mvn test' })
+  assert.equal(f.state().verification.passed, true)
+  assert.equal(f.state().verification.receipt.test_summary.count, 23)
+})
+
+test('a previously stored Maven zero-test pass is blocked by current workflow gates', () => {
+  const f = fixture('代码审核')
+  const state = f.state()
+  state.verification = { passed: true, evidence: [], receipt: { command: 'mvn test', exit_code: 0,
+    timed_out: false, aborted: false, started_at: 'now', finished_at: 'now',
+    stdout: 'Tests run: 0, Failures: 0, Errors: 0, Skipped: 0', stderr: '' } }
+  assert.match(verificationBlockers(state, state.flow.config).join(' '), /no nonzero Surefire/)
 })
 
 test('派发立即反映进行中，重派不复用旧审核且保持单一进行项', async () => {

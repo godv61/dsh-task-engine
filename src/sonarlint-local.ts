@@ -44,6 +44,12 @@ export function uncoveredLocalFiles(paths: string[], profiles: { language?: stri
   return paths.filter(path => serverLanguages(path).some(language => active.has(language)))
 }
 
+/** A declared task scope must include every changed file selected for this project's local audit. */
+export function missingLocalAuditScope(paths: string[], taskPaths: string[]): string[] {
+  const declared = new Set(taskPaths.map(path => path.replaceAll('\\', '/').replace(/^\.\//u, '').toLowerCase()))
+  return paths.filter(path => !declared.has(path.replaceAll('\\', '/').replace(/^\.\//u, '').toLowerCase()))
+}
+
 interface ChangedFile { path: string; lines: Set<number>; newFile: boolean }
 
 /** Compare the current working tree with a reference; an untracked file is wholly new. */
@@ -106,8 +112,12 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
   scopeHash: string, signal?: AbortSignal, taskPaths?: string[]): Promise<SonarAudit> {
   if (!token) throw new Error('本地规则审核需要当前项目 SonarQube Token')
   if (!policy.reference_branch) throw new Error('本地规则审核需要新代码参考分支')
-  const changes = (await changedLines(root, policy.reference_branch, taskPaths))
+  const changes = (await changedLines(root, policy.reference_branch))
     .filter(file => isIncludedAuditPath(file.path, policy.include_paths))
+  if (taskPaths !== undefined) {
+    const missing = missingLocalAuditScope(changes.map(file => file.path), taskPaths)
+    if (missing.length) throw new Error(`本地规则审核范围漏登 ${missing.length} 个新增代码文件；先用 dev_task scope 补齐后重试：${missing.join(', ')}`)
+  }
   const unsupported = changes.filter(file => !localLanguage(file.path))
   const profilesUrl = new URL(`${policy.host_url.replace(/\/$/u, '')}/api/qualityprofiles/search`)
   profilesUrl.searchParams.set('project', policy.project_key)

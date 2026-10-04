@@ -1,5 +1,5 @@
 /** Human-readable, credential-free record of one SonarQube review run. */
-import type { SonarAudit, SonarPolicy } from './sonar.ts'
+import { localReviewGate, unresolvedBlockingFindings, type SonarAudit, type SonarPolicy } from './sonar.ts'
 
 function line(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -22,6 +22,9 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     `- 分析目标：${line(audit.target)}`,
     `- 本次结论：${line(audit.gate)}`,
     `- 问题：${audit.findings.length} 条；阻断：${audit.blocking.length} 条`,
+    ...(policy.source === 'ide-local' ? [
+      `- 人工复核后的任务门禁：${localReviewGate(audit)}；未解决阻断：${unresolvedBlockingFindings(audit).length} 条`,
+    ] : []),
     `- 本地审核范围：${policy.include_paths?.length ? policy.include_paths.map(line).join('、') : '任务登记的全部代码文件'}`,
     '',
     '## 本次分析的文件',
@@ -37,6 +40,14 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     ...(audit.findings.length ? audit.findings.map((finding, index) =>
       `${index + 1}. ${blocked.has(finding.key) ? '**阻断** ' : ''}${line(finding.severity)} · ${line(finding.rule)} · ${line(finding.file)}${finding.line === undefined ? '' : `:${finding.line}`}\n   ${line(finding.message)}（${line(finding.key)}）`)
       : ['- 无']),
+    '',
+    '## 逐项误报复核',
+    '',
+    ...(audit.dispositions?.length ? audit.dispositions.flatMap(entry => [
+      `- ${line(entry.issue_key)} · ${line(entry.kind)} · 批准于 ${line(entry.approved_at)}`,
+      `  - 原因：${line(entry.reason)}`,
+      ...entry.evidence.map(value => `  - 证据：${line(value)}`),
+    ]) : ['- 无']),
     '',
     '本报告记录一次审核；代码或规则变化后请重新测试并审核。Token 不写入报告。',
     '',
