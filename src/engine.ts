@@ -346,7 +346,7 @@ export interface TaskItem {
   id: string
   title: string
   status: ItemStatus
-  /** Agent-reported dispatch intent, not independent proof that a subagent ran. */
+  /** Agent-reported implementation start, whether performed directly or delegated. */
   dispatch?: ItemDispatch
   /** Audit trail: the two-stage review verdicts over the completed item. */
   review?: ItemReview

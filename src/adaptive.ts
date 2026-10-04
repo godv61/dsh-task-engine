@@ -50,7 +50,7 @@ export function adaptiveWorkflow(grade: Complexity): WorkflowConfig {
     start_stage: stages[0]!,
     transitions,
     artifacts: COMMON_ARTIFACTS.filter(artifact => stages.includes(artifact.stage)),
-    // The branch must be committed/pushed before its CI Sonar scan can run.
+    // CI and scanner review need a tested commit; local IDE-style review overrides this per task.
     commit: { policy: 'task', message_pattern: '', message_hint: '无格式要求', checkpoints: ['测试'], file_scope: true },
     high_risk_requires_verification: true,
     review_depth: grade === 'low' ? 'single' : 'two-stage',

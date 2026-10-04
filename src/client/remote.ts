@@ -231,6 +231,18 @@ const taskLedgerViewSchema = z.object({
   tasks: z.array(z.object({
     risk_level: z.string().optional(), updated_at: z.string().optional(),
     verification_passed: z.boolean().optional(), review_outcome: z.string().optional(),
+    sonar: z.object({
+      source: z.string(),
+      audit: z.object({
+        gate: z.string(), checked_at: z.string(), target: z.string(),
+        blocking_count: z.number(), uncovered_files: z.array(z.string()),
+        report_path: z.string().optional(), scanned_files: z.array(z.string()).optional(),
+        findings: z.array(z.object({
+          key: z.string(), rule: z.string(), message: z.string(), severity: z.string(),
+          file: z.string(), line: z.number().optional(),
+        })),
+      }).optional(),
+    }).optional(),
     task_id: z.string(),
     title: z.string(),
     stage: z.string(),
@@ -287,6 +299,8 @@ const adaptiveConfigSchema = z.object({
   sonar: z.object({
     enabled: z.boolean().optional(), host_url: z.string().optional(), project_key: z.string().optional(),
     mode: z.enum(['branch', 'pull-request']).optional(), token_env: z.string().optional(),
+    source: z.enum(['ci', 'local', 'ide-local']).optional(), reference_branch: z.string().optional(), scan_command: z.string().optional(),
+    include_paths: z.array(z.string()).optional(),
   }).optional(),
 })
 const adaptiveViewSchema = z.object({
@@ -295,6 +309,8 @@ const adaptiveViewSchema = z.object({
   grades: z.array(z.object({ id: z.string(), label: z.string(), guidance: z.string(), stages: z.array(z.string()) })),
 })
 const adaptiveWriteRequestSchema = z.object({ path: z.string(), config: adaptiveConfigSchema, expected_hash: z.string() })
+const sonarTokenInfoSchema = z.object({ configured: z.boolean(), source: z.string().optional(), writable: z.boolean() })
+const sonarTokenWriteSchema = z.object({ path: z.string(), token: z.string().min(1) })
 const projectSkillProfileRequestSchema = z.object({ path: z.string(), name: z.string() })
 const projectSkillProfileWriteRequestSchema = projectSkillProfileRequestSchema.extend({
   profile: skillProfileSchema, expected_hash: z.string(),
@@ -318,6 +334,27 @@ export const TYPERT_REMOTE = {
       parameters: [{ name: 'request', wire: 'request', source: 'json',
         codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#AdaptiveWriteRequest`, create: () => adaptiveWriteRequestSchema, schema: adaptiveWriteRequestSchema } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#AdaptiveConfigView`, create: () => adaptiveViewSchema, schema: adaptiveViewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/describeSonarToken`, service: 'taskEngineController', namespace: 'task-engine', method: 'describeSonarToken',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenInfo`, create: () => sonarTokenInfoSchema, schema: sonarTokenInfoSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/setSonarToken`, service: 'taskEngineController', namespace: 'task-engine', method: 'setSonarToken',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenWrite`, create: () => sonarTokenWriteSchema, schema: sonarTokenWriteSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenInfo`, create: () => sonarTokenInfoSchema, schema: sonarTokenInfoSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/unsetSonarToken`, service: 'taskEngineController', namespace: 'task-engine', method: 'unsetSonarToken',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenInfo`, create: () => sonarTokenInfoSchema, schema: sonarTokenInfoSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readProjectSkillProfile`, service: 'taskEngineController', namespace: 'task-engine', method: 'readProjectSkillProfile',

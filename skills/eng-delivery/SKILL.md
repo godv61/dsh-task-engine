@@ -6,6 +6,8 @@ whenToUse: 在启用工程化交付会话预设后，开始或继续开发任务
 
 # 工程任务编排
 
+首次为项目执行 `init_project` 时，`<项目名>-project-map` 必须概述整个仓库的模块职责、依赖与通用代码入口，可被后续不同需求复用。当前需求的具体页面、接口调用链和验收条件写入任务产物；若确需长期保存领域地图，另建明确命名的领域 Skill，不把它们塞进项目总地图。`inspect` 只提供目录和清单证据，`propose/apply` 的正文由模型拟定，应用前逐项检查范围。
+
 新需求先按改动范围、实现依赖和架构影响选择 `low`、`medium`、`high` 或 `ultra`，调用 `dev_task assess` 查看相应阶段与有效技能来源。创建时提供 `complexity` 和具体的 `complexity_reason`。低档为局部明确修改；中档先形成需求与验收；高档增加按实现先后顺序的任务编排；超高档适用于完整新模块或大范围重构，增加架构设计。风险等级独立选择。没有 `complexity` 的旧调用继续使用 `.dsh/eng.json`。
 
 自适应任务的当前元技能及附加技能都以 `status.bindings` 为准，用 `dev_task load_skill` 和准确的 `source:name` 加载；项目同名 Skill 覆盖用户与内置 Skill，Rule 由生效 Skill 自身的 `profile.json` 持有。当前任务的流程在创建时冻结，其他会话的任务可选择不同档次。

@@ -26,7 +26,7 @@ const card: CSSProperties = {
 }
 
 const projectInitPrompt = (workspace: string): string =>
-  `请在当前项目根工作区 ${workspace} 使用工程化开发引擎初始化项目 Skill 和 Rule。先调用 dev_task init_project（phase=inspect），结合代表性源码、构建文件、测试和已有规范核实扫描结果。按项目实际情况拟定项目结构地图、技术栈、编码方法等 Skill 和必要的 Rule，并标明适用的元技能。调用 phase=propose 展示拟创建的文件、内容和挂载关系；等我审阅确认后再调用 phase=apply。不要覆盖同名资源，也不要把偶发代码写法当成团队规范。`
+  `请在当前项目根工作区 ${workspace} 使用工程化开发引擎初始化项目 Skill 和 Rule。先调用 dev_task init_project（phase=inspect），结合代表性源码、构建文件、测试和已有规范核实扫描结果。按项目实际情况拟定项目结构地图、技术栈、编码方法等 Skill 和必要的 Rule，并标明适用的元技能。项目地图必须总结整个仓库的模块职责、依赖和通用代码入口，能够供不同需求复用；不要把当前会话的需求、专属调用链或实现方案写成项目地图，相关内容应进入该任务产物或单独的领域 Skill。调用 phase=propose 展示拟创建的文件、内容和挂载关系；等我审阅确认后再调用 phase=apply。不要覆盖同名资源，也不要把偶发代码写法当成团队规范。`
 
 export function InitPanel({ workspace, remote }: {
   workspace: string
@@ -112,7 +112,9 @@ export function InitPanel({ workspace, remote }: {
     createElement('div', { style: card },
       createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill / Rule 初始化'),
       createElement('p', { style: styles.muted },
-        '扫描代码库并拟定项目地图、技术栈、编码 Skill 和 Rule。先预览生成内容，确认后才写入项目；已有同名资源不会被覆盖。'),
+        '扫描只返回项目证据与建议名称；会话模型据此拟定覆盖整个仓库的项目地图、技术栈、编码 Skill 和 Rule。当前需求的专属信息应写入任务产物。先预览生成内容，确认后才写入项目；已有同名资源不会被覆盖。'),
+      createElement('p', { style: styles.muted },
+        '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
       createElement('p', { style: styles.muted },
         '使用方法：关闭此面板，在当前项目根工作区选择“工程化开发引擎”，把下面的请求发给新会话。'),
       createElement('textarea', { style: { ...styles.textarea, minHeight: 100 }, readOnly: true,

@@ -28,10 +28,13 @@ import { compactProjectConfig, materializeBundledReferences, resolveFlow, type P
 import { saveUserSkillProfile, userSkillProfilePath, withUserSkillProfiles } from './user-skill-profiles.ts'
 import { COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, type MetaSkill } from './adaptive.ts'
 import { hashText } from './snapshot.ts'
+import { sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
+import { validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
-  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
+    source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
 
 export interface AdaptiveConfigView {
@@ -73,6 +76,17 @@ function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>)
     }
     if (config.sonar.mode !== 'branch' && config.sonar.mode !== 'pull-request') problems.push('SonarQube 模式必须是分支或合并请求')
     if (!/^[A-Z][A-Z0-9_]*$/u.test(config.sonar.token_env ?? 'SONAR_TOKEN')) problems.push('SonarQube Token 环境变量名无效')
+    if (config.sonar.source !== undefined && !['ci', 'local', 'ide-local'].includes(config.sonar.source)) {
+      problems.push('SonarQube 审核来源必须是 CI、上传式本机扫描或本地规则审核')
+    }
+    if (config.sonar.source === 'local' || config.sonar.source === 'ide-local') {
+      if (config.sonar.mode !== 'branch') problems.push('本地 SonarQube 审核仅支持分支模式')
+      if (!config.sonar.reference_branch || !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('本地审核需要有效的新代码参考分支')
+    }
+    if (config.sonar.reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('SonarQube 新代码参考分支无效')
+    if (config.sonar.scan_command && !validLocalScanCommand(config.sonar.scan_command)) problems.push('扫描命令须为单条 Maven 或 SonarScanner 命令，不能包含 Shell 运算符或 Token')
+    if (config.sonar.include_paths !== undefined && !validAuditIncludePaths(config.sonar.include_paths)) problems.push('审核范围须为项目内相对路径列表，不能包含上级目录')
+    if (config.sonar.include_paths?.length && config.sonar.source !== 'ide-local') problems.push('审核范围仅适用于本地规则审核')
   }
   return problems
 }
@@ -289,6 +303,19 @@ export interface TaskLedgerEntry {
   updated_at?: string
   verification_passed?: boolean
   review_outcome?: string
+  sonar?: {
+    source: string
+    audit?: {
+      gate: string
+      checked_at: string
+      target: string
+      findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
+      blocking_count: number
+      uncovered_files: string[]
+      report_path?: string
+      scanned_files?: string[]
+    }
+  }
   task_id: string
   title: string
   stage: string
@@ -600,6 +627,38 @@ export default class TaskEngineController extends TypertRemoteService {
     return this.readAdaptive(path)
   }
 
+  /** Return only presence and writability; the Sonar token is never sent to the browser. */
+  @Remote
+  async describeSonarToken(path: string): Promise<SonarCredentialInfo> {
+    path = await this.authorizedPath(path)
+    return this.credentialProvider().describe(sonarCredentialRef(path))
+  }
+
+  /** Store a token for this workspace in DSH's user credential provider. */
+  @Remote
+  async setSonarToken(request: { path: string; token: string }): Promise<SonarCredentialInfo> {
+    const path = await this.authorizedPath(request.path)
+    if (typeof request.token !== 'string' || !request.token.trim()) throw new Error('SonarQube Token 不能为空')
+    const ref = sonarCredentialRef(path)
+    await this.credentialProvider().set(ref, request.token.trim())
+    return this.credentialProvider().describe(ref)
+  }
+
+  /** Remove this workspace's token without changing its Sonar policy. */
+  @Remote
+  async unsetSonarToken(path: string): Promise<SonarCredentialInfo> {
+    path = await this.authorizedPath(path)
+    const ref = sonarCredentialRef(path)
+    await this.credentialProvider().unset(ref)
+    return this.credentialProvider().describe(ref)
+  }
+
+  private credentialProvider(): SonarCredentialProvider {
+    const provider = this.ctx.get('credentials') as SonarCredentialProvider | undefined
+    if (!provider) throw new Error('DSH 凭据服务不可用；请检查 web profile 是否加载 credentials-local')
+    return provider
+  }
+
   /** Read the Rule method that belongs to a project Skill in adaptive tasks. */
   @Remote
   async readProjectSkillProfile(request: { path: string; name: string }): Promise<{ profile: SkillProfile; hash: string }> {
@@ -868,6 +927,20 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.updated_at ? { updated_at: state.updated_at } : {}),
           verification_passed: state.verification?.passed ?? false,
           review_outcome: state.review?.outcome ?? 'pending',
+          ...(state.sonar_policy ? { sonar: {
+            source: state.sonar_policy.source ?? 'ci',
+            ...(state.sonar_audit ? { audit: {
+              gate: state.sonar_audit.gate,
+              checked_at: state.sonar_audit.checked_at,
+              target: state.sonar_audit.target,
+              findings: state.sonar_audit.findings.map(({ key, rule, message, severity, file, line }) =>
+                ({ key, rule, message, severity, file, ...(line === undefined ? {} : { line }) })),
+              blocking_count: state.sonar_audit.blocking.length,
+              uncovered_files: state.sonar_audit.uncovered_files ?? [],
+              ...(state.sonar_audit.report_path ? { report_path: state.sonar_audit.report_path } : {}),
+              ...(state.sonar_audit.scanned_files ? { scanned_files: state.sonar_audit.scanned_files } : {}),
+            } } : {}),
+          } } : {}),
           task_id: state.id,
           title: state.title,
           stage: state.stage,

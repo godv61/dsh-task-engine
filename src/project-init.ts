@@ -10,6 +10,26 @@ export interface ProjectInventory {
   caution: string
 }
 
+/** Paths a repository-wide project map must account for before it is installed. */
+export function projectMapCoveragePaths(inventory: ProjectInventory): string[] {
+  const paths = new Set<string>()
+  for (const manifest of inventory.manifests) {
+    const parent = manifest.path.split('/').slice(0, -1).join('/')
+    paths.add(parent || manifest.path)
+  }
+  for (const module of inventory.modules) {
+    if (module.entries.some(entry => entry === 'src' || entry === 'pom.xml' || entry === 'package.json'
+      || entry === 'build.gradle' || entry === 'build.gradle.kts')) paths.add(module.path)
+  }
+  return [...paths].sort()
+}
+
+/** Reject a feature-only map that omits independently discovered project modules. */
+export function projectMapCoverageGaps(content: string, inventory: ProjectInventory): string[] {
+  const normalized = content.replace(/\\/gu, '/').toLowerCase()
+  return projectMapCoveragePaths(inventory).filter(path => !normalized.includes(path.toLowerCase()))
+}
+
 const MANIFESTS = ['pom.xml', 'build.gradle', 'build.gradle.kts', 'package.json', 'go.mod', 'pyproject.toml', 'Cargo.toml']
 
 function slug(root: string): string {
@@ -75,11 +95,11 @@ export async function scanProject(probe: FileProbe, root: string): Promise<Proje
     manifests.push({ path, facts })
   }
   const suggestions: ProjectInventory['suggestions'] = [
-    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: 'Root structure and module entry points help both impact analysis and implementation.' },
+    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: 'Summarize the entire repository: top-level modules, responsibilities, dependencies, generic code entry points and navigation. Do not turn the map into a summary of the current feature request; keep feature-specific call chains in that task\'s artifacts or a separately named feature Skill.' },
     { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development', 'test-validation'], why: 'Manifest versions and build constraints are reusable project facts.' },
   ]
   if (hasJava) suggestions.push({ name: `${project_name}-code-backend`, kind: 'skill', meta_skills: ['code-development'], why: 'Java build manifest found; inspect representative backend code before writing conventions.' })
   if (hasFrontend) suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: 'Frontend dependency found; inspect components and build scripts before writing conventions.' })
   return { project_name, root_entries, modules, manifests, suggestions,
-    caution: 'This inventory identifies evidence, not coding rules. Review representative source, tests and existing governance files before proposing Rule content; legacy violations are not standards.' }
+    caution: 'This inventory identifies evidence, not coding rules. The project-map is reusable repository-wide context even when init_project is called during a feature task; keep that task\'s design and call-chain findings in task artifacts. Review representative source, tests and existing governance files before proposing Rule content; legacy violations are not standards.' }
 }

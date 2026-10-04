@@ -71,9 +71,10 @@ function fixture(stage = '开发', extra = {}, services = {}) {
   const ctx = { fs, tools: { register(tool) { execute = tool.execute; return () => {} } }, get(name) {
     if (Object.hasOwn(services, name)) return services[name]
     if (name === 'sandboxPolicy') return { resolve(request) { assert.equal(request.session, session); return policy } }
-    if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async run(request) {
+    if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async execute(request) {
       const fail = request.command === 'fail'
-      return { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : 'checks passed' }, stderr: { text: '' } }
+      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : 'checks passed' }, stderr: { text: '' } }
+      return { result: async () => outcome }
     } }
     return undefined
   } }
@@ -204,6 +205,22 @@ test('追加修复项可按 id 保留旧标题，拒绝已完成项改名后静�
   assert.equal(f.state().items[0].review.quality.outcome, 'pass')
   assert.equal(f.state().items.length, 2)
   await assert.rejects(f.call({ operation: 'items', items: [{ id: 'NEW' }] }), /title/)
+})
+
+test('重排实施项时不静默丢弃已完成项和审查记录', async () => {
+  const f = fixture()
+  await f.call({ operation: 'items', items: [
+    { id: 'I1', title: 'models', status: 'doing' },
+    { id: 'I2', title: 'mapper', status: 'todo' },
+  ] })
+  await f.call({ operation: 'dispatch', item_id: 'I1', description: 'direct implementation' })
+  await f.call({ operation: 'review_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass' })
+  await f.call({ operation: 'items', items: [{ id: 'I1', status: 'done' }, { id: 'I2' }] })
+  await f.call({ operation: 'items', items: [{ id: 'I3', title: 'service', status: 'todo' }] })
+  assert.deepEqual(f.state().items.map(item => item.id), ['I3', 'I1'])
+  assert.equal(f.state().items[1].status, 'done')
+  assert.equal(f.state().items[1].review.quality.outcome, 'pass')
+  assert.equal(f.state().items[1].dispatch.description, 'direct implementation')
 })
 
 test('派发立即反映进行中，重派不复用旧审核且保持单一进行项', async () => {

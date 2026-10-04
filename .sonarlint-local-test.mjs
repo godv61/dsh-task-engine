@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { changedLines, uncoveredLocalFiles } from './lib/sonarlint-local.js'
+import { isIncludedAuditPath, validAuditIncludePaths } from './lib/sonar.js'
+import { renderSonarReport, sonarReportPath } from './lib/sonar-report.js'
+
+test('project scan roots mirror Maven backend scope without including the Vue app', () => {
+  const roots = ['fp-bussiness', 'fp-ruoyi', 'fp-ruoyi-spring-boot', 'pom.xml']
+  assert.equal(validAuditIncludePaths(roots), true)
+  assert.equal(isIncludedAuditPath('fp-bussiness/src/main/java/A.java', roots), true)
+  assert.equal(isIncludedAuditPath('fp-ruoyi-ui/src/views/auth.vue', roots), false)
+  assert.equal(validAuditIncludePaths(['../outside']), false)
+  assert.equal(validAuditIncludePaths(['C:/outside']), false)
+})
+
+test('one review gets a credential-free Markdown report path and issue details', () => {
+  const audit = { analysis_id: 'abc12345-0000', checked_at: '2026-10-03T10:11:12.000Z',
+    target: 'qdm_gw_chemical_260930', gate: 'ERROR', findings: [{key:'x',rule:'java:S103',
+      severity:'MAJOR',file:'A.java',line:12,message:'Line too long'}], blocking:[{key:'x'}],
+    scanned_files:['A.java'],uncovered_files:[] }
+  const path = sonarReportPath('QMS-1', audit)
+  assert.match(path, /^\.dsh\/reviews\/QMS-1\/2026-/)
+  const report = renderSonarReport('QMS-1', {source:'ide-local',project_key:'project',include_paths:['fp-bussiness']}, audit)
+  assert.match(report, /java:S103/)
+  assert.match(report, /A.java:12/)
+  assert.equal(report.includes('token-secret'),false)
+})
+
+test('unsupported files block only when the project has active rules for their language', () => {
+  const paths = ['migration.sql', 'settings.json', 'script.py']
+  const profiles = [
+    { language: 'java', activeRuleCount: 66 },
+    { language: 'json', activeRuleCount: 0 },
+    { language: 'py', activeRuleCount: 3 },
+  ]
+  assert.deepEqual(uncoveredLocalFiles(paths, profiles), ['script.py'])
+  assert.deepEqual(uncoveredLocalFiles(paths, [...profiles, { language: 'plsql', activeRuleCount: 5 }]),
+    ['migration.sql', 'script.py'])
+})
+
+test('local Sonar audit considers Git new code but excludes generated DSH records', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-sonarlint-diff-test-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
+  try {
+    git('init', '--quiet')
+    writeFileSync(join(root, 'Sample.java'), 'class Sample {}\n')
+    git('add', 'Sample.java')
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '-m', 'baseline')
+    writeFileSync(join(root, 'Sample.java'), 'class Sample {}\n// new code\n')
+    writeFileSync(join(root, 'change.sql'), 'SELECT 1;\n')
+    mkdirSync(join(root, '.dsh'))
+    writeFileSync(join(root, '.dsh', 'task.json'), '{"generated":true}\n')
+    const changed = await changedLines(root, 'HEAD')
+    assert.deepEqual(changed.map(file => file.path).sort(), ['Sample.java', 'change.sql'])
+    assert.deepEqual([...changed.find(file => file.path === 'Sample.java').lines], [2])
+    assert.equal(changed.find(file => file.path === 'change.sql').newFile, true)
+    assert.deepEqual((await changedLines(root, 'HEAD', ['Sample.java'])).map(file => file.path), ['Sample.java'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -1,19 +1,19 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { adaptiveWorkflow, COMPLEXITY_OPTIONS } from './lib/adaptive.js'
 import { validateWorkflow } from './lib/engine.js'
-import { registerDevTask } from './lib/dev-task.js'
-import { inspectSonar } from './lib/sonar.js'
+import { plannedItemIds, registerDevTask } from './lib/dev-task.js'
+import { assertLocalSonarReady, inspectSonar, validLocalScanCommand } from './lib/sonar.js'
 import Controller from './lib/controller.js'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-adaptive-'))
 process.env.DSH_HOME = home
 process.on('exit', () => rmSync(home, { recursive: true, force: true }))
 
-function fixture(extra = {}) {
+function fixture(extra = {}, services = {}) {
   const cwd = resolve('adaptive-project')
   const files = new Map([[join(cwd, 'package.json'), '{"name":"adaptive-project","dependencies":{"vue":"^2.7.0"}}'],
     [join(cwd, '.git/HEAD'), 'ref: refs/heads/feature'] , ...Object.entries(extra).map(([p, content]) => [join(cwd, p), content])])
@@ -33,6 +33,7 @@ function fixture(extra = {}) {
       .map(path => path.slice(target.path.length + 1).split('\\')[0]))].map(name => ({ name })),
   }
   const ctx = { fs, tools: { register(tool) { execute = tool.execute; return () => {} } }, get(name) {
+    if (name in services) return services[name]
     if (name === 'sandboxPolicy') return { resolve: () => ({ mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }) }
     return undefined
   } }
@@ -77,7 +78,11 @@ test('adaptive task freezes a project override and its own Rules, not the bundle
 test('init_project proposes project-specific Skills and binds reviewed resources', async () => {
   const f = fixture()
   const inventory = JSON.parse(await f.call({ operation: 'init_project', phase: 'inspect' }))
-  assert.ok(inventory.suggestions.some(entry => entry.name === 'adaptive-project-project-map'))
+  const projectMap = inventory.suggestions.find(entry => entry.name === 'adaptive-project-project-map')
+  assert.ok(projectMap)
+  assert.match(projectMap.why, /entire repository/)
+  assert.match(projectMap.why, /current feature request/)
+  assert.match(inventory.caution, /repository-wide/)
   assert.ok(inventory.manifests.some(entry => entry.facts.includes('vue=^2.7.0')))
   const resources = [
     { kind: 'rule', name: 'component-boundary', content: 'Keep component boundary calls behind the existing service interface.' },
@@ -86,12 +91,46 @@ test('init_project proposes project-specific Skills and binds reviewed resources
       meta_skills: ['requirements-analysis', 'code-development'], rules: ['component-boundary'] },
   ]
   const proposed = JSON.parse(await f.call({ operation: 'init_project', phase: 'propose', resources }))
+  assert.match(proposed.instruction, /whole repository/)
+  assert.match(proposed.instruction, /current-feature details/)
   assert.equal(f.files.has(join(f.cwd, '.dsh/meta.json')), false)
   await f.call({ operation: 'init_project', phase: 'apply', resources, expected_hash: proposed.expected_hash,
     existing_hash: proposed.existing_hash })
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
   assert.deepEqual(meta.meta_bindings['code-development'], ['adaptive-project-project-map'])
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/profile.json')))
+})
+
+test('task-plan item headings preserve the full implementation sequence', async () => {
+  assert.deepEqual(plannedItemIds('## Steps\n- I1 data model\n- I2 service\n### I3 UI\n- I2 service'), ['I1', 'I2', 'I3'])
+  const f = fixture()
+  await f.call({ operation: 'create', task_id: 'PLAN-1', title: 'Cross-module change', branch: 'feature',
+    complexity: 'high', complexity_reason: 'Backend then frontend dependency' })
+  const state = f.state('PLAN-1')
+  state.stage = '任务编排'
+  state.artifacts['task-plan'] = { steps: '- I1 model\n- I2 service', dependencies: 'I2 after I1', handoffs: 'Model to service' }
+  state.items = [{ id: 'I2', title: 'service', status: 'todo' }]
+  f.files.set(join(f.cwd, '.dsh/task-PLAN-1.json'), JSON.stringify(state))
+  const status = JSON.parse(await f.call({ operation: 'status', task_id: 'PLAN-1' }))
+  assert.match(status.task_plan_item_blockers[0], /I1/)
+  await assert.rejects(f.call({ operation: 'advance', task_id: 'PLAN-1', target_stage: '代码开发' }), /I1/)
+})
+
+test('init_project rejects a feature-only project map that omits discovered modules', async () => {
+  const f = fixture({
+    'backend/pom.xml': '<project><properties><java.version>8</java.version></properties></project>',
+    'frontend/package.json': '{"dependencies":{"vue":"^2.7.0"}}',
+  })
+  const draft = [{ kind: 'skill', name: 'adaptive-project-project-map',
+    description: 'Reusable repository map', meta_skills: ['requirements-analysis', 'code-development'],
+    content: '# Feature implementation\nThe root package.json and backend contain the feature API.' }]
+  await assert.rejects(f.call({ operation: 'init_project', phase: 'propose', resources: draft }), /frontend/)
+  draft[0].content = '# Repository map\nRoot package.json, backend/pom.xml and frontend/package.json define separate modules.'
+  const proposed = JSON.parse(await f.call({ operation: 'init_project', phase: 'propose', resources: draft }))
+  assert.deepEqual(proposed.project_map_coverage, ['backend', 'frontend', 'package.json'])
+  await f.call({ operation: 'init_project', phase: 'apply', resources: draft,
+    expected_hash: proposed.expected_hash, existing_hash: proposed.existing_hash })
+  assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
 })
 
 test('workbench adaptive settings persist meta bindings with a version check', async () => {
@@ -134,7 +173,113 @@ test('Sonar audit reads the exact CI analysis gate and filters new-code medium/h
   assert.equal(JSON.stringify(audit).includes('secret-token'), false)
 })
 
-test('review-only Sonar gate blocks pass until the task records a passing CI analysis', async () => {
+test('IDE-style local Sonar settings save and move only that task commit after review', async () => {
+  const sonar = { enabled: true, host_url: 'http://sonar.example', project_key: 'project',
+    mode: 'branch', source: 'ide-local', reference_branch: 'main', token_env: 'SONAR_TOKEN' }
+  const f = fixture()
+  const receiver = { authorizedPath: async path => path, fs: () => f.fs,
+    listSkills: async () => ({ skills: [] }), readAdaptive: Controller.prototype.readAdaptive }
+  const before = await Controller.prototype.readAdaptive.call(receiver, f.cwd)
+  const saved = await Controller.prototype.writeAdaptive.call(receiver,
+    { path: f.cwd, config: { sonar }, expected_hash: before.hash })
+  assert.equal(saved.ok, true)
+  await f.call({ operation: 'create', task_id: 'L-1', title: 'local review', branch: 'feature',
+    complexity: 'low', complexity_reason: 'Small isolated change', files: ['app.java'] })
+  const state = f.state('L-1')
+  assert.equal(state.sonar_policy.source, 'ide-local')
+  assert.deepEqual(state.flow.config.commit.checkpoints, ['代码审核'])
+})
+
+test('local Sonar audit ignores failing old-code gate conditions', async () => {
+  const policy = { enabled: true, host_url: 'https://sonar.example', project_key: 'project', mode: 'branch',
+    token_env: 'SONAR_TOKEN', source: 'local', reference_branch: 'main' }
+  const fetcher = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
+    ? { task: { status: 'SUCCESS', analysisId: 'AN-local', componentKey: 'project', branch: 'feature' } }
+    : String(url).includes('/qualitygates/project_status')
+      ? { projectStatus: { status: 'ERROR', conditions: [
+        { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
+      : { paging: { total: 0 }, issues: [] } })
+  const audit = await inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope', fetcher, true)
+  assert.equal(audit.gate, 'OK')
+  assert.equal(audit.server_gate, 'ERROR')
+  assert.deepEqual(audit.blocking, [])
+  const newFailure = await inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope',
+    async url => String(url).includes('/qualitygates/project_status')
+      ? { ok: true, json: async () => ({ projectStatus: { status: 'ERROR', conditions: [
+        { metricKey: 'new_coverage', status: 'ERROR' }] } }) }
+      : fetcher(url), true)
+  assert.equal(newFailure.gate, 'ERROR')
+})
+
+test('local scanner configuration rejects shell operators before receiving the Token', () => {
+  assert.equal(validLocalScanCommand('mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar -DskipTests'), true)
+  assert.equal(validLocalScanCommand('mvn sonar:sonar; curl http://example'), false)
+  assert.equal(validLocalScanCommand('mvn sonar:sonar -Dsonar.token=secret'), false)
+  assert.equal(validLocalScanCommand('curl http://example'), false)
+})
+
+test('Community Sonar refuses a local branch scan before uploading any analysis', async () => {
+  const policy = { enabled: true, host_url: 'https://sonar.example', project_key: 'project', mode: 'branch',
+    token_env: 'SONAR_TOKEN', source: 'local', reference_branch: 'main' }
+  const calls = []
+  await assert.rejects(assertLocalSonarReady(policy, 'token', async url => {
+    calls.push(String(url))
+    return { ok: true, json: async () => ({ edition: 'community' }) }
+  }), /Community Build supports only the main analysis branch/u)
+  assert.equal(calls.length, 1)
+  assert.match(calls[0], /navigation\/global/u)
+})
+
+test('sonar_check runs a local scan on the recorded commit without pushing or exposing Token', async () => {
+  const calls = []
+  const shell = { resolve: request => request, run: async spec => {
+    calls.push(spec)
+    if (spec.command === 'git rev-parse HEAD') return { exitCode: 0, stdout: { text: 'abcdef1234567890\n' } }
+    if (spec.command === 'git branch --show-current') return { exitCode: 0, stdout: { text: 'feature\n' } }
+    if (spec.command === 'git status --porcelain --untracked-files=all') return { exitCode: 0, stdout: { text: '' } }
+    const metadata = /-Dsonar\.scanner\.metadataFilePath='([^']+)'/u.exec(spec.command)?.[1]
+    assert.ok(metadata)
+    writeFileSync(metadata, 'ceTaskId=CE-local-456\n')
+    return { exitCode: 0 }
+  } }
+  const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true, host_url: 'https://sonar.example',
+    project_key: 'project', mode: 'branch', source: 'local', reference_branch: 'main' } }) }, { shell })
+  await f.call({ operation: 'create', task_id: 'LOCAL-1', title: 'change', branch: 'feature', complexity: 'low',
+    complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
+  const state = f.state('LOCAL-1')
+  state.stage = '代码审核'
+  state.verification = { passed: true, evidence: ['verified'] }
+  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
+  f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
+  const oldFetch = globalThis.fetch
+  const oldToken = process.env.SONAR_TOKEN
+  process.env.SONAR_TOKEN = 'private-token'
+  globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/navigation/global')
+    ? { edition: 'developer' }
+    : String(url).includes('/project_branches/list') ? { branches: [{ name: 'main' }] }
+      : String(url).includes('/ce/task')
+    ? { task: { status: 'SUCCESS', analysisId: 'AN-local', componentKey: 'project', branch: 'feature' } }
+    : String(url).includes('/qualitygates/project_status')
+      ? { projectStatus: { status: 'ERROR', conditions: [{ metricKey: 'bugs', status: 'ERROR' }] } }
+      : { paging: { total: 0 }, issues: [] } })
+  try {
+    const result = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'LOCAL-1' }))
+    assert.equal(result.gate, 'OK')
+    assert.equal(result.server_gate, 'ERROR')
+    assert.equal(calls.length, 4)
+    assert.equal(calls[3].env.SONAR_TOKEN, 'private-token')
+    assert.equal(calls[3].command.includes('private-token'), false)
+    assert.match(calls[3].command, /sonar\.newCode\.referenceBranch='main'/u)
+    assert.equal(JSON.stringify(f.state('LOCAL-1')).includes('private-token'), false)
+    assert.equal(calls.some(call => /git push/u.test(call.command)), false)
+  } finally {
+    globalThis.fetch = oldFetch
+    if (oldToken === undefined) delete process.env.SONAR_TOKEN
+    else process.env.SONAR_TOKEN = oldToken
+  }
+})
+
+test('review-only Sonar gate blocks pass until the task records CI analysis of new code', async () => {
   const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true, host_url: 'https://sonar.example',
     project_key: 'project', mode: 'branch', token_env: 'SONAR_TOKEN' } }) })
   await f.call({ operation: 'create', task_id: 'S-1', title: 'change', branch: 'feature', complexity: 'low',
@@ -150,10 +295,16 @@ test('review-only Sonar gate blocks pass until the task records a passing CI ana
   process.env.SONAR_TOKEN = 'secret-token'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-2', componentKey: 'project' } }
-    : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'OK' } }
+    : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'ERROR',
+      conditions: [{ metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
       : { paging: { total: 0 }, issues: [] } })
   try {
-    await f.call({ operation: 'sonar_check', task_id: 'S-1', ce_task_id: 'CE-123456' })
+    const check = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'S-1', ce_task_id: 'CE-123456' }))
+    assert.equal(check.gate, 'OK')
+    assert.equal(check.server_gate, 'ERROR')
+    assert.match(check.report_path, /^\.dsh\/reviews\/S-1\//)
+    assert.match(f.files.get(join(f.cwd, check.report_path)), /SonarQube 代码审核/)
+    assert.equal(f.state('S-1').sonar_audit.report_path, check.report_path)
     await f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' })
     assert.equal(f.state('S-1').review.outcome, 'pass')
   } finally {
@@ -176,6 +327,7 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   await f.call({ operation: 'revise', task_id: 'L-1', target_stage: '代码开发',
     revision_kind: 'defect', revision_reason: 'Fix the SonarQube issue' })
   assert.equal(f.state('L-1').sonar_history[0].blocking[0].key, 'ISSUE-9')
+  assert.equal(JSON.parse(await f.call({ operation: 'status', task_id: 'L-1' })).rule_learning_candidates[0].rule, 'java:S999')
   const args = { operation: 'learn_rule', task_id: 'L-1', issue_key: 'ISSUE-9', skill_name: 'bundled:code-development',
     rule_name: 'handle-null-boundary', learning_reason: 'This boundary appears in several service methods',
     content: 'At a service boundary, check for null before dereferencing. Show the failing call and a guarded call in the review example.' }
@@ -186,4 +338,5 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/code-development/SKILL.md')))
   assert.deepEqual(JSON.parse(f.files.get(join(f.cwd, '.dsh/skills/code-development/profile.json'))).rules,
     [{ source: 'project', name: 'handle-null-boundary' }])
+  assert.deepEqual(JSON.parse(await f.call({ operation: 'status', task_id: 'L-1' })).rule_learning_candidates, [])
 })

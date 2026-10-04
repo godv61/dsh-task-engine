@@ -7,7 +7,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { needsSkillReceipt, skillBlockers } from './lib/skill-audit.js'
+import { loadedSkills, needsSkillReceipt, skillBlockers } from './lib/skill-audit.js'
 import { adoptRecommendation, resolveFlow } from './lib/workflows.js'
 
 /** A session that has loaded the named skills. */
@@ -20,6 +20,19 @@ function sessionWith(names) {
   }
   return { id: 's', snapshotEvents: () => events }
 }
+
+test('evidence: DSH 0.2 tool messages prove only successful task-scoped skill loads', () => {
+  const events = [
+    { type: 'tool/call', data: { name: 'dev_task', callId: 'ok', arguments: JSON.stringify({ operation: 'load_skill', task_id: 'Q-1', skill_name: 'project:qms-project-map' }) } },
+    { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'ok', isError: false, content: [{ type: 'text', text: 'loaded' }] } } },
+    { type: 'tool/call', data: { name: 'dev_task', callId: 'bad', arguments: JSON.stringify({ operation: 'load_skill', task_id: 'Q-1', skill_name: 'project:qms-tech-stack' }) } },
+    { type: 'tool/result', data: { message: { role: 'tool', toolCallId: 'bad', isError: true, content: [{ type: 'text', text: 'failed' }] } } },
+  ]
+  const loaded = loadedSkills({ snapshotEvents: () => events })
+  assert.equal(loaded.get('Q-1#project:qms-project-map'), 'ok')
+  assert.equal(loaded.has('Q-1#project:qms-tech-stack'), false)
+  assert.equal(loaded.has('Q-2#project:qms-project-map'), false)
+})
 
 /** A standard-flow config with one extra skill on 开发 carrying the given evidence. */
 function withEvidence(evidence) {

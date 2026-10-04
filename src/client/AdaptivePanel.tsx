@@ -34,9 +34,17 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [message, setMessage] = useState('')
+  const [sonarToken, setSonarToken] = useState('')
+  const [tokenInfo, setTokenInfo] = useState<{ configured: boolean; source?: string; writable: boolean } | null>(null)
+  const [tokenBusy, setTokenBusy] = useState(false)
   const refresh = useCallback(() => {
     setLoading(true)
     setMessage('')
+    setSonarToken('')
+    setTokenInfo(null)
+    void remote.describeSonarToken(workspace).then(result => {
+      if (result.ok) setTokenInfo(result.value)
+    }, () => {})
     void Promise.all([remote.readAdaptive(workspace), remote.listSkills(workspace), remote.listRules(workspace)]).then(([config, catalog, ruleCatalog]) => {
       setLoading(false)
       if (!config.ok) { setMessage('读取自适应配置失败：' + describeError(config.error)); return }
@@ -117,6 +125,27 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       setMessage('已保存到 .dsh/meta.json；只影响新建任务。')
     }, error => { setSaving(false); setMessage('保存失败：' + describeError(error)) })
   }
+  const saveToken = () => {
+    if (!sonarToken.trim()) return
+    setTokenBusy(true)
+    void remote.setSonarToken({ path: workspace, token: sonarToken }).then(result => {
+      setTokenBusy(false)
+      if (!result.ok) { setMessage('保存 SonarQube Token 失败：' + describeError(result.error)); return }
+      setSonarToken('')
+      setTokenInfo(result.value)
+      setMessage('当前项目的 SonarQube Token 已保存到本机 DSH 凭据存储，可立即使用。')
+    }, error => { setTokenBusy(false); setMessage('保存 SonarQube Token 失败：' + describeError(error)) })
+  }
+  const clearToken = () => {
+    setTokenBusy(true)
+    void remote.unsetSonarToken(workspace).then(result => {
+      setTokenBusy(false)
+      if (!result.ok) { setMessage('移除 SonarQube Token 失败：' + describeError(result.error)); return }
+      setSonarToken('')
+      setTokenInfo(result.value)
+      setMessage('已移除当前项目保存在本机的 SonarQube Token。')
+    }, error => { setTokenBusy(false); setMessage('移除 SonarQube Token 失败：' + describeError(error)) })
+  }
 
   const candidates = [...new Set(skills.map(skill => skill.name))].filter(name =>
     name !== 'eng-delivery' && !(name in META_STAGES)).sort()
@@ -164,10 +193,19 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
         createElement('label', { style: row }, createElement('input', { type: 'checkbox', checked: sonar.enabled === true,
           onChange: (event: { target: HTMLInputElement }) => updateSonar({ enabled: event.target.checked }) }),
         '启用（仅代码审核阶段）')),
-      createElement('span', { style: label }, '复用 CI 扫描的 ceTaskId；质量门禁或新代码中高等级问题未通过时阻止审核。Token 仅从服务进程环境变量读取，不写入仓库。'),
+      createElement('span', { style: label }, '可复用 CI 扫描，或在本机按服务端规则审核新代码。Token 按当前项目保存在本机 DSH 凭据存储，不写入代码仓库；仍兼容已有的环境变量。'),
       sonar.enabled === true ? createElement('div', { style: grid },
+        createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          createElement('span', { style: label }, '扫描来源'),
+          createElement('select', { style: input, value: sonar.source ?? 'ci',
+            onChange: (event: { target: HTMLSelectElement }) => updateSonar({ source: event.target.value as 'ci' | 'local' | 'ide-local',
+              ...(event.target.value !== 'ci' ? { mode: 'branch' as const } : {}),
+              ...(event.target.value !== 'ide-local' ? { include_paths: [] } : {}) }) },
+          createElement('option', { value: 'ci' }, 'CI 已有结果'),
+          createElement('option', { value: 'ide-local' }, '本地规则审核（无需提交或推送）'),
+          createElement('option', { value: 'local' }, '本机扫描并上传（需 Developer Edition）'))),
         ...([['host_url', '服务地址', 'https://sonar.example'], ['project_key', '项目 Key', 'my-project'],
-          ['token_env', 'Token 环境变量名', 'SONAR_TOKEN']] as const).map(([key, title, placeholder]) =>
+          ['token_env', 'Token 环境变量名（可选后备）', 'SONAR_TOKEN']] as const).map(([key, title, placeholder]) =>
             createElement('label', { key, style: { display: 'flex', flexDirection: 'column', gap: 4 } },
               createElement('span', { style: label }, title),
               createElement('input', { style: input, value: sonar[key] ?? '', placeholder,
@@ -175,9 +213,40 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
             )),
         createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
           createElement('span', { style: label }, '分析对象'),
-          createElement('select', { style: input, value: sonar.mode ?? 'branch',
+          createElement('select', { style: input, value: sonar.mode ?? 'branch', disabled: sonar.source === 'local' || sonar.source === 'ide-local',
             onChange: (event: { target: HTMLSelectElement }) => updateSonar({ mode: event.target.value as 'branch' | 'pull-request' }) },
           createElement('option', { value: 'branch' }, '分支'), createElement('option', { value: 'pull-request' }, '合并请求')),
+        ),
+        sonar.source === 'local' || sonar.source === 'ide-local' ? createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          createElement('span', { style: label }, sonar.source === 'local' ? '新代码参考分支（须已有 Sonar 分析）' : '新代码参考分支（本机 Git 分支）'),
+          createElement('input', { style: input, value: sonar.reference_branch ?? '', placeholder: '例如 qdm_sit',
+            onChange: (event: { target: HTMLInputElement }) => updateSonar({ reference_branch: event.target.value }) })) : null,
+        sonar.source === 'local' ? createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          createElement('span', { style: label }, '本机扫描命令（可选；不填则自动选择 Maven / sonar-scanner）'),
+          createElement('input', { style: input, value: sonar.scan_command ?? '',
+            placeholder: 'mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar',
+            onChange: (event: { target: HTMLInputElement }) => updateSonar({ scan_command: event.target.value }) })) : null,
+        sonar.source === 'local' ? createElement('span', { style: label },
+          '本机分支扫描需要 SonarQube Developer Edition 或更高版本、已有分析的参考分支及本机扫描器/JDK；Community Build 会在上传前拒绝。') : null,
+        sonar.source === 'ide-local' ? createElement('label', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          createElement('span', { style: label }, '本地审核范围（每行一个项目相对目录或文件；留空为任务全部代码）'),
+          createElement('textarea', { style: { ...input, minHeight: 76 }, value: (sonar.include_paths ?? []).join('\n'),
+            placeholder: '例如 fp-bussiness\nfp-ruoyi\nfp-ruoyi-spring-boot\npom.xml',
+            onChange: (event: { target: HTMLTextAreaElement }) => updateSonar({
+              include_paths: event.target.value.split(/\r?\n|,/u).map(path => path.trim()).filter(Boolean),
+            }) })) : null,
+        sonar.source === 'ide-local' ? createElement('span', { style: label },
+          '本地规则审核从 SonarQube 同步项目规则，按上方范围筛选任务新增代码，不上传结果。扫描范围由 CI 构建与项目配置决定，Quality Profile 本身不决定扫描哪些目录。其他语言仅在该项目存在生效规则而本地无法分析时列为未覆盖。需安装 SonarLint 后台组件并配置 DSH_SONARLINT_JAVA、DSH_SONARLINT_LIB、DSH_SONARLINT_PLUGINS。') : null,
+        createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+          createElement('span', { style: label }, `当前项目 Token：${tokenInfo === null ? '状态不可用' : tokenInfo.configured ? '已配置' : '未配置'}`),
+          createElement('input', { type: 'password', autoComplete: 'new-password', style: input,
+            value: sonarToken, placeholder: '输入用户令牌（保存后不回显）',
+            onChange: (event: { target: HTMLInputElement }) => setSonarToken(event.target.value) }),
+          createElement('div', { style: row },
+            createElement(Button, { variant: 'outline', size: 'sm', disabled: tokenBusy || !sonarToken.trim() || tokenInfo?.writable === false,
+              onClick: saveToken }, tokenBusy ? '处理中…' : '保存 Token'),
+            tokenInfo?.configured ? createElement(Button, { variant: 'outline', size: 'sm',
+              disabled: tokenBusy || tokenInfo.writable === false, onClick: clearToken }, '移除 Token') : null),
         ),
       ) : null,
     ),

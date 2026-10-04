@@ -299,14 +299,14 @@ if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
 }
 
-// Adaptive tasks commit at the Test checkpoint so CI can produce the Sonar
-// analysis. The audit only becomes a gate in Code Review and Completion.
+// Adaptive tasks commit at the Test checkpoint; a local Sonar scan does not
+// require pushing that commit. The audit gates Code Review and Completion.
 if (state.sonar_policy?.enabled && ['代码审核', '完成'].includes(state.stage)) {
   const audit = state.sonar_audit
   const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
   if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd)
     || !lastCommit || audit.commit_hash !== lastCommit) {
-    refuse('SonarQube 审核未通过或已过期——在代码审核阶段完成新一次 CI 扫描并调用 dev_task operation=sonar_check')
+    refuse('SonarQube 审核未通过或已过期——在代码审核阶段重新扫描并调用 dev_task operation=sonar_check')
   }
 }
 

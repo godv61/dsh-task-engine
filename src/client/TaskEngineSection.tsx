@@ -67,7 +67,8 @@ type RemoteResult<T> = { ok: true; value: T } | { ok: false; error?: unknown }
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
-  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
+    source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
 
 export interface AdaptiveConfigView {
@@ -155,6 +156,19 @@ export interface TaskLedgerEntry {
   updated_at?: string
   verification_passed?: boolean
   review_outcome?: string
+  sonar?: {
+    source: string
+    audit?: {
+      gate: string
+      checked_at: string
+      target: string
+      findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
+      blocking_count: number
+      uncovered_files: string[]
+      report_path?: string
+      scanned_files?: string[]
+    }
+  }
   task_id: string
   title: string
   stage: string
@@ -199,6 +213,9 @@ export interface TaskEngineRemote {
   read(path: string): Promise<RemoteResult<EngConfigView>>
   readAdaptive(path: string): Promise<RemoteResult<AdaptiveConfigView>>
   writeAdaptive(request: { path: string; config: AdaptiveProjectConfig; expected_hash: string }): Promise<RemoteResult<AdaptiveConfigView>>
+  describeSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
+  setSonarToken(request: { path: string; token: string }): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
+  unsetSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
   readProjectSkillProfile(request: { path: string; name: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   writeProjectSkillProfile(request: { path: string; name: string; profile: SkillProfile; expected_hash: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile>; materialize_bundled?: 'project' | 'user' }): Promise<RemoteResult<EngConfigView>>

@@ -7,18 +7,23 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { resolveFlow, adoptRecommendation, compactProjectConfig, materializeBundledReferences } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { assertAdvance, validateWorkflow } from './lib/engine.js'
-import { TYPERT_REMOTE } from './src/client/remote.ts'
+// The npm package ships the built client, not its TypeScript source. Keep the
+// source codec assertion in repository tests while allowing shipped tests to run.
+const remoteSource = new URL('./src/client/remote.ts', import.meta.url)
+const hasRemoteSource = existsSync(remoteSource)
+const TYPERT_REMOTE = hasRemoteSource ? (await import(remoteSource.href)).TYPERT_REMOTE : undefined
 
 /** The fields a project config can carry, so a round-trip is checked on all of them. */
 const FIELDS = ['flow', 'stage_bindings', 'commit', 'artifacts', 'review_depth', 'commit_required']
 
-test('browser remote codec retains source-qualified bindings and all saved fields', () => {
+test('browser remote codec retains source-qualified bindings and all saved fields',
+  { skip: hasRemoteSource ? false : 'TypeScript source is excluded from the npm package' }, () => {
   const write = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'write')
   const read = TYPERT_REMOTE.descriptors.find(descriptor => descriptor.method === 'read')
   const adopted = compactProjectConfig(adoptRecommendation('minimal'))

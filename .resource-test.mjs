@@ -131,3 +131,20 @@ test('ledger rejects malformed records instead of pretending there are no tasks'
    await assert.rejects(()=>controller.readTasks('/project'),/任务记录/)
  }
 })
+test('ledger exposes Sonar findings without project credentials',async()=>{
+ const {default:Controller}=await import('./lib/controller.js')
+ const controller=Object.create(Controller.prototype)
+ controller.authorizedPath=async p=>p
+ controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'task-sample.json'}],readText:async()=>JSON.stringify({
+   id:'sample',title:'Sample',stage:'代码审核',branch:'feature/sample',items:[],
+   sonar_policy:{source:'ide-local',token_env:'SONAR_TOKEN',host_url:'https://sonar.example',project_key:'sample'},
+   sonar_audit:{gate:'ERROR',checked_at:'2026-10-03T00:00:00Z',target:'main',
+     findings:[{key:'issue-1',rule:'java:S103',message:'Line too long',severity:'MAJOR',file:'Sample.java',line:3}],
+     blocking:[{key:'issue-1'}],uncovered_files:[]},
+ })})
+ const {tasks}=await controller.readTasks('/project')
+ assert.equal(tasks[0].sonar.audit.gate,'ERROR')
+ assert.equal(tasks[0].sonar.audit.blocking_count,1)
+ assert.deepEqual(tasks[0].sonar.audit.findings[0],{key:'issue-1',rule:'java:S103',message:'Line too long',severity:'MAJOR',file:'Sample.java',line:3})
+ assert.equal(JSON.stringify(tasks).includes('SONAR_TOKEN'),false)
+})

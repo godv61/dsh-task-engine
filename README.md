@@ -4,7 +4,7 @@
 
 <h1 align="center">DSH Task Engine</h1>
 
-> `0.29.0` 新增自适应流程、项目技能初始化与可选 SonarQube CI 审核。SonarQube 集成目前读取提交后的 CI 分析结果，不提供未提交代码的本地 Sonar 审核。
+> 自适应流程、项目技能初始化与可选 SonarQube 审核支持复用 CI 分析、上传式本机扫描，以及未提交代码的本地规则审核。新代码范围由参考分支定义。
 
 <p align="center">按每个需求选择工程路径，用项目 Skill 与 Rule 复用团队开发规范。</p>
 <p align="center"><sub>Task-scoped engineering workflows for DeepSeek Harness.</sub></p>
@@ -53,8 +53,8 @@ dsh plugin --profile web add @godv61/dsh-task-engine
 | 页面 | 你可以做什么 |
 | :--- | :--- |
 | **项目初始化** | 分开管理 `AGENTS.md` 与项目 Skill/Rule。后者可在页面复制初始化请求，发给“工程化开发引擎”会话后由 `dev_task init_project` 扫描、预览并应用。 |
-| **自适应流程** | 查看四档任务路径、元技能绑定与可选 SonarQube 审核配置。 |
-| **任务台账** | 查看实施、验证和审核记录，按关键词、阶段或风险筛选。 |
+| **自适应流程** | 查看四档任务路径、元技能绑定与可选 SonarQube 审核配置；按项目保存 Token 到本机 DSH 凭据存储。 |
+| **任务台账** | 查看实施、验证和审核记录；展开 SonarQube 结果可看触发的规则、问题位置和逐次审核文件。 |
 | **技能** | 安装、编辑技能，并集中维护每个技能唯一的规则列表。 |
 | **规则** | 选择 Markdown 文件安装规则，维护项目或个人开发约定。 |
 

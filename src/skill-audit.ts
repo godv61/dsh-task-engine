@@ -22,8 +22,15 @@ export function loadedSkills(session?: SkillSession): Map<string, string> {
           calls.set(data.callId, `${args.task_id}#${args.skill_name}`)
       } catch { /* Failed or malformed loader requests are not loading evidence. */ }
     } else if (event.type === 'tool/result') {
-      const data = event.data as { error?: unknown; message?: { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } }
-      if (data.error) continue
+      const data = event.data as { error?: unknown; message?: { toolCallId?: string; isError?: boolean; content?: { type?: string; toolCallId?: string; isError?: boolean }[] } }
+      if (data.error || data.message?.isError) continue
+      // DSH 0.2 stores the call id on the tool message itself. Older session
+      // logs carried it on a tool-result content block; accept both shapes.
+      const messageCallId = data.message?.toolCallId
+      if (messageCallId) {
+        const name = calls.get(messageCallId)
+        if (name) loaded.set(name, messageCallId)
+      }
       for (const block of data.message?.content ?? []) {
         if (block.type !== 'tool-result' || block.isError || !block.toolCallId) continue
         const name = calls.get(block.toolCallId)

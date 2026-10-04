@@ -1,9 +1,9 @@
 /**
  * The "任务台账 (tasks)" tab of the workbench: a read-only audit view of
  * every task record under the workspace's `.dsh/`. Each task shows its stage,
- * and each implementation item shows its subagent dispatch trail plus the
+ * and each implementation item shows its start record plus the
  * two-stage (specification / quality) review verdicts. This is the visible
- * mirror of the dispatch/review audit the `dev_task` tool records — no editing.
+ * mirror of the implementation/review audit the `dev_task` tool records — no editing.
  *
  * @module dsh-task-engine/TaskLedger
  */
@@ -52,12 +52,12 @@ function timeText(at: string): string {
   return at.slice(0, 19).replace('T', ' ')
 }
 
-/** Render one item's audit trail: dispatch + two-stage review (when present). */
+/** Render one item's start record and two-stage review (when present). */
 function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
   const lines: Array<ReturnType<typeof createElement>> = []
   if (item.dispatch !== undefined) {
     lines.push(createElement('div', { key: 'dispatch', style: metaLine },
-      createElement('span', { style: badge }, '已派发'),
+      createElement('span', { style: badge }, '已开始'),
       createElement('span', null, item.dispatch.description === '' ? '（无描述）' : item.dispatch.description),
       createElement('span', { style: badge }, timeText(item.dispatch.at)),
     ))
@@ -80,9 +80,41 @@ function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
     }
   }
   if (lines.length === 0) {
-    lines.push(createElement('div', { key: 'none', style: metaLine }, createElement('span', { style: badge }, '未派发 / 未审查')))
+    const status = item.status === 'done' ? '已标记完成，缺少实施项审查记录'
+      : item.status === 'doing' ? '实施中，待审查' : '待开始'
+    lines.push(createElement('div', { key: 'none', style: metaLine }, createElement('span', { style: badge }, status)))
   }
   return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, ...lines)
+}
+
+function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createElement> | null {
+  if (!task.sonar) return null
+  const audit = task.sonar.audit
+  if (!audit) return createElement('div', { style: metaLine }, 'SonarQube 已启用，尚未运行代码审核。')
+  const source = ({ 'ide-local': '本地规则审核', local: '本机上传扫描', ci: 'CI 扫描' } as Record<string, string>)[task.sonar.source] ?? task.sonar.source
+  const outcome = audit.gate === 'OK' ? '通过' : '未通过'
+  return createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
+    createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } },
+      `最近一次 SonarQube 审核：${outcome} · 阻断 ${audit.blocking_count} 条 · 全部 ${audit.findings.length} 条 · ${timeText(audit.checked_at)}`),
+    createElement('p', { style: metaLine },
+      `来源：${source}；分析目标：${audit.target}。这是该次审核记录；代码或规则变更后需重新测试并审核。`),
+    audit.report_path ? createElement('p', { style: metaLine }, `审核文件：${audit.report_path}`) : null,
+    audit.scanned_files?.length ? createElement('details', null,
+      createElement('summary', { style: { cursor: 'pointer', fontSize: 12 } }, `本次分析文件（${audit.scanned_files.length}）`),
+      ...audit.scanned_files.map(file => createElement('div', { key: file, style: metaLine }, file))) : null,
+    ...audit.uncovered_files.map(file => createElement('div', { key: `uncovered-${file}`, style: metaLine },
+      `未覆盖：${file}`)),
+    audit.findings.length === 0
+      ? createElement('p', { style: metaLine }, '没有新增代码问题。')
+      : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+        ...audit.findings.map(finding => createElement('div', { key: finding.key, style: {
+          ...itemRow, padding: '6px 0', fontSize: 12, overflowWrap: 'anywhere',
+        } },
+        createElement('div', { style: headerRow },
+          createElement('strong', null, finding.severity),
+          createElement('code', null, finding.rule),
+          createElement('span', null, `${finding.file}${finding.line === undefined ? '' : `:${finding.line}`}`)),
+        createElement('span', null, finding.message)))))
 }
 
 export function TaskLedger({ workspace, remote }: {
@@ -100,14 +132,18 @@ export function TaskLedger({ workspace, remote }: {
     if (workspace === '') return
     setError('')
     setLoading(true)
-    void remote.readTasks(workspace).then((result) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('读取超时，请刷新页面或重新登录后重试')), 15_000)
+    })
+    void Promise.race([remote.readTasks(workspace), timeout]).then((result) => {
       setLoading(false)
       if (result.ok) setTasks(result.value.tasks)
       else setError('读取台账失败：' + describeError(result.error))
     }, (reason: unknown) => {
       setLoading(false)
       setError('读取台账失败：' + describeError(reason))
-    })
+    }).finally(() => { if (timer !== undefined) clearTimeout(timer) })
   }, [remote, workspace])
 
   useEffect(() => { refresh() }, [refresh])
@@ -127,7 +163,7 @@ export function TaskLedger({ workspace, remote }: {
     loading ? createElement('p', { role: 'status' }, '正在读取任务…') : error !== ''
       ? createElement('p', { style: styles.status }, error)
       : tasks.length === 0
-        ? createElement('p', { style: styles.muted }, '当前工作区还没有任务：开工后（dev_task create）会在这里列出派发与审查留痕。')
+        ? createElement('p', { style: styles.muted }, '当前工作区还没有任务：开工后（dev_task create）会在这里列出实施与审查记录。')
         : visible.length === 0 ? createElement('div', { className: 'te-empty' }, '没有匹配的任务，请调整筛选。') : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
           ...visible.map(task => createElement('div', { key: task.task_id, style: card },
             createElement('div', { style: headerRow },
@@ -141,6 +177,7 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { className: 'te-badge' }, `审核：${task.review_outcome ?? 'pending'}`),
               task.updated_at ? createElement('span', { style: metaLine }, '更新于 ' + timeText(task.updated_at)) : null,
             ),
+            sonarAudit(task),
             createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
               ...task.items.map(item => createElement('div', { key: item.id, style: itemRow },
                 createElement('div', { style: headerRow },

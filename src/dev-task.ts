@@ -11,8 +11,8 @@
  * @module dsh-task-engine/dev-task
  */
 
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
@@ -57,8 +57,11 @@ import {
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
   type Complexity, type MetaSkill } from './adaptive.ts'
-import { inspectSonar, type SonarPolicy } from './sonar.ts'
-import { scanProject } from './project-init.ts'
+import { assertLocalSonarReady, inspectSonar, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
+import { inspectLocalRules } from './sonarlint-local.ts'
+import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
+import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
+import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject } from './project-init.ts'
 import { hashConfig, hashText } from './snapshot.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
@@ -196,11 +199,13 @@ interface ShellRunRequest {
   timeoutMs?: number
   signal?: AbortSignal | undefined
   sandboxPolicy?: unknown
+  env?: Record<string, string>
 }
 interface ShellRunSpec {
   command: string
   workdir: string
   timeoutMs: number
+  env?: Record<string, string>
 }
 interface ShellRunOutcome {
   exitCode: number | null
@@ -212,7 +217,16 @@ interface ShellRunOutcome {
 }
 interface ShellRunner {
   resolve(request: ShellRunRequest): ShellRunSpec
-  run(spec: ShellRunSpec): Promise<ShellRunOutcome>
+  /** DSH 0.2 foreground projection: execute returns a handle, then result(). */
+  execute?(spec: ShellRunSpec): Promise<{ result(): Promise<ShellRunOutcome> }>
+  /** Older DSH providers exposed a direct run method. */
+  run?(spec: ShellRunSpec): Promise<ShellRunOutcome>
+}
+
+async function runShell(shell: ShellRunner, spec: ShellRunSpec): Promise<ShellRunOutcome> {
+  if (typeof shell.execute === 'function') return (await shell.execute(spec)).result()
+  if (typeof shell.run === 'function') return shell.run(spec)
+  throw new Error('host shell service has neither execute nor run')
 }
 
 /**
@@ -236,7 +250,7 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
     timeoutMs: VERIFY_TIMEOUT_MS, signal: exec.signal,
     ...(sandboxPolicy ? { sandboxPolicy } : {}),
   })
-  const outcome = await shell.run(spec)
+  const outcome = await runShell(shell, spec)
   return {
     command,
     exit_code: outcome.exitCode ?? -1,
@@ -248,6 +262,48 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
     stdout: outcome.stdout?.text ?? '',
     stderr: outcome.stderr?.text ?? '',
     ...(outcome.sandbox ? { sandbox: outcome.sandbox } : {}),
+  }
+}
+
+/** Run a local scanner without putting the credential on a command line or in the task record. */
+async function runLocalSonar(ctx: Context, policy: SonarPolicy, token: string, root: string, branch: string,
+  exec: ToolRunContext, defaultCommand: string, approvedMode?: 'workspace-write' | 'danger-full-access'): Promise<string> {
+  if (!token) throw new Error('SonarQube Token is not configured for this project')
+  if (!/^[A-Za-z0-9._/-]+$/u.test(branch) || !policy.reference_branch
+    || branch === policy.reference_branch || !/^[A-Za-z0-9._/-]+$/u.test(policy.reference_branch)) {
+    throw new Error('local SonarQube scan needs a safe current branch and a different reference branch')
+  }
+  if (!/^[A-Za-z0-9_.:-]+$/u.test(policy.project_key)) throw new Error('invalid SonarQube project key')
+  const shell = ctx.get('shell') as ShellRunner | undefined
+  if (!shell) throw new Error('local SonarQube scan needs the host shell service')
+  const temporary = mkdtempSync(join(tmpdir(), 'dsh-sonar-'))
+  try {
+    const metadata = join(temporary, 'report-task.txt')
+    const quote = (value: string): string => `'${value.replace(/'/gu, "''")}'`
+    const command = [policy.scan_command?.trim() || defaultCommand,
+      `-Dsonar.projectKey=${quote(policy.project_key)}`,
+      `-Dsonar.branch.name=${quote(branch)}`,
+      `-Dsonar.newCode.referenceBranch=${quote(policy.reference_branch)}`,
+      `-Dsonar.scanner.metadataFilePath=${quote(metadata)}`,
+      '-Dsonar.qualitygate.wait=false'].join(' ')
+    const policyService = ctx.get('sandboxPolicy') as { resolve(request: { session?: unknown }): Record<string, unknown> } | undefined
+    const standingPolicy = policyService?.resolve({ session: exec.agent?.session })
+    const sandboxPolicy = approvedMode === undefined ? standingPolicy : { ...standingPolicy, mode: approvedMode }
+    const spec = shell.resolve({ command, workdir: root, timeoutMs: 30 * 60 * 1000, signal: exec.signal,
+      env: { SONAR_TOKEN: token, SONAR_HOST_URL: policy.host_url },
+      ...(sandboxPolicy ? { sandboxPolicy } : {}) })
+    const outcome = await runShell(shell, spec)
+    if (outcome.exitCode !== 0 || outcome.aborted || outcome.timedOut || outcome.sandbox?.denied || outcome.sandbox?.runnerFailed) {
+      throw new Error(`local SonarQube scanner did not complete (exit ${outcome.exitCode ?? 'unknown'}); inspect scanner output and retry`)
+    }
+    let report: string
+    try { report = readFileSync(metadata, 'utf8') }
+    catch { throw new Error('local SonarQube scanner did not write report-task.txt; check scanner metadataFilePath support') }
+    const id = /^ceTaskId=(.+)$/mu.exec(report)?.[1]?.trim()
+    if (!id || !/^[\w-]{8,120}$/u.test(id)) throw new Error('local SonarQube scanner returned an invalid ceTaskId')
+    return id
+  } finally {
+    rmSync(temporary, { recursive: true, force: true })
   }
 }
 
@@ -563,7 +619,8 @@ const META_EVIDENCE: Record<MetaSkill, NonNullable<SkillProfile['evidence']>> = 
 interface AdaptiveConfig {
   /** Additional logical Skill names per meta-skill. A same-named project Skill replaces the user/bundled Skill. */
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
-  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string }
+  sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
+    source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
 
 async function readAdaptiveConfig(fs: Fs, cwd?: string): Promise<AdaptiveConfig> {
@@ -611,7 +668,23 @@ function sonarPolicyFor(project: AdaptiveConfig): SonarPolicy | undefined {
   }
   const mode = sonar.mode ?? 'branch'
   if (mode !== 'branch' && mode !== 'pull-request') throw new Error('sonar.mode must be branch or pull-request')
-  return { enabled: true, host_url, project_key, token_env, mode }
+  const source = sonar.source ?? 'ci'
+  if (source !== 'ci' && source !== 'local' && source !== 'ide-local') throw new Error('sonar.source must be ci, local, or ide-local')
+  if ((source === 'local' || source === 'ide-local') && (mode !== 'branch' || !sonar.reference_branch?.trim())) {
+    throw new Error('local Sonar review needs branch mode and a reference_branch for new code')
+  }
+  if (sonar.reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(sonar.reference_branch)) throw new Error('invalid SonarQube reference_branch')
+  if (sonar.scan_command && !validLocalScanCommand(sonar.scan_command)) {
+    throw new Error('scan_command must be a single Maven or SonarScanner command without shell operators or Token arguments')
+  }
+  if (sonar.include_paths !== undefined && !validAuditIncludePaths(sonar.include_paths)) {
+    throw new Error('sonar.include_paths must contain safe project-relative paths')
+  }
+  if (sonar.include_paths?.length && source !== 'ide-local') throw new Error('sonar.include_paths only applies to ide-local reviews')
+  return { enabled: true, host_url, project_key, token_env, mode, source,
+    ...(sonar.reference_branch ? { reference_branch: sonar.reference_branch } : {}),
+    ...(sonar.scan_command ? { scan_command: sonar.scan_command } : {}),
+    ...(sonar.include_paths?.length ? { include_paths: sonar.include_paths } : {}) }
 }
 
 async function resolveLogicalSkill(name: string, fs: Fs, cwd?: string): Promise<ResourceRef> {
@@ -995,8 +1068,13 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
     const unchanged = old?.title === title && !(old.status === 'done' && status !== 'done')
     return { ...(unchanged ? old : {}), id, title, status }
   })
-  if (result.filter(item => item.status === 'doing').length > 1) throw new Error('only one implementation item may be doing')
-  return result
+  // Replanning untouched work must not silently erase completed items or their audit.
+  const retained = previous.filter(item => !ids.has(item.id)
+    && (item.status === 'done' || item.dispatch !== undefined || item.review !== undefined))
+  if ([...result, ...retained].filter(item => item.status === 'doing').length > 1) {
+    throw new Error('only one implementation item may be doing')
+  }
+  return [...result, ...retained]
 }
 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
@@ -1092,12 +1170,77 @@ async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<st
   if (state.sonar_audit === undefined) return ['SonarQube audit is enabled but has not been run; call sonar_check in code review']
   const current = await scopeFingerprint(fs, state, cwd)
   const problems: string[] = []
-  if (state.sonar_audit.scope_hash !== current) problems.push('SonarQube audit is stale after file changes; rerun CI scan and sonar_check')
+  if (state.sonar_audit.scope_hash !== current) problems.push('SonarQube audit is stale after file changes; rerun the scan and sonar_check')
   const commit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
-  if (!commit || state.sonar_audit.commit_hash !== commit) problems.push('SonarQube audit does not match the task\'s latest recorded commit')
-  if (state.sonar_audit.gate !== 'OK') problems.push(`SonarQube Quality Gate is ${state.sonar_audit.gate}`)
+  if (state.sonar_policy.source !== 'ide-local' && (!commit || state.sonar_audit.commit_hash !== commit)) {
+    problems.push('SonarQube audit does not match the task\'s latest recorded commit')
+  }
+  if (state.sonar_audit.gate !== 'OK') problems.push(state.sonar_policy.source === 'ide-local'
+    ? '本地规则审核未通过' : `SonarQube Quality Gate is ${state.sonar_audit.gate}`)
   if (state.sonar_audit.blocking.length) problems.push(`${state.sonar_audit.blocking.length} medium/high SonarQube new-code findings remain`)
+  if (state.sonar_audit.uncovered_files?.length) problems.push(`本地规则审核未覆盖 ${state.sonar_audit.uncovered_files.length} 个新增代码文件`)
   return problems
+}
+
+/** Explicit item headings in a task plan, for checking plan/ledger consistency. */
+export function plannedItemIds(steps: string): string[] {
+  return [...new Set(steps.split(/\r?\n/u).flatMap(line => {
+    const match = /^\s*(?:[-*+]\s+|#{1,6}\s+)?([A-Za-z][A-Za-z0-9_-]*\d+)\b/u.exec(line)
+    return match === null ? [] : [match[1]!]
+  }))]
+}
+
+function taskPlanItemBlockers(state: TaskState): string[] {
+  if (state.stage !== '任务编排' || state.complexity === undefined) return []
+  const ids = plannedItemIds(state.artifacts['task-plan']?.steps ?? '')
+  if (!ids.length) return ['task-plan.steps must list implementation items on separate lines with stable IDs (for example, - I1 ...); use the same IDs in dev_task items']
+  const recorded = new Set(state.items.map(item => item.id))
+  const missing = ids.filter(id => !recorded.has(id))
+  const unplanned = state.items.filter(item => !ids.includes(item.id)).map(item => item.id)
+  return [...(missing.length ? [`task plan items missing from ledger: ${missing.join(', ')}`] : []),
+    ...(unplanned.length ? [`ledger items absent from task plan: ${unplanned.join(', ')}`] : [])]
+}
+
+/** One optional, reviewable learning candidate per server rule, never an automatic Rule. */
+function ruleLearningCandidates(state: TaskState): { rule: string; count: number; example: SonarFinding }[] {
+  const audits = [...(state.sonar_history ?? []), state.sonar_audit].filter((audit): audit is SonarAudit => audit !== undefined)
+  const learnedKeys = new Set((state.learned_rules ?? []).map(entry => entry.issue_key))
+  const learnedRules = new Set(audits.flatMap(audit => audit.blocking)
+    .filter(issue => learnedKeys.has(issue.key)).map(issue => issue.rule))
+  const byRule = new Map<string, { rule: string; count: number; example: SonarFinding; keys: Set<string> }>()
+  for (const issue of audits.flatMap(audit => audit.blocking)) {
+    if (learnedRules.has(issue.rule)) continue
+    const candidate = byRule.get(issue.rule) ?? { rule: issue.rule, count: 0, example: issue, keys: new Set<string>() }
+    if (!candidate.keys.has(issue.key)) { candidate.keys.add(issue.key); candidate.count++ }
+    byRule.set(issue.rule, candidate)
+  }
+  return [...byRule.values()].map(({ rule, count, example }) => ({ rule, count, example }))
+}
+
+async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  if (!state.sonar_policy) throw new Error('SonarQube is not enabled for this task')
+  const path = sonarReportPath(state.id, audit)
+  await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+    { kind: 'createIfAbsent' })
+  audit.report_path = path
+}
+
+async function inspectCompletedSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
+  scopeHash: string, signal: AbortSignal): Promise<Awaited<ReturnType<typeof inspectSonar>>> {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    if (signal.aborted) throw new Error('SonarQube audit was cancelled')
+    try { return await inspectSonar(policy, token, ceTaskId, target, scopeHash, fetch, true) }
+    catch (error) {
+      if (!/Compute Engine task is (PENDING|IN_PROGRESS)/u.test(String(error)) || attempt === 59) throw error
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve() }, 5000)
+        const onAbort = () => { clearTimeout(timer); reject(new Error('SonarQube audit was cancelled')) }
+        signal.addEventListener('abort', onAbort, { once: true })
+      })
+    }
+  }
+  throw new Error('SonarQube analysis did not finish within five minutes')
 }
 
 /** Resolve one item by id for the item-scoped audit operations. */
@@ -1168,7 +1311,7 @@ const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items
 
 const TOOL_DESCRIPTION =
   'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
-  'stage artifact, record each implementation item\'s subagent dispatch and two-stage (spec + quality) ' +
+  'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
   'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
   'the stage artifacts; a requirement/solution confirmation guard asks a human to approve instead of ' +
   'being satisfied by the model), record verification or review, and gate a commit on ' +
@@ -1198,7 +1341,7 @@ export function registerDevTask(ctx: Context): void {
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Workload tier (create).' },
       complexity: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Task-level complexity (assess/create). Select from requirement scope and implementation dependencies; independent of risk_level. Passing this on create selects the adaptive meta-skill flow.' },
       complexity_reason: { type: 'string', description: 'Evidence-based reason for the selected complexity (create).' },
-      ce_task_id: { type: 'string', description: 'SonarQube Compute Engine task id from the completed CI scan report-task.txt (sonar_check).' },
+      ce_task_id: { type: 'string', description: 'SonarQube Compute Engine task id from a CI scan (sonar_check in CI mode). Omit for local mode: the plugin runs the scanner and reads its task id.' },
       pull_request: { type: 'string', description: 'GitLab merge request IID or PR number when SonarQube mode is pull-request (sonar_check).' },
       issue_key: { type: 'string', description: 'A blocking SonarQube issue key from this task\'s audit history (learn_rule).' },
       rule_name: { type: 'string', description: 'New project Rule name (learn_rule).' },
@@ -1212,7 +1355,7 @@ export function registerDevTask(ctx: Context): void {
       risk_level: { type: 'string', enum: ['standard', 'high_risk'], description: 'Risk tier (create).' },
       items: {
         type: 'array',
-        description: 'Full implementation item list (create/replace). For an existing id, omit title to preserve its title and audit. Changing a reviewed title requires reopening as todo/doing and reviewing again. Include every item to retain.',
+        description: 'Implementation item list (create/replace). Completed or audited items are retained even when omitted; omitted untouched items are removed. For an existing id, omit title to preserve its title and audit. Changing a reviewed title requires reopening as todo/doing and reviewing again.',
         items: {
           type: 'object',
           additionalProperties: false,
@@ -1223,8 +1366,8 @@ export function registerDevTask(ctx: Context): void {
           },
         },
       },
-      item_id: { type: 'string', description: 'Item id to attach the dispatch/review audit to (dispatch/review_item).' },
-      description: { type: 'string', description: 'Dispatched subagent task description (dispatch).' },
+      item_id: { type: 'string', description: 'Item id to start or review (dispatch/review_item).' },
+      description: { type: 'string', description: 'Implementation intent (dispatch); the current agent may execute it directly.' },
       spec_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Specification-conformance verdict (review_item).' },
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
@@ -1252,7 +1395,7 @@ export function registerDevTask(ctx: Context): void {
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
       expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; apply is rejected without it, or with a different hash (init apply).' },
       existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
-      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result command. Commands otherwise use the session policy. Retry the exact denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
+      sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result/local Sonar scanner command. Commands otherwise use the session policy. Retry a denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
@@ -1334,6 +1477,11 @@ export function registerDevTask(ctx: Context): void {
         if (phase === 'inspect') return JSON.stringify(inventory, null, 2)
         if (phase !== 'propose' && phase !== 'apply') throw new Error('init_project phase must be inspect, propose, or apply')
         const resources = validateInitResources(a.resources)
+        for (const resource of resources) {
+          if (resource.kind !== 'skill' || resource.name !== `${inventory.project_name}-project-map`) continue
+          const gaps = projectMapCoverageGaps(resource.content, inventory)
+          if (gaps.length) throw new Error(`project map omits repository-wide evidence: ${gaps.join(', ')}. Describe each discovered module or manifest in the reusable project map; keep feature-specific findings in task artifacts.`)
+        }
         const metaRaw = await readText(fs, '.dsh/meta.json', cwd)
         const meta = await readAdaptiveConfig(fs, cwd)
         const createdRules = new Set(resources.filter(resource => resource.kind === 'rule').map(resource => resource.name))
@@ -1355,10 +1503,12 @@ export function registerDevTask(ctx: Context): void {
           }
         }
         const metaHash = hashText(metaRaw ?? '')
-        const proposalHash = hashText(JSON.stringify(resources) + '\n' + metaHash)
+        const inventoryHash = hashText(JSON.stringify(inventory))
+        const proposalHash = hashText(JSON.stringify(resources) + '\n' + metaHash + '\n' + inventoryHash)
         if (phase === 'propose') return JSON.stringify({ inventory, resources, files_to_create: paths,
+          project_map_coverage: projectMapCoveragePaths(inventory),
           meta_config: '.dsh/meta.json', existing_hash: metaHash, expected_hash: proposalHash,
-          instruction: 'Review each project-specific claim against the listed evidence. Apply with identical resources and expected_hash; existing files are protected.' }, null, 2)
+          instruction: 'Review each project-specific claim against the listed evidence. A *-project-map Skill must describe the whole repository and remain useful across unrelated requirements; move current-feature details to task artifacts or a separately named feature Skill. Apply with identical resources and expected_hash; existing files are protected.' }, null, 2)
         if (a.expected_hash !== proposalHash || a.existing_hash !== metaHash) {
           throw new Error('init_project draft or meta config changed since propose; inspect and propose again')
         }
@@ -1387,7 +1537,9 @@ export function registerDevTask(ctx: Context): void {
         const info = await (fs as unknown as WriteFs).lstat('.dsh/meta.json', { cwd })
         await writeText(fs, '.dsh/meta.json', JSON.stringify({ ...meta, meta_bindings: bindings }, null, 2) + '\n', cwd,
           writeMode, info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version })
-        return JSON.stringify({ created: paths, bindings, next_action: 'Call assess to inspect the effective project Skills before creating a task.' }, null, 2)
+        return JSON.stringify({ created: [...paths, '.dsh/meta.json'], bindings,
+          team_files: [...paths, '.dsh/meta.json'],
+          next_action: 'Review and commit the generated .dsh/skills, .dsh/rules and .dsh/meta.json as team configuration. Call assess to inspect the effective project Skills before creating a task.' }, null, 2)
       }
 
       if (a.operation === 'init') {
@@ -1494,6 +1646,10 @@ export function registerDevTask(ctx: Context): void {
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
+        const sonarPolicy = adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
+        if (sonarPolicy?.source === 'ide-local' && resolved.config.stages.includes('代码审核')) {
+          resolved.config.commit = { ...resolved.config.commit, checkpoints: ['代码审核'] }
+        }
           // Freeze the resolved skill and rule bodies now. A name alone cannot keep an
           // in-flight task stable: editing a rule the task uses would otherwise change
           // what the task is doing without the task saying so.
@@ -1509,7 +1665,6 @@ export function registerDevTask(ctx: Context): void {
             resources: frozen.resources,
         }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
-        const sonarPolicy = adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
         const state = newTask({
           id: a.task_id,
           title: a.title,
@@ -1578,6 +1733,7 @@ export function registerDevTask(ctx: Context): void {
             ...skillResourceBlockers(missingSkillFiles, state.stage),
             ...resourceBlockers(missingRules, state.stage), ...staleEvidence, ...await sonarBlockers(fs, state, cwd)]
           : []
+        const planItemBlockers = taskPlanItemBlockers(state)
         return JSON.stringify({
           id: state.id,
           stage: state.stage,
@@ -1592,6 +1748,7 @@ export function registerDevTask(ctx: Context): void {
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
+          task_plan_item_blockers: planItemBlockers,
           skill_obligations: obligationStages(state, workflow).map(stage => {
             const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
             const skills = bindings.map(entry => state.complexity !== undefined || entry.skill.source === 'codex-project'
@@ -1629,10 +1786,12 @@ export function registerDevTask(ctx: Context): void {
           review: state.review,
           sonar: state.sonar_policy === undefined ? { enabled: false } : {
             enabled: true, mode: state.sonar_policy.mode, project_key: state.sonar_policy.project_key,
+            source: state.sonar_policy.source ?? 'ci', reference_branch: state.sonar_policy.reference_branch,
             audit: state.sonar_audit ?? null, blockers: await sonarBlockers(fs, state, cwd),
             prior_audits: state.sonar_history?.length ?? 0,
           },
           learned_rules: state.learned_rules ?? [],
+          rule_learning_candidates: ruleLearningCandidates(state),
           artifact_requirements: workflow.artifacts.filter(def => def.stage === state.stage).map(def => ({
             id: def.id, name: def.name, fields: def.fields,
             missing_fields: def.fields.filter(field => !(state.artifacts[def.id]?.[field] ?? '').trim()),
@@ -1662,23 +1821,77 @@ export function registerDevTask(ctx: Context): void {
         if (!state.verification.passed || (await evidenceBlockers(fs, state, workflow, cwd)).length) {
           throw new Error('functional verification must pass on the current files before sonar_check')
         }
-        if (!state.commits.some(commit => commit.hash !== undefined)) {
-          throw new Error('sonar_check requires a recorded Git commit; commit at the 测试 checkpoint, push it, and use that CI scan')
+        if (state.sonar_policy.source !== 'ide-local' && !state.commits.some(commit => commit.hash !== undefined)) {
+          throw new Error('sonar_check requires a recorded Git commit at the 测试 checkpoint; CI mode also requires a push')
         }
-        if (!a.ce_task_id) throw new Error('sonar_check requires ce_task_id from this task\'s completed CI scan')
         const target = state.sonar_policy.mode === 'branch' ? state.branch : a.pull_request
         if (!target) throw new Error('pull-request SonarQube audit requires pull_request')
-        const audit = await inspectSonar(state.sonar_policy, process.env[state.sonar_policy.token_env] ?? '', a.ce_task_id, target,
-          await scopeFingerprint(fs, state, cwd))
+        const credentialProvider = ctx.get('credentials') as SonarCredentialProvider | undefined
+        const token = await resolveSonarToken(credentialProvider, state.root,
+          process.env[state.sonar_policy.token_env])
+        const scopeBefore = await scopeFingerprint(fs, state, cwd)
+        if (state.sonar_policy.source === 'ide-local') {
+          if (a.ce_task_id) throw new Error('本地规则审核不使用 CI ce_task_id')
+          if (!state.files.length) throw new Error('本地规则审核需要先登记当前任务的文件范围')
+          const root = state.root ?? cwd
+          if (!root) throw new Error('本地规则审核需要项目工作区')
+          const audit = await inspectLocalRules(state.sonar_policy, token, root, scopeBefore, exec.signal, state.files)
+          if (await scopeFingerprint(fs, state, cwd) !== scopeBefore) {
+            throw new Error('本地规则审核期间代码发生变化，请重新测试和审核')
+          }
+          if (state.sonar_audit !== undefined) state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
+          state.sonar_audit = audit
+          state.review.outcome = 'pending'
+          const mode = await resolveWriteMode(ctx, a, exec)
+          await writeSonarReport(fs, state, audit, cwd, mode)
+          await writeTask(fs, state, cwd, mode)
+          return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
+            uncovered_files: audit.uncovered_files ?? [], report_path: audit.report_path,
+            rule_learning_candidates: ruleLearningCandidates(state),
+            next_action: audit.gate === 'OK' ? '继续代码审核；检查历史阻断问题是否有可复用的修复经验，再决定是否通过 learn_rule 提议项目 Rule。误报或一次性问题不要沉淀。'
+              : '修复新增代码问题，并处理未覆盖文件；重新测试后再次运行 sonar_check。' }, null, 2)
+        }
+        let ceTaskId = a.ce_task_id
+        if (state.sonar_policy.source === 'local') {
+          if (ceTaskId) throw new Error('local sonar_check runs a fresh scan; do not provide a CI ce_task_id')
+          const root = state.root ?? cwd
+          if (!root) throw new Error('local SonarQube scan needs a project workspace')
+          const head = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
+          const branch = await runVerificationCommand(ctx, 'git branch --show-current', root, exec)
+          const status = await runVerificationCommand(ctx, 'git status --porcelain --untracked-files=all', root, exec)
+          const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
+          if (head.exit_code !== 0 || branch.exit_code !== 0 || status.exit_code !== 0 || !lastCommit
+            || !head.stdout.trim().startsWith(lastCommit) || branch.stdout.trim() !== state.branch) {
+            throw new Error('local SonarQube scan requires the recorded commit checked out on the task branch')
+          }
+          const dirty = status.stdout.split(/\r?\n/u).filter(line => line.trim() && !/^..\s+\.dsh[\\/]/u.test(line))
+          if (dirty.length) throw new Error('local SonarQube scan requires a clean working tree outside .dsh; commit or remove unrecorded changes first')
+          await assertLocalSonarReady(state.sonar_policy, token)
+          const defaultCommand = await readText(fs, 'pom.xml', root) === undefined ? 'sonar-scanner'
+            : 'mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar'
+          const approvedMode = a.sandbox_permissions === undefined ? undefined : await resolveWriteMode(ctx,
+            { ...a, command: state.sonar_policy.scan_command?.trim() || defaultCommand }, exec)
+          ceTaskId = await runLocalSonar(ctx, state.sonar_policy, token, root, state.branch, exec, defaultCommand, approvedMode)
+        }
+        if (!ceTaskId) throw new Error('sonar_check requires ce_task_id from this task\'s completed CI scan')
+        if (state.sonar_policy.source === 'local' && await scopeFingerprint(fs, state, cwd) !== scopeBefore) {
+          throw new Error('local SonarQube scan changed task files; rerun functional verification before auditing')
+        }
+        const audit = await inspectCompletedSonar(state.sonar_policy, token, ceTaskId, target,
+          scopeBefore, exec.signal)
         audit.commit_hash = state.commits.findLast(entry => entry.hash !== undefined)!.hash!
         if (state.sonar_audit !== undefined) state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
         state.sonar_audit = audit
         state.review.outcome = 'pending'
-        await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
+        const mode = await resolveWriteMode(ctx, a, exec)
+        await writeSonarReport(fs, state, audit, cwd, mode)
+        await writeTask(fs, state, cwd, mode)
+        return JSON.stringify({ gate: audit.gate, ...(audit.server_gate ? { server_gate: audit.server_gate } : {}),
+          blocking: audit.blocking, findings: audit.findings, report_path: audit.report_path,
+          rule_learning_candidates: ruleLearningCandidates(state),
           analysis_id: audit.analysis_id, next_action: audit.gate === 'OK' && audit.blocking.length === 0
-            ? 'Continue code review, then record review pass.'
-            : 'Record review blocked, fix findings, rerun tests and CI scan, then call sonar_check with the new ce_task_id.' }, null, 2)
+            ? 'Review prior blocking issues for reusable fixes with learn_rule; do not learn false positives. Continue code review, then record review pass.'
+            : 'Record review blocked, fix findings, rerun tests and the scan, then call sonar_check again.' }, null, 2)
       }
 
       if (a.operation === 'learn_rule') {
@@ -1873,7 +2086,7 @@ export function registerDevTask(ctx: Context): void {
           item.status = 'doing'
           delete item.review
           item.dispatch = { description: a.description ?? '', at: new Date().toISOString() }
-          note = `item "${item.id}" is doing; dispatch intent recorded: ${item.dispatch.description || '(no description)'}. Now invoke the subagent; after it returns, review_item then items(done).`
+          note = `item "${item.id}" is doing; implementation intent recorded: ${item.dispatch.description || '(no description)'}. Implement it directly or with help, then review_item and mark it done.`
           break
         }
         case 'review_item': {
@@ -1890,6 +2103,8 @@ export function registerDevTask(ctx: Context): void {
         }
         case 'advance': {
           const target = a.target_stage ?? ''
+          const planItemBlockers = taskPlanItemBlockers(state)
+          if (planItemBlockers.length) throw new Error(planItemBlockers.join('; '))
           await assertFreshEvidence(fs, state, workflow, cwd)
           const missingSkills = skillBlockers(state, workflow, session)
           if (missingSkills.length) throw new Error(missingSkills.join('; '))
