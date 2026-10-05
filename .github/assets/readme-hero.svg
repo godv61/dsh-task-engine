@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">DSH Task Engine</title>
+  <desc id="desc">四档复杂度路径连接项目技能、测试和代码审核。</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0b1730"/><stop offset=".55" stop-color="#102849"/><stop offset="1" stop-color="#0d2635"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#3dd8c3"/><stop offset="1" stop-color="#79b6ff"/></linearGradient>
+    <radialGradient id="glow"><stop offset="0" stop-color="#22b6b2" stop-opacity=".26"/><stop offset="1" stop-color="#22b6b2" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#8cc5d8" stroke-opacity=".08"/></pattern>
+  </defs>
+  <rect width="1200" height="340" rx="24" fill="url(#bg)"/><rect width="1200" height="340" rx="24" fill="url(#grid)"/>
+  <circle cx="1025" cy="90" r="310" fill="url(#glow)"/><circle cx="1180" cy="320" r="190" fill="url(#glow)"/>
+  <rect x="60" y="54" width="141" height="28" rx="14" fill="#1c4354" stroke="#3dd8c3" stroke-opacity=".35"/>
+  <circle cx="77" cy="68" r="4" fill="#3dd8c3"/>
+  <text x="89" y="73" fill="#a8ede4" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" letter-spacing="1.5">DEEPSEEK HARNESS</text>
+  <text x="56" y="155" fill="#f4f8ff" font-family="Segoe UI,Arial,sans-serif" font-size="54" font-weight="800" letter-spacing="-2">DSH Task Engine</text>
+  <rect x="60" y="176" width="430" height="4" rx="2" fill="url(#accent)"/>
+  <text x="60" y="225" fill="#c8d7e7" font-family="Microsoft YaHei,PingFang SC,Segoe UI,sans-serif" font-size="22">按需求选择路径，让团队规范进入每次开发</text>
+  <text x="60" y="270" fill="#8ba9c1" font-family="Segoe UI,Arial,sans-serif" font-size="14" letter-spacing="2">PROJECT KNOWLEDGE  /  VERIFIED DELIVERY</text>
+  <path d="M696 169H1054" fill="none" stroke="url(#accent)" stroke-width="3" stroke-linecap="round" opacity=".65"/>
+  <path d="M734 121V169M841 169V210M948 121V169M1054 169V210" fill="none" stroke="#70c7d3" stroke-width="2" opacity=".45"/>
+  <circle cx="696" cy="169" r="10" fill="#3dd8c3"/><circle cx="696" cy="169" r="20" fill="none" stroke="#3dd8c3" opacity=".35"/>
+  <circle cx="1054" cy="169" r="10" fill="#79b6ff"/><circle cx="1054" cy="169" r="20" fill="none" stroke="#79b6ff" opacity=".35"/>
+  <rect x="683" y="67" width="102" height="54" rx="13" fill="#16415a" stroke="#3dd8c3" stroke-opacity=".55"/>
+  <text x="734" y="100" text-anchor="middle" fill="#d5fff6" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="700">LOW</text>
+  <rect x="790" y="210" width="102" height="54" rx="13" fill="#183c63" stroke="#63c6f0" stroke-opacity=".55"/>
+  <text x="841" y="243" text-anchor="middle" fill="#e1f6ff" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="700">MEDIUM</text>
+  <rect x="897" y="67" width="102" height="54" rx="13" fill="#213b67" stroke="#82aaff" stroke-opacity=".55"/>
+  <text x="948" y="100" text-anchor="middle" fill="#edf2ff" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="700">HIGH</text>
+  <rect x="1003" y="210" width="102" height="54" rx="13" fill="#244364" stroke="#a5c1ff" stroke-opacity=".55"/>
+  <text x="1054" y="243" text-anchor="middle" fill="#f3f5ff" font-family="Segoe UI,Arial,sans-serif" font-size="17" font-weight="700">ULTRA</text>
+  <text x="685" y="313" fill="#83adbf" font-family="Segoe UI,Arial,sans-serif" font-size="12" letter-spacing="1.5">ASSESS  →  BUILD  →  TEST  →  REVIEW</text>
+</svg>
