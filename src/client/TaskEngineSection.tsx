@@ -10,6 +10,7 @@
 
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
 import type { MetaSkill } from '../adaptive.ts'
+import type { InitResource, ProjectInventory } from '../project-init.ts'
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -208,6 +209,17 @@ export interface InitWriteResult {
   error?: string
 }
 
+export interface ProjectInitPreview {
+  ok: boolean
+  inventory: ProjectInventory
+  resources: InitResource[]
+  files_to_create: string[]
+  project_map_coverage: string[]
+  existing_hash: string
+  expected_hash: string
+  error?: string
+}
+
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
   resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
@@ -237,6 +249,9 @@ export interface TaskEngineRemote {
   readInit(path: string): Promise<RemoteResult<InitView>>
   writeInit(request: { path: string; content: string; overwrite?: boolean }): Promise<RemoteResult<InitWriteResult>>
   generateInit(request: { path: string }): Promise<RemoteResult<InitDraft>>
+  generateProjectInit(request: { path: string }): Promise<RemoteResult<ProjectInitPreview>>
+  previewProjectInit(request: { path: string; resources: InitResource[] }): Promise<RemoteResult<ProjectInitPreview>>
+  applyProjectInit(request: { path: string; resources: InitResource[]; expected_hash: string; existing_hash: string }): Promise<RemoteResult<{ ok: boolean; created: string[]; error?: string }>>
 }
 
 /** Props the workbench hands this flow-editing tab (workspace already selected). */

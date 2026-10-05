@@ -61,7 +61,7 @@ import { assertLocalSonarReady, inspectSonar, localReviewGate, unresolvedBlockin
 import { inspectLocalRules } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
-import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject } from './project-init.ts'
+import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject, validateInitResources, type InitResource } from './project-init.ts'
 import { hashConfig, hashText } from './snapshot.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { mavenTestEvidence } from './verification-tests.ts'
@@ -1134,42 +1134,6 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
 async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
   const blockers = [...await evidenceBlockers(fs, state, workflow, cwd), ...await sonarBlockers(fs, state, cwd)]
   if (blockers.length) throw new Error(blockers.join('; '))
-}
-
-interface InitResource {
-  kind: 'skill' | 'rule'
-  name: string
-  description?: string
-  content: string
-  /** For Skills: meta skills that load this Skill. */
-  meta_skills?: MetaSkill[]
-  /** For Skills: project Rule names owned by this Skill. */
-  rules?: string[]
-}
-
-function validateInitResources(resources: InitResource[] | undefined): InitResource[] {
-  if (!Array.isArray(resources) || resources.length === 0 || resources.length > 24) {
-    throw new Error('init_project requires 1–24 Skill/Rule resources')
-  }
-  const names = new Set<string>()
-  for (const resource of resources) {
-    if (!resource || !['skill', 'rule'].includes(resource.kind) || !RESOURCE_NAME.test(resource.name)
-      || typeof resource.content !== 'string' || !resource.content.trim() || resource.content.length > 16_000) {
-      throw new Error('each init_project resource needs kind, kebab-case name, and nonempty content under 16,000 characters')
-    }
-    const key = `${resource.kind}:${resource.name}`
-    if (names.has(key)) throw new Error(`duplicate init_project resource ${key}`)
-    names.add(key)
-    if (resource.kind === 'skill') {
-      if (typeof resource.description !== 'string' || !resource.description.trim()) throw new Error(`Skill ${resource.name} needs a description`)
-      if (!Array.isArray(resource.meta_skills) || resource.meta_skills.length === 0 ||
-        !resource.meta_skills.every(meta => meta in META_STAGES)) throw new Error(`Skill ${resource.name} needs valid meta_skills`)
-      if (resource.rules !== undefined && (!Array.isArray(resource.rules) || !resource.rules.every(rule => RESOURCE_NAME.test(rule)))) {
-        throw new Error(`Skill ${resource.name} has invalid rule names`)
-      }
-    }
-  }
-  return resources
 }
 
 async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<string[]> {

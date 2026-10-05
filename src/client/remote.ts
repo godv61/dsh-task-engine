@@ -288,6 +288,26 @@ const initDraftSchema = z.object({
   error: z.string().optional(),
 })
 
+const projectInitResourceSchema = z.object({
+  kind: z.enum(['skill', 'rule']), name: z.string(), description: z.string().optional(),
+  content: z.string(), meta_skills: z.array(z.string()).optional(), rules: z.array(z.string()).optional(),
+})
+const projectInitInventorySchema = z.object({
+  project_name: z.string(), root_entries: z.array(z.string()),
+  modules: z.array(z.object({ path: z.string(), entries: z.array(z.string()) })),
+  manifests: z.array(z.object({ path: z.string(), facts: z.array(z.string()) })),
+  suggestions: z.array(z.object({ name: z.string(), kind: z.enum(['skill', 'rule']), meta_skills: z.array(z.string()), why: z.string() })),
+  caution: z.string(),
+})
+const projectInitPreviewRequestSchema = z.object({ path: z.string(), resources: z.array(projectInitResourceSchema) })
+const projectInitPreviewSchema = z.object({
+  ok: z.boolean(), inventory: projectInitInventorySchema, resources: z.array(projectInitResourceSchema),
+  files_to_create: z.array(z.string()), project_map_coverage: z.array(z.string()),
+  existing_hash: z.string(), expected_hash: z.string(), error: z.string().optional(),
+})
+const projectInitApplyRequestSchema = projectInitPreviewRequestSchema.extend({ expected_hash: z.string(), existing_hash: z.string() })
+const projectInitApplyResultSchema = z.object({ ok: z.boolean(), created: z.array(z.string()), error: z.string().optional() })
+
 const resourceRequestSchema = z.object({
   kind: z.enum(['skill', 'rule']), level: z.enum(['project', 'user']), path: z.string(),
   files: z.array(z.object({ path: z.string(), base64: z.string() })).max(1000),
@@ -649,6 +669,27 @@ export const TYPERT_REMOTE = {
         },
       ],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitDraft`, create: () => initDraftSchema, schema: initDraftSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/generateProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'generateProjectInit', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreview`, create: () => projectInitPreviewSchema, schema: projectInitPreviewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/previewProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'previewProjectInit', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreviewRequest`, create: () => projectInitPreviewRequestSchema, schema: projectInitPreviewRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreview`, create: () => projectInitPreviewSchema, schema: projectInitPreviewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/applyProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'applyProjectInit', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitApplyRequest`, create: () => projectInitApplyRequestSchema, schema: projectInitApplyRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitApplyResult`, create: () => projectInitApplyResultSchema, schema: projectInitApplyResultSchema },
     },
   ],
 }

@@ -341,6 +341,43 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   assert.deepEqual(JSON.parse(await f.call({ operation: 'status', task_id: 'L-1' })).rule_learning_candidates, [])
 })
 
+test('workbench initializes reviewed project resources directly and preserves Sonar settings', async () => {
+  const f = fixture({
+    'backend/pom.xml': '<project><properties><java.version>8</java.version></properties></project>',
+    'frontend/package.json': '{"dependencies":{"vue":"^2.7.0"}}',
+    '.dsh/meta.json': JSON.stringify({ sonar: { enabled: false, project_key: 'keep-me' } }),
+  })
+  const resources = [
+    { kind: 'rule', name: 'backend-convention', content: 'Use the backend module Maven Java 8 build for backend changes.' },
+    { kind: 'skill', name: 'adaptive-project-project-map', description: 'Reusable repository map',
+      content: 'Root package.json, backend/pom.xml and frontend/package.json define the backend and frontend modules.',
+      meta_skills: ['requirements-analysis', 'code-development'], rules: ['backend-convention'] },
+  ]
+  const receiver = {
+    authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
+    projectInitRoot: Controller.prototype.projectInitRoot,
+    previewProjectInit: Controller.prototype.previewProjectInit,
+    ctx: { get(name) {
+      if (name === 'llm') return { async *stream() { yield { type: 'text-delta', text: JSON.stringify({ resources }) } } }
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test' }) }
+    } },
+  }
+  const draft = await Controller.prototype.generateProjectInit.call(receiver, { path: f.cwd })
+  assert.deepEqual(draft.project_map_coverage, ['backend', 'frontend', 'package.json'])
+  assert.equal(f.files.has(join(f.cwd, '.dsh/rules/backend-convention.md')), false)
+  await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,
+    { path: f.cwd, resources: draft.resources, expected_hash: 'stale', existing_hash: draft.existing_hash }), /改变/)
+  const applied = await Controller.prototype.applyProjectInit.call(receiver,
+    { path: f.cwd, resources: draft.resources, expected_hash: draft.expected_hash, existing_hash: draft.existing_hash })
+  assert.equal(applied.ok, true)
+  assert.equal(f.files.get(join(f.cwd, '.dsh/meta.json')).includes('keep-me'), true)
+  assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['code-development'][0],
+    'adaptive-project-project-map')
+  assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
+  await assert.rejects(Controller.prototype.previewProjectInit.call(receiver,
+    { path: f.cwd, resources }), /不能覆盖/)
+})
+
 test('a local false positive needs human approval, keeps the raw gate, and expires after code changes', async () => {
   let allow = false
   const approvals = []

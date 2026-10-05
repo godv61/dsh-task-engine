@@ -13,6 +13,8 @@ import { Button, MarkdownText, StateDot } from '@deepseek-ai/dsh-client-ui-primi
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { InitDraft, InitView, TaskEngineRemote } from './TaskEngineSection.tsx'
+import type { ProjectInitPreview } from './TaskEngineSection.tsx'
+import type { InitResource } from '../project-init.ts'
 
 /** Stable localized chrome for the Markdown body. */
 const MD_LABELS = { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' }
@@ -24,9 +26,6 @@ const card: CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 12,
   border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '12px 14px',
 }
-
-const projectInitPrompt = (workspace: string): string =>
-  `请在当前项目根工作区 ${workspace} 使用工程化开发引擎初始化项目 Skill 和 Rule。先调用 dev_task init_project（phase=inspect），结合代表性源码、构建文件、测试和已有规范核实扫描结果。按项目实际情况拟定项目结构地图、技术栈、编码方法等 Skill 和必要的 Rule，并标明适用的元技能。项目地图必须总结整个仓库的模块职责、依赖和通用代码入口，能够供不同需求复用；不要把当前会话的需求、专属调用链或实现方案写成项目地图，相关内容应进入该任务产物或单独的领域 Skill。调用 phase=propose 展示拟创建的文件、内容和挂载关系；等我审阅确认后再调用 phase=apply。不要覆盖同名资源，也不要把偶发代码写法当成团队规范。`
 
 export function InitPanel({ workspace, remote }: {
   workspace: string
@@ -40,9 +39,12 @@ export function InitPanel({ workspace, remote }: {
   const [body, setBody] = useState('')
   const [msg, setMsg] = useState('')
   const [projectInitMsg, setProjectInitMsg] = useState('')
+  const [projectBusy, setProjectBusy] = useState(false)
+  const [projectDraft, setProjectDraft] = useState<ProjectInitPreview | null>(null)
+  const [projectResources, setProjectResources] = useState<InitResource[]>([])
 
   useEffect(() => {
-    if (!generating) {
+    if (!generating && !projectBusy) {
       setElapsed(0)
       return
     }
@@ -52,7 +54,68 @@ export function InitPanel({ workspace, remote }: {
       setElapsed(Math.round((Date.now() - started) / 1000))
     }, 1000)
     return () => { clearInterval(timer) }
-  }, [generating])
+  }, [generating, projectBusy])
+
+  useEffect(() => {
+    setProjectDraft(null)
+    setProjectResources([])
+    setProjectInitMsg('')
+  }, [workspace])
+
+  const generateProject = async (): Promise<void> => {
+    setProjectBusy(true)
+    setProjectDraft(null)
+    setProjectResources([])
+    setProjectInitMsg('')
+    try {
+      const result = await remote.generateProjectInit({ path: workspace })
+      if (!result.ok) throw new Error(describeError(result.error))
+      if (!result.value.ok) throw new Error(result.value.error ?? '项目初始化提案无效')
+      setProjectDraft(result.value)
+      setProjectResources(result.value.resources)
+      setProjectInitMsg('提案已生成并校验。请逐项审阅内容与挂载关系，确认后再写入。')
+    } catch (error) {
+      setProjectInitMsg(`生成失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setProjectBusy(false) }
+  }
+
+  const updateProjectResource = (index: number, change: Partial<InitResource>): void => {
+    setProjectResources(current => current.map((resource, at) => at === index ? { ...resource, ...change } : resource))
+    setProjectDraft(null)
+    setProjectInitMsg('提案已修改。请先点击“检查修改”，通过后才能写入。')
+  }
+
+  const checkProject = async (): Promise<void> => {
+    setProjectBusy(true)
+    setProjectInitMsg('')
+    try {
+      const result = await remote.previewProjectInit({ path: workspace, resources: projectResources })
+      if (!result.ok) throw new Error(describeError(result.error))
+      if (!result.value.ok) throw new Error(result.value.error ?? '提案校验失败')
+      setProjectDraft(result.value)
+      setProjectInitMsg('提案检查通过，可以确认写入。')
+    } catch (error) {
+      setProjectDraft(null)
+      setProjectInitMsg(`检查失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setProjectBusy(false) }
+  }
+
+  const applyProject = async (): Promise<void> => {
+    if (projectDraft === null || !window.confirm(`确认在 ${workspace} 创建 ${projectDraft.files_to_create.length} 个 Skill / Rule 文件并更新 .dsh/meta.json？`)) return
+    setProjectBusy(true)
+    setProjectInitMsg('')
+    try {
+      const result = await remote.applyProjectInit({ path: workspace, resources: projectDraft.resources,
+        expected_hash: projectDraft.expected_hash, existing_hash: projectDraft.existing_hash })
+      if (!result.ok) throw new Error(describeError(result.error))
+      if (!result.value.ok) throw new Error(result.value.error ?? '写入失败')
+      setProjectInitMsg(`已创建 ${result.value.created.length} 个项目配置文件：${result.value.created.join('、')}`)
+      setProjectDraft(null)
+      setProjectResources([])
+    } catch (error) {
+      setProjectInitMsg(`写入失败：${error instanceof Error ? error.message : String(error)}。若已有部分文件，请刷新并检查。`)
+    } finally { setProjectBusy(false) }
+  }
 
   const refresh = useCallback(() => {
     void remote.readInit(workspace).then((r) => {
@@ -112,24 +175,44 @@ export function InitPanel({ workspace, remote }: {
     createElement('div', { style: card },
       createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill / Rule 初始化'),
       createElement('p', { style: styles.muted },
-        '扫描只返回项目证据与建议名称；会话模型据此拟定覆盖整个仓库的项目地图、技术栈、编码 Skill 和 Rule。当前需求的专属信息应写入任务产物。先预览生成内容，确认后才写入项目；已有同名资源不会被覆盖。'),
+        '在此扫描仓库并生成项目 Skill / Rule 提案。项目地图覆盖整个仓库，当前需求的专属信息应写入任务产物。逐项审阅后确认写入；已有同名资源不会被覆盖。'),
       createElement('p', { style: styles.muted },
         '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
-      createElement('p', { style: styles.muted },
-        '使用方法：关闭此面板，在当前项目根工作区选择“工程化开发引擎”，把下面的请求发给新会话。'),
-      createElement('textarea', { style: { ...styles.textarea, minHeight: 100 }, readOnly: true,
-        'aria-label': '项目 Skill 和 Rule 初始化请求', value: projectInitPrompt(workspace) }),
       createElement('div', { style: styles.row },
-        createElement(Button, { variant: 'primary', size: 'md', onClick: () => {
-          if (!navigator.clipboard?.writeText) {
-            setProjectInitMsg('当前浏览器不支持一键复制。请直接选中上方请求文本并复制。')
-            return
-          }
-          void navigator.clipboard.writeText(projectInitPrompt(workspace)).then(
-            () => setProjectInitMsg('已复制初始化请求。请在工程化开发引擎会话中粘贴发送。'),
-            () => setProjectInitMsg('复制失败。请直接选中上方请求文本并复制。'))
-        } }, '复制初始化请求'),
-        projectInitMsg ? createElement('span', { role: 'status', style: styles.status }, projectInitMsg) : null),
+        createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy,
+          onClick: () => { void generateProject() } }, projectBusy ? '扫描与生成中…' : '扫描并生成提案'),
+        projectBusy ? createElement('span', { style: styles.status }, `已耗时 ${elapsed} 秒`) : null),
+      projectResources.length > 0
+        ? createElement('div', { style: styles.section },
+          createElement('p', { style: styles.muted },
+            `项目：${workspace}。提案包含 ${projectResources.length} 个 Skill / Rule；项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。`),
+          ...projectResources.map((resource, index) => createElement('div', { key: `${resource.kind}-${resource.name}`, style: card },
+            createElement('div', { style: styles.row },
+              createElement('strong', null, `${resource.kind === 'skill' ? 'Skill' : 'Rule'} · ${resource.name}`),
+              createElement(Button, { variant: 'ghost', size: 'sm', disabled: projectBusy,
+                onClick: () => { setProjectResources(current => current.filter((_, at) => at !== index)); setProjectDraft(null); setProjectInitMsg('已移除建议。请重新检查提案。') } }, '移除建议')),
+            resource.kind === 'skill'
+              ? createElement('div', { style: styles.section },
+                createElement('label', null, '简介', createElement('input', { style: styles.input, value: resource.description ?? '',
+                  onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { description: event.target.value }) } })),
+                createElement('label', null, '挂载元技能（逗号分隔）', createElement('input', { style: styles.input,
+                  value: (resource.meta_skills ?? []).join(', '),
+                  onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { meta_skills: event.target.value.split(',').map(item => item.trim()).filter(Boolean) as InitResource['meta_skills'] }) } })),
+                createElement('label', null, '关联 Rule（逗号分隔）', createElement('input', { style: styles.input,
+                  value: (resource.rules ?? []).join(', '),
+                  onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { rules: event.target.value.split(',').map(item => item.trim()).filter(Boolean) }) } })))
+              : null,
+            createElement('label', null, '内容', createElement('textarea', { style: { ...styles.textarea, minHeight: 180 },
+              value: resource.content,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { updateProjectResource(index, { content: event.target.value }) } })))),
+          createElement('div', { style: styles.row },
+            createElement(Button, { variant: 'outline', size: 'md', disabled: projectBusy,
+              onClick: () => { void checkProject() } }, '检查修改'),
+            createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || projectDraft === null,
+              onClick: () => { void applyProject() } }, '确认写入项目')),
+          projectDraft !== null ? createElement('p', { style: styles.muted }, `将创建：${projectDraft.files_to_create.join('、')}，并更新 .dsh/meta.json`) : null)
+        : null,
+      projectInitMsg ? createElement('p', { role: 'status', style: styles.status }, projectInitMsg) : null,
     ),
     createElement('div', { style: card },
       createElement('h2', { style: { margin: 0, fontSize: 17 } }, 'AGENTS.md 初始化'),

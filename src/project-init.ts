@@ -1,5 +1,43 @@
 /** Evidence-led repository inventory for project Skill/Rule initialization. */
 import type { FileProbe } from './project.ts'
+import { META_STAGES, type MetaSkill } from './adaptive.ts'
+
+export interface InitResource {
+  kind: 'skill' | 'rule'
+  name: string
+  description?: string
+  content: string
+  meta_skills?: MetaSkill[]
+  rules?: string[]
+}
+
+const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
+
+/** One validator for model-facing and workbench project initialization. */
+export function validateInitResources(resources: InitResource[] | undefined): InitResource[] {
+  if (!Array.isArray(resources) || resources.length === 0 || resources.length > 24) {
+    throw new Error('init_project requires 1–24 Skill/Rule resources')
+  }
+  const names = new Set<string>()
+  for (const resource of resources) {
+    if (!resource || !['skill', 'rule'].includes(resource.kind) || !RESOURCE_NAME.test(resource.name)
+      || typeof resource.content !== 'string' || !resource.content.trim() || resource.content.length > 16_000) {
+      throw new Error('each init_project resource needs kind, kebab-case name, and nonempty content under 16,000 characters')
+    }
+    const key = `${resource.kind}:${resource.name}`
+    if (names.has(key)) throw new Error(`duplicate init_project resource ${key}`)
+    names.add(key)
+    if (resource.kind === 'skill') {
+      if (typeof resource.description !== 'string' || !resource.description.trim()) throw new Error(`Skill ${resource.name} needs a description`)
+      if (!Array.isArray(resource.meta_skills) || resource.meta_skills.length === 0 ||
+        !resource.meta_skills.every(meta => typeof meta === 'string' && meta in META_STAGES)) throw new Error(`Skill ${resource.name} needs valid meta_skills`)
+      if (resource.rules !== undefined && (!Array.isArray(resource.rules) || !resource.rules.every(rule => typeof rule === 'string' && RESOURCE_NAME.test(rule)))) {
+        throw new Error(`Skill ${resource.name} has invalid rule names`)
+      }
+    }
+  }
+  return resources
+}
 
 export interface ProjectInventory {
   project_name: string
@@ -33,7 +71,8 @@ export function projectMapCoverageGaps(content: string, inventory: ProjectInvent
 const MANIFESTS = ['pom.xml', 'build.gradle', 'build.gradle.kts', 'package.json', 'go.mod', 'pyproject.toml', 'Cargo.toml']
 
 function slug(root: string): string {
-  const name = root.replace(/[\\/]+$/u, '').split(/[\\/]/u).at(-1) ?? 'project'
+  const parts = root.replace(/[\\/]+$/u, '').split(/[\\/]/u)
+  const name = parts[parts.length - 1] ?? 'project'
   return name.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '') || 'project'
 }
 

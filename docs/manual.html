@@ -61,11 +61,11 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="first-project">
         <h2>首次初始化项目</h2>
-        <p>打开“工程任务 → 项目初始化”，在“项目 Skill / Rule 初始化”复制请求，把它发送到以该项目为工作区的“工程化开发引擎”会话。页面提供入口；实际扫描和写入由会话中的 <code>dev_task init_project</code> 完成。</p>
+        <p>打开“工程任务 → 项目初始化”，选择项目根目录，点击<strong>扫描并生成提案</strong>。工作台读取目录、构建文件和部分代表性源码，由默认模型生成 Skill / Rule 草稿。无需复制请求到会话。逐项检查正文、简介、元技能挂载和 Rule 关联；编辑或移除建议后点击<strong>检查修改</strong>，最后点击<strong>确认写入项目</strong>。</p>
         <div class="scroll"><table><thead><tr><th>阶段</th><th>会发生什么</th><th>你要检查什么</th></tr></thead><tbody>
-          <tr><td><code>inspect</code></td><td>只读扫描目录、构建清单与可证明的版本。</td><td>是否看到了主要后端、前端、脚本模块。</td></tr>
-          <tr><td><code>propose</code></td><td>预览拟生成的 Skill、Rule、挂载关系与项目地图覆盖检查。</td><td>技术栈是否来自实际清单；项目地图是否总结整个仓库，而非当前需求。</td></tr>
-          <tr><td><code>apply</code></td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
+          <tr><td>扫描并生成提案</td><td>只读扫描目录、构建清单和部分源码，由默认模型生成草稿。</td><td>是否看到了主要后端、前端、脚本模块。</td></tr>
+          <tr><td>检查修改</td><td>预览并校验 Skill、Rule、挂载关系与项目地图覆盖。</td><td>技术栈是否来自实际清单；项目地图是否总结整个仓库，而非当前需求。</td></tr>
+          <tr><td>确认写入项目</td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
         </tbody></table></div>
         <p>常见产物是 <code>.dsh/skills/&lt;项目名&gt;-project-map/SKILL.md</code>、技术栈和后端/前端开发 Skill，以及 <code>.dsh/rules/</code> 下的项目规则。项目地图写模块职责、依赖、通用入口与版本证据；某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
         <p>团队共享时，审阅后将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code>、<code>.dsh/meta.json</code> 纳入 Git。Token 和本地审核报告不应随代码提交。</p>
@@ -162,7 +162,7 @@ pnpm dsh web --no-open</code></pre>
         <h3>装好后看不到入口？</h3>
         <p>检查插件是否装在正在运行的 Web profile，关闭旧 Web 进程并重启，查看启动日志。普通预设与“工程化开发引擎”预设的工具不同。</p>
         <h3>为什么初始化没有直接生成文件？</h3>
-        <p>工作台提供复制请求；在项目根目录的工程化会话中执行 <code>init_project inspect → propose → apply</code>，应用前需审阅提案。</p>
+        <p>工作台会先生成供审阅的草稿，不会在扫描时直接写文件。检查通过后，点击“确认写入项目”。若提示没有默认模型，先在 DSH“模型”页选择模型。工程化会话也保留 <code>init_project inspect → propose → apply</code> 的调用方式。</p>
         <h3>为什么 Maven 显示构建成功，任务仍不能前进？</h3>
         <p>如果验证命令是 Maven 测试目标，插件还要求输出中有至少一个实际测试。检查 Surefire 版本、是否跳过测试、JUnit 引擎和测试摘要；重新运行可见摘要的命令。</p>
         <h3>为什么 Sonar 报了业务上必须创建的对象？</h3>
