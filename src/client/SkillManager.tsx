@@ -48,7 +48,7 @@ export function SkillManager({ workspace, remote }: { workspace: string; remote:
     setSelected(null)
   }
 
-  return <div className={`te-config-layout${selected ? ' is-open' : ''}`}>
+  return <div className="te-config-layout">
     <div className="te-config-main">
       <ResourceManager workspace={workspace} remote={remote} kind="skill" onConfigureSkill={config ? ref => { setMessage(''); setSelected(ref) } : undefined} />
       {selected === null && message ? <p role="status" className="te-success">{message}</p> : null}

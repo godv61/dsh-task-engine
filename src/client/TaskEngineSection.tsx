@@ -441,7 +441,7 @@ export function TaskEngineSection(props: SectionProps): ReturnType<typeof create
   if (loading) return <p role="status">正在读取流程配置…</p>
 
   return (
-    <div className={`te-config-layout${configuringSkill ? ' is-open' : ''}`}>
+    <div className="te-config-layout">
     <div className="te-config-main" style={styles.wrap}>
       {configProblems.length > 0 && <p role="alert" style={styles.problems}>原配置有问题：{configProblems.join('；')}。请选择有效预设并保存修复。</p>}
       {flowNotice && <p role="status" className="te-flow-notice">{flowNotice}</p>}

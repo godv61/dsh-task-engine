@@ -17,6 +17,7 @@ export function SkillRuleDialog({ skill, profile, rules, description, saveLabel,
   const [draftRules, setDraftRules] = useState<ResourceRef[]>(profile?.rules ?? [])
   const [evidence, setEvidence] = useState<EvidenceKind | ''>(profile?.evidence ?? '')
   const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<'all' | 'selected' | 'project' | 'user' | 'bundled'>('all')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -49,16 +50,24 @@ export function SkillRuleDialog({ skill, profile, rules, description, saveLabel,
     }
   }
 
+  const selectedKeys = new Set(draftRules.map(formatResourceRef))
   const filtered = rules.filter(rule => {
     const key = formatResourceRef(rule.ref)
-    const chosen = draftRules.some(item => formatResourceRef(item) === key)
-    return chosen || `${rule.name} ${rule.sourceLabel}`.toLowerCase().includes(query.trim().toLowerCase())
-  })
+    const chosen = selectedKeys.has(key)
+    const matches = `${rule.name} ${rule.sourceLabel} ${rule.source}`.toLowerCase().includes(query.trim().toLowerCase())
+    return matches && (filter === 'all' || filter === 'selected' && chosen
+      || filter === 'project' && (rule.ref.source === 'project' || rule.ref.source === 'codex-project')
+      || filter === 'user' && rule.ref.source === 'user'
+      || filter === 'bundled' && rule.ref.source === 'bundled')
+  }).sort((a, b) => Number(selectedKeys.has(formatResourceRef(b.ref))) - Number(selectedKeys.has(formatResourceRef(a.ref)))
+    || a.name.localeCompare(b.name))
   const catalogKeys = new Set(rules.map(rule => formatResourceRef(rule.ref)))
   const missingRules = draftRules.filter(rule => !catalogKeys.has(formatResourceRef(rule)))
+  const visibleMissing = missingRules.filter(rule => (filter === 'all' || filter === 'selected')
+    && rule.name.toLowerCase().includes(query.trim().toLowerCase()))
 
   return <ResourceModal
-    placement="inline"
+    placement="right"
     title={`配置规则 · ${skill.name}`}
     description={description ?? '规则属于技能；此处的配置会用于所有绑定该技能的节点。'}
     onClose={close}
@@ -81,16 +90,21 @@ export function SkillRuleDialog({ skill, profile, rules, description, saveLabel,
       </label>
       <div className="te-binding-heading"><strong>适用规则</strong><span className="te-binding-count">已选 {draftRules.length}</span></div>
       <input className="te-input" type="search" aria-label="搜索规则" placeholder="搜索规则名称或来源" value={query} onChange={event => setQuery(event.target.value)} />
+      <div className="te-rule-filters" role="group" aria-label="筛选规则">
+        {([['all', '全部'], ['selected', `已选 ${draftRules.length}`], ['project', '项目'], ['user', '用户'], ['bundled', '内置']] as const).map(([value, label]) =>
+          <button key={value} type="button" aria-pressed={filter === value} className="te-rule-filter"
+            onClick={() => setFilter(value)}>{label}</button>)}
+      </div>
       <div className="te-skill-rule-list" role="group" aria-label="规则列表">
         {rules.length === 0 && missingRules.length === 0 ? <p className="te-binding-empty">规则库为空，请先到“规则”页创建或安装。</p> : null}
-        {rules.length > 0 && filtered.length === 0 ? <p className="te-binding-empty">没有匹配的规则。</p> : null}
-        {missingRules.map(rule => <label key={formatResourceRef(rule)} className="te-skill-rule-row">
+        {rules.length > 0 && filtered.length === 0 && visibleMissing.length === 0 ? <p className="te-binding-empty">没有匹配的规则。</p> : null}
+        {visibleMissing.map(rule => <label key={formatResourceRef(rule)} className="te-skill-rule-row">
           <input type="checkbox" checked onChange={() => toggle(rule)} />
           <span>{rule.name}</span><small>{rule.source} · 规则文件未找到</small>
         </label>)}
         {filtered.map(rule => {
           const key = formatResourceRef(rule.ref)
-          const checked = draftRules.some(item => formatResourceRef(item) === key)
+          const checked = selectedKeys.has(key)
           return <label key={key} className="te-skill-rule-row">
             <input type="checkbox" checked={checked} onChange={() => toggle(rule.ref)} />
             <span>{rule.name}</span><small>{rule.sourceLabel}</small>

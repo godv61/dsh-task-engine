@@ -19,7 +19,7 @@ const input: CSSProperties = { background: 'var(--dsw-alias-bg-layer-1)', color:
 const SOURCE_ORDER = ['project', 'codex-project', 'user', 'bundled']
 function effectiveSource(entries: SkillCatalogEntry[], name: string): string {
   return entries.filter(entry => entry.name === name)
-    .sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source))[0]?.source ?? '缺失'
+    .sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source))[0]?.sourceLabel ?? '缺失'
 }
 
 export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: string; remote: TaskEngineRemote;
@@ -30,6 +30,9 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [rules, setRules] = useState<RuleCatalogEntry[]>([])
   const [selected, setSelected] = useState<{ skill: ResourceRef; profile: SkillProfile; hash: string;
     template?: ReadSkillResult; templateSource?: string } | null>(null)
+  const [activeMeta, setActiveMeta] = useState<MetaSkill>('requirements-analysis')
+  const [metaQuery, setMetaQuery] = useState('')
+  const [skillQuery, setSkillQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -168,44 +171,71 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
 
   const candidates = [...new Set(skills.map(skill => skill.name))].filter(name =>
     name !== 'eng-delivery' && !(name in META_STAGES)).sort()
+  const stageQuery = metaQuery.trim().toLowerCase()
+  const visibleStages = (Object.entries(META_STAGES) as [MetaSkill, string][]).filter(([id, stage]) =>
+    !stageQuery || `${id} ${stage} ${(draft.meta_bindings?.[id] ?? []).join(' ')}`.toLowerCase().includes(stageQuery))
+  const visibleMeta = visibleStages.find(([id]) => id === activeMeta)?.[0] ?? visibleStages[0]?.[0]
+  const mounted = visibleMeta ? draft.meta_bindings?.[visibleMeta] ?? [] : []
+  const candidateQuery = skillQuery.trim().toLowerCase()
+  const matchingCandidates = candidates.filter(name => !mounted.includes(name) && (!candidateQuery
+    || name.toLowerCase().includes(candidateQuery)
+    || skills.some(skill => skill.name === name && `${skill.description} ${skill.sourceLabel}`.toLowerCase().includes(candidateQuery))))
   const sonar = draft.sonar ?? {}
   return createElement('div', { style: { ...styles.section, display: 'flex', flexDirection: 'column', gap: 16 } },
     createElement('div', { style: row },
       createElement(Button, { variant: 'outline', size: 'sm', onClick: onOpenInit }, '初始化项目 Skill / Rule'),
       createElement('span', { style: label }, '扫描项目后先预览，确认后写入。')),
-    createElement('div', { style: card },
-      createElement('strong', null, '按需求选择流程'),
-      createElement('span', { style: label }, '每个任务由大模型分析后选择复杂度，任务创建时冻结阶段和生效技能；不同会话可走不同流程。风险等级独立判断。'),
+    createElement('details', { style: card },
+      createElement('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, '按需求选择流程 · 查看四档阶段'),
+      createElement('span', { style: label }, '每个任务单独选择复杂度并冻结阶段和技能；不同会话可走不同流程。'),
       createElement('div', { style: grid }, ...(view?.grades ?? []).map(grade =>
         createElement('div', { key: grade.id, style: { ...card, gap: 5 } },
           createElement('strong', null, `${grade.label} · ${grade.id}`),
           createElement('span', { style: label }, grade.guidance),
           createElement('span', { style: { fontSize: 12 } }, grade.stages.join(' → ')),
-        ))),
-    ),
+        )))),
     createElement('div', { style: card },
       createElement('strong', null, '元技能与项目技能'),
       createElement('span', { style: label }, '每个元技能始终加载同名核心 Skill；同名项目 Skill 覆盖用户与内置版本。附加技能按名称挂载，实际来源在任务创建时解析。Rule 保存在对应 Skill 的 profile.json。'),
-      ...Object.entries(META_STAGES).map(([id, stage]) => {
-        const meta = id as MetaSkill
-        const selected = draft.meta_bindings?.[meta] ?? []
-        return createElement('div', { key: id, style: { ...card, gap: 6 } },
-          createElement('strong', null, stage),
-          createElement('span', { style: label }, `核心：${id} · 生效来源：${effectiveSource(skills, id)}`),
-          createElement(Button, { variant: 'outline', size: 'sm', onClick: () => openRules(id) }, '配置核心 Skill 的 Rule'),
-          createElement('div', { style: row }, ...selected.map(name => createElement('button', {
-            key: name, type: 'button', title: '移除挂载', style: { ...input, minWidth: 0, cursor: 'pointer' },
-            onClick: () => removeSkill(meta, name),
-          }, `${name} · ${effectiveSource(skills, name)} ×`)),
-          ...selected.map(name => createElement(Button, { key: `rules-${name}`, variant: 'outline', size: 'sm',
-            onClick: () => openRules(name) }, `配置 ${name} 的 Rule`))),
-          createElement('select', { style: input, 'aria-label': `给${stage}挂载项目技能`, value: '',
-            onChange: (event: { target: HTMLSelectElement }) => addSkill(meta, event.target.value) },
-          createElement('option', { value: '' }, '挂载附加技能…'),
-          ...candidates.filter(name => !selected.includes(name)).map(name =>
-            createElement('option', { key: name, value: name }, `${name} · ${effectiveSource(skills, name)}`))),
-        )
-      }),
+      createElement('input', { className: 'te-input', type: 'search', 'aria-label': '搜索元技能或已挂载技能',
+        placeholder: '搜索阶段或已挂载的 Skill', value: metaQuery,
+        onChange: (event: { target: HTMLInputElement }) => setMetaQuery(event.target.value) }),
+      createElement('div', { className: 'te-meta-layout' },
+        createElement('nav', { className: 'te-meta-nav', 'aria-label': '元技能阶段' },
+          ...visibleStages.map(([id, stage]) => createElement('button', { key: id, type: 'button',
+            'aria-current': visibleMeta === id ? 'true' : undefined,
+            onClick: () => { setActiveMeta(id); setSkillQuery('') } },
+          stage, createElement('small', null, `已挂载 ${(draft.meta_bindings?.[id] ?? []).length} 个 Skill`))),
+          visibleStages.length === 0 ? createElement('span', { style: label }, '没有匹配的阶段。') : null),
+        visibleMeta ? createElement('div', { className: 'te-meta-detail' },
+          createElement('div', null,
+            createElement('strong', null, META_STAGES[visibleMeta]),
+            createElement('div', { style: label }, '核心 Skill 与附加 Skill 的 Rule 分别保存在各自的配置中。')),
+          createElement('div', { className: 'te-meta-skill-row' },
+            createElement('span', null, createElement('strong', null, visibleMeta),
+              createElement('small', { style: { ...label, display: 'block' } }, `核心 · ${effectiveSource(skills, visibleMeta)}`)),
+            createElement(Button, { variant: 'outline', size: 'sm', onClick: () => openRules(visibleMeta) }, '配置 Rule')),
+          createElement('strong', { style: { fontSize: 13 } }, `附加 Skill · ${mounted.length}`),
+          ...mounted.map(name => createElement('div', { key: name, className: 'te-meta-skill-row' },
+            createElement('span', null, createElement('strong', null, name),
+              createElement('small', { style: { ...label, display: 'block' } }, effectiveSource(skills, name))),
+            createElement('div', { className: 'te-meta-skill-actions' },
+              createElement(Button, { variant: 'outline', size: 'sm', onClick: () => openRules(name) }, '配置 Rule'),
+              createElement('button', { type: 'button', className: 'te-transfer-remove',
+                'aria-label': `从${META_STAGES[visibleMeta]}移除 ${name}`, onClick: () => removeSkill(visibleMeta, name) }, '×')))),
+          mounted.length === 0 ? createElement('span', { style: label }, '尚未挂载附加 Skill。') : null,
+          createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 7 } },
+            createElement('strong', { style: { fontSize: 13 } }, '挂载附加 Skill'),
+            createElement('input', { className: 'te-input', type: 'search', 'aria-label': '搜索可挂载技能',
+              placeholder: '搜索 Skill 名称、说明或来源', value: skillQuery,
+              onChange: (event: { target: HTMLInputElement }) => setSkillQuery(event.target.value) }),
+            createElement('span', { style: label }, `可选 ${matchingCandidates.length} 个${matchingCandidates.length > 12 ? '，先显示前 12 个；可继续输入缩小范围' : ''}`),
+            createElement('div', { className: 'te-meta-candidates' },
+              ...matchingCandidates.slice(0, 12).map(name => createElement('div', { key: name, className: 'te-meta-candidate' },
+                createElement('span', null, createElement('strong', null, name),
+                  createElement('small', null, effectiveSource(skills, name))),
+                createElement(Button, { variant: 'outline', size: 'sm', onClick: () => addSkill(visibleMeta, name) }, '挂载'))),
+              matchingCandidates.length === 0 ? createElement('span', { style: label }, '没有匹配的 Skill。') : null))) : null),
     ),
     createElement('div', { style: card },
       createElement('div', { style: row }, createElement('strong', null, 'SonarQube 审核'),
@@ -260,13 +290,13 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
         ),
       ) : null,
     ),
-    createElement('div', { style: row },
+    createElement('div', { className: 'te-adaptive-savebar' },
       createElement(Button, { variant: 'outline', size: 'sm', disabled: loading || saving, onClick: refresh }, '刷新'),
       createElement(Button, { variant: 'primary', size: 'sm', disabled: loading || saving || !dirty, onClick: save },
         saving ? '保存中…' : '保存自适应配置'),
-      createElement('span', { style: label }, '项目 Skill / Rule 初始化入口位于“项目初始化”页。'),
+      createElement('span', { style: label }, dirty ? '有未保存的项目配置' : '项目配置已保存'),
+      message ? createElement('span', { role: 'status', style: { ...label, flexBasis: '100%' } }, message) : null,
     ),
-    message ? createElement('p', { role: 'status', style: styles.status }, message) : null,
     view?.problems.length ? createElement('p', { role: 'alert', style: styles.status }, view.problems.join('；')) : null,
     selected ? createElement(SkillRuleDialog, { key: `${selected.skill.source}:${selected.skill.name}`, skill: selected.skill,
       profile: selected.profile, rules,

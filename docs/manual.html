@@ -75,7 +75,7 @@ pnpm dsh web --no-open</code></pre>
         <h2>Skill 与 Rule 如何生效</h2>
         <p>内置核心 Skill 对应需求分析、架构设计、任务编排、代码开发、测试和代码审核。你可以给这些元技能挂载项目 Skill，并在 Skill 的 <code>profile.json</code> 配置 Rule。项目 Skill 可来自 <code>.dsh/skills/</code>，工作台也能发现 <code>.agents/skills/</code> 中的 Codex 项目技能；用户级资源可跨项目复用。</p>
         <p><strong>同名 Skill 的优先级：</strong>项目级优先于用户级，用户级优先于插件内置。项目同名版本使用自己的 Rule 列表，不把低优先级版本的 Rule 自动混进来。Rule 挂在 Skill 下，不是给某个阶段随意叠加；同一个 Skill 被不同元技能使用时遵守同一组 Rule。</p>
-        <p>项目挂载保存在 <code>.dsh/meta.json</code>；工作台“自适应流程”可完成配置。编辑正文后，下一次加载读取最新文件，但已创建任务仍按创建时的阶段图和资源引用运行。删除正在引用的 Skill/Rule 会阻止流转。</p>
+        <p>项目挂载保存在 <code>.dsh/meta.json</code>；工作台“自适应流程”可完成配置。左侧选择元技能，右侧查看核心与已挂载 Skill；可以搜索要挂载的 Skill。点击 Skill 旁的“配置 Rule”会打开右侧抽屉，可按名称、来源或已选状态筛选规则。项目挂载使用页面底部的“保存自适应配置”，Rule 抽屉单独保存 Skill 的规则档案。编辑正文后，下一次加载读取最新文件，但已创建任务仍按创建时的阶段图和资源引用运行。删除正在引用的 Skill/Rule 会阻止流转。</p>
         <p>初始化生成的 Rule 应有明确触发条件、适用边界和正确示例。Sonar 审核失败后，只有<strong>真实、已修复、可复用</strong>的案例才适合用 <code>learn_rule propose → apply</code> 写入项目 Rule；误报不应被教给下一次开发。</p>
       </section>
 
