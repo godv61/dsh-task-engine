@@ -53,6 +53,8 @@ export interface SonarAudit {
   report_path?: string
   /** Changed task files actually analyzed by the local engine. */
   scanned_files?: string[]
+  /** Active project rules by language and whether an analyzer was synchronized locally. */
+  profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
 }
 
 /** Limit local analysis to the project-relative source roots used by the project's scanner. */

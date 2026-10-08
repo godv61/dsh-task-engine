@@ -239,6 +239,7 @@ const taskLedgerViewSchema = z.object({
         dispositions: z.array(z.object({ issue_key: z.string(), kind: z.string(), reason: z.string(),
           evidence: z.array(z.string()), approved_at: z.string() })).optional(),
         report_path: z.string().optional(), scanned_files: z.array(z.string()).optional(),
+        profile_coverage: z.array(z.object({ language: z.string(), active_rules: z.number(), analyzer: z.string() })).optional(),
         findings: z.array(z.object({
           key: z.string(), rule: z.string(), message: z.string(), severity: z.string(),
           file: z.string(), line: z.number().optional(),

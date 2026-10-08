@@ -117,30 +117,26 @@ pnpm dsh web --no-open</code></pre>
       <section id="sonar">
         <h2>按项目配置 SonarQube</h2>
         <p><strong>不需要 Sonar：</strong>保持“自适应流程”中的 Sonar 开关关闭；不必填写地址、Key 或 Token。代码审核元技能和项目 Rule 仍会运行。</p>
-        <p><strong>需要 Sonar：</strong>先在工作台顶部选对项目，再开启 Sonar，填写服务地址、项目 Key、分析对象与扫描来源。项目 Key 在 Sonar 项目设置中查；Token 在 Sonar 个人安全设置生成，并需具备所选方式需要的分析或读取权限。Token 在同页单独保存到本机 DSH 凭据存储，按项目工作区隔离，只显示“已配置”，不会写入 <code>.dsh/meta.json</code> 或审核报告。换项目应分别配置。环境变量名可作为后备设置。</p>
+        <p><strong>需要 Sonar：</strong>先在工作台顶部选对项目，再开启 Sonar，填写服务地址和项目 Key。项目 Key 在 Sonar 项目设置中查；Token 在 Sonar 个人安全设置生成，需能读取该项目的规则。Token 在同页单独保存到本机 DSH 凭据存储，按项目工作区隔离，只显示“已配置”，不会写入 <code>.dsh/meta.json</code> 或审核报告。换项目应分别配置。</p>
         <div class="scroll"><table><thead><tr><th>页面字段</th><th>怎样填写</th></tr></thead><tbody>
           <tr><td>服务地址</td><td>填 SonarQube 根地址，例如 <code>https://sonar.example.com</code>，不带项目页面路径。</td></tr>
           <tr><td>项目 Key</td><td>填当前代码库在 SonarQube 中的项目标识；每个项目可不同。</td></tr>
-          <tr><td>扫描来源</td><td>提交前检查选 <code>ide-local</code>；已有 CI 分析选 <code>ci</code>；本机上传选 <code>local</code>。</td></tr>
-          <tr><td>分析对象</td><td>分支或合并请求，与实际扫描目标一致。本地规则审核使用分支模式。</td></tr>
-          <tr><td>参考分支、审核路径</td><td>本地规则审核填写新代码基线和项目实际扫描的相对目录；不必把其他项目的配置复制过来。</td></tr>
+          <tr><td>Git 参考版本</td><td>高级设置；默认 <code>HEAD</code>，审核尚未提交的变更。需要时可填写本机已有的分支或提交。</td></tr>
+          <tr><td>审核路径</td><td>高级设置；留空审核本次任务全部代码。若只需后端审核，填写项目相对目录。</td></tr>
           <tr><td>Token</td><td>当前项目单独保存；保存后只显示是否已配置，不会回显原值。</td></tr>
         </tbody></table></div>
-        <div class="scroll"><table><thead><tr><th>扫描来源</th><th>何时适用</th><th>提交/推送</th><th>结果边界</th></tr></thead><tbody>
-          <tr><td><code>ide-local</code> 本地规则审核</td><td>希望在提交前检查未提交的新代码；本机有 SonarLint 后台组件。</td><td>无需提交、无需推送。</td><td>同步项目 Quality Profile 中可本地执行的规则；不产生服务端 CE task，也不等同完整服务端 Quality Gate。</td></tr>
-          <tr><td><code>ci</code> CI 结果</td><td>已有 CI 扫描，能取得该次分析的 CE task ID。</td><td>按 CI 触发条件提交并推送。</td><td>读取本次服务端分析的新代码问题及 Quality Gate 条件。</td></tr>
-          <tr><td><code>local</code> 上传式本机扫描</td><td>本机能运行扫描器，SonarQube 支持保存任务分支分析。</td><td>先提交；不要求推送。</td><td>扫描上传到 Sonar 服务端，Community Build 的分支扫描会被预先拒绝。</td></tr>
-        </tbody></table></div>
-        <h3>本地规则审核的额外设置</h3>
-        <p>选择 Git 参考分支或提交作为“新代码”基线；<code>include_paths</code> 填项目实际扫描的目录，例如仅后端 Maven 模块。代码审核会先用 Git 差异核对这些目录中的变更是否全部登记到任务 <code>files</code>；漏登时直接报出文件名并要求补齐，避免“只扫一部分却显示全部覆盖”。项目范围之外的前端或 SQL 不能被误称为已通过本次后端审核。</p>
-        <p>DSH 服务进程需配置 <code>DSH_SONARLINT_JAVA</code>、<code>DSH_SONARLINT_LIB</code>、<code>DSH_SONARLINT_PLUGINS</code>，分别指向 Java、SonarLint 后台 JAR 目录和分析器 JAR；Windows 多个插件路径用分号分隔。JS/TS/Vue/CSS 分析还需要 Node.js。若项目为某种语言启用了规则而本地无法分析，报告列“未覆盖”并阻断。部分服务端规则本身无法在本地执行；需要完全相同的服务端结论时使用 CI 扫描。</p>
+        <h3>提交前审核如何运行</h3>
+        <p>测试通过并进入代码审核阶段后，代码审核元技能自动调用 <code>dev_task sonar_check</code>。默认以 <code>HEAD</code> 为基线，分析任务中尚未提交的 Git 变更行；无需提交、推送或在页面手动发起。首次审核会下载并校验官方 SonarLint 后台组件，保存在运行 DSH 的用户目录 <code>~/.dsh/sonarlint-runtime/</code>；组件再从 SonarQube 同步当前项目的语言分析器和 Quality Profile 规则。首次安装要求可访问 Maven Central 和 SonarQube。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK；JS/TS/Vue/CSS 分析仍可能需要 Node.js。</p>
+        <p>首次下载约 93 MiB，慢速网络可能等待较久。若运行 DSH 的机器访问 Maven Central 需要代理，请在启动 DSH 前设置 <code>DSH_SONARLINT_PROXY=http://127.0.0.1:7897</code>（替换为实际地址），或使用 <code>HTTPS_PROXY</code>，然后重启 DSH。代理是安装组件的本机网络设置，不写入项目配置。已经手工安装后台组件时，可选用 <code>DSH_SONARLINT_JAVA</code> 和 <code>DSH_SONARLINT_LIB</code> 指向现有安装。</p>
+        <p>若只审后端代码，在高级设置的“审核路径”填写相对目录，例如 Maven 模块。审核前会检查这些目录的 Git 变更是否全部登记到任务 <code>files</code>；漏登会报出文件名。项目范围外的前端或 SQL 不会被称为已通过本次审核。报告列出项目生效规则数量、分析器状态和未覆盖文件；相关语言未覆盖时会阻断。</p>
+        <p>SonarLint 只能运行支持本地分析的服务端规则；本地通过不等于完整 SonarQube Quality Gate 通过。涉及全项目数据流、跨文件上下文或只在服务端实现的规则，仍以团队 CI 扫描为准。旧任务原有的审核设置可以继续读取，新项目页面只提供提交前审核。</p>
         <div class="note warn">Sonar 配置是每项目独立的；启用规则不保证规则本身适用于所有代码。碰到疑似自定义规则误报，应核对语义和证据，不应为了让计数归零而破坏业务实现。</div>
       </section>
 
       <section id="findings">
         <h2>查看问题、处理误报与沉淀规则</h2>
-        <p>测试通过后，在“代码审核”阶段运行 <code>dev_task sonar_check</code>。任务台账可展开最近一次审核，查看来源、原始结果、问题规则、严重程度、文件位置、人工复核状态与未解决数量。每次扫描在项目 <code>.dsh/reviews/&lt;任务 ID&gt;/</code> 生成一份 Markdown 报告；项目可将该报告目录加入 <code>.gitignore</code>。结构化结果保存在 <code>.dsh/task-&lt;任务 ID&gt;.json</code>。</p>
-        <p>真实问题：修复代码，重新验证并复扫。<strong>仅本地规则审核的误报：</strong>使用 <code>dev_task sonar_disposition</code> 指定当前报告中的 <code>issue_key</code>，说明具体误报原因并提供证据；DSH 请求人工逐条批准。批准记录写回本次任务与报告，原始规则结果仍显示原来的 <code>ERROR</code>，任务门禁另显示复核后的未解决数量。未批准、证据不足、代码变化或重新扫描后都不能沿用该处置。CI 和上传式扫描的服务端 Quality Gate 不能通过该操作绕过，应在 SonarQube 中按组织流程处理。</p>
+        <p>测试通过后，代码审核元技能会自动运行 <code>dev_task sonar_check</code>。任务台账可展开最近一次审核，查看原始结果、问题规则、严重程度、文件位置、分析器状态、人工复核状态与未解决数量。每次扫描在项目 <code>.dsh/reviews/&lt;任务 ID&gt;/</code> 生成一份 Markdown 报告；项目可将该报告目录加入 <code>.gitignore</code>。结构化结果保存在 <code>.dsh/task-&lt;任务 ID&gt;.json</code>。</p>
+        <p>真实问题：修复代码，重新验证并复扫。疑似本地规则误报：使用 <code>dev_task sonar_disposition</code> 指定当前报告中的 <code>issue_key</code>，说明具体原因并提供证据；DSH 请求人工逐条批准。批准记录写回本次任务与报告，原始规则结果仍显示原来的 <code>ERROR</code>，任务门禁另显示复核后的未解决数量。未批准、证据不足、代码变化或重新扫描后都不能沿用该处置。服务端 Quality Gate 仍按 SonarQube 中的团队流程处理。</p>
         <p>你可以直接对会话说：“请打开任务台账中这条 Sonar 告警，核对代码语义并给出理由和源码证据。确认是误报后发起逐项人工复核；未经我批准不要放行，也不要修改代码来藏掉告警。”审批请求会列出规则、文件、问题编号、理由和证据。多条告警需要分别审查；一条被批准不会自动豁免同规则的其他位置。</p>
         <p>真实且具有通用性的修复案例，可以先用 <code>learn_rule phase=propose</code> 预览项目 Rule，再用 <code>phase=apply</code> 挂到对应开发 Skill；会影响之后创建的任务。已确认误报不列为学习候选，不自动转成团队规范。发现服务器自定义规则本身过宽时，应把例子反馈给规则维护者修正其实现或适用范围。</p>
       </section>

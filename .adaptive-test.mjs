@@ -281,7 +281,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
 
 test('review-only Sonar gate blocks pass until the task records CI analysis of new code', async () => {
   const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true, host_url: 'https://sonar.example',
-    project_key: 'project', mode: 'branch', token_env: 'SONAR_TOKEN' } }) })
+    project_key: 'project', mode: 'branch', source: 'ci', token_env: 'SONAR_TOKEN' } }) })
   await f.call({ operation: 'create', task_id: 'S-1', title: 'change', branch: 'feature', complexity: 'low',
     complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
   const state = f.state('S-1')
@@ -339,6 +339,15 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   assert.deepEqual(JSON.parse(f.files.get(join(f.cwd, '.dsh/skills/code-development/profile.json'))).rules,
     [{ source: 'project', name: 'handle-null-boundary' }])
   assert.deepEqual(JSON.parse(await f.call({ operation: 'status', task_id: 'L-1' })).rule_learning_candidates, [])
+})
+
+test('new Sonar projects default to pre-commit review against HEAD', async () => {
+  const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true,
+    host_url: 'https://sonar.example', project_key: 'project' } }) })
+  await f.call({ operation: 'create', task_id: 'PRE-1', title: 'new code', branch: 'feature',
+    complexity: 'low', complexity_reason: 'Small change', files: ['app.java'] })
+  assert.equal(f.state('PRE-1').sonar_policy.source, 'ide-local')
+  assert.equal(f.state('PRE-1').sonar_policy.reference_branch, 'HEAD')
 })
 
 test('workbench initializes reviewed project resources directly and preserves Sonar settings', async () => {

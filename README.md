@@ -131,32 +131,29 @@ pnpm dsh web --no-open
 | --- | --- |
 | 服务地址 | SonarQube 根地址，如 `https://sonar.example.com`，不带项目页面路径。 |
 | 项目 Key | 当前代码库在 SonarQube 中的项目标识，不同项目可以不同。 |
-| 扫描来源 | 提交前本地规则选 `ide-local`；已有 CI 分析选 `ci`；本机上传扫描选 `local`。 |
-| 分析对象 | 分支或合并请求，与实际扫描目标一致；`ide-local` 使用分支模式。 |
-| 参考分支、审核路径 | 本地规则审核的新代码 Git 基线，以及实际扫描的项目相对路径。 |
+| Git 参考版本 | 高级设置，默认 `HEAD`，审核当前尚未提交的变更；也可填本机已有的分支或提交。 |
+| 审核路径 | 高级设置，留空审核本次任务全部代码；项目只需审核后端时填写对应的相对目录。 |
 | Token | 在同一页面单独保存到本机 DSH 凭据存储，按工作区隔离；保存后只显示“已配置”。 |
 
 Sonar 的非秘密配置保存在项目 `.dsh/meta.json`；Token **不会写入该文件、任务或报告**。换项目时分别配置。项目的 Quality Profile 和规则本身仍由 SonarQube 服务器管理。
 
-### 三种审核来源
+### 提交前审核如何运行
 
-| 来源 | 何时使用 | 提交/推送 | 结果边界 |
-| --- | --- | --- | --- |
-| `ide-local` 本地规则 | 提交前检查新代码，本机具备 SonarLint 后台组件 | **无需提交、无需推送** | 同步 Quality Profile 中可本地运行的规则；不产生 CE task，不等同完整服务端 Quality Gate。 |
-| `ci` CI 分析 | CI 已扫描并能取得本次 CE task ID | 按 CI 触发条件提交并推送 | 读取该次服务端分析的新代码问题与 Quality Gate。 |
-| `local` 本机上传 | 本机有扫描器且服务端支持任务分支分析 | 先提交，无需推送 | 将扫描结果上传 Sonar；Community Build 的分支分析会预先拒绝。 |
+测试通过并进入代码审核阶段后，代码审核元技能会调用 `dev_task sonar_check`。默认以 `HEAD` 为基线，读取当前任务尚未提交的 Git 变更，并按 SonarQube 项目的 Quality Profile 分析变更行；**无需提交或推送，也无需在页面手动发起**。首次运行会下载并校验官方 SonarLint 后台组件，缓存在运行 DSH 的用户目录 `~/.dsh/sonarlint-runtime/`；后台从 SonarQube 同步当前项目的语言分析器与规则。安装与同步要求这台机器能访问 Maven Central 和 SonarQube；网络或权限失败时审核会明确报错，不会静默通过。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK。JS/TS/Vue/CSS 分析仍可能需要可用的 Node.js。
 
-`ide-local` 需要选 Git 参考分支或提交作为新代码基线，并用 `include_paths` 限定实际审核范围，例如只扫描后端 Maven 模块。审核前会核对这些目录的 Git 变更是否全部登记在任务 `files`；漏登会报出文件名。扫描范围外的前端或 SQL 不会被称为通过了后端审核。
+首次下载约 93 MiB，网络较慢时会等待较久。如果运行 DSH 的机器访问 Maven Central 必须走代理，在启动 DSH 前设置 `DSH_SONARLINT_PROXY=http://127.0.0.1:7897`（替换为实际代理地址），或使用标准 `HTTPS_PROXY` 环境变量；重启 DSH 后生效。这是安装组件的网络设置，不会写入项目配置。若已手工准备后台组件，仍可用 `DSH_SONARLINT_JAVA` 与 `DSH_SONARLINT_LIB` 指向现有安装。
 
-本地规则审核还需要 DSH 服务进程提供 `DSH_SONARLINT_JAVA`、`DSH_SONARLINT_LIB`、`DSH_SONARLINT_PLUGINS`，分别指向 Java、SonarLint 后台 JAR 目录和分析器 JAR；Windows 多个插件路径用分号分隔。JS/TS/Vue/CSS 分析还需要 Node.js。无法分析的语言会列为“未覆盖”并阻断。需要完整服务端结论时使用 CI 扫描。
+项目仅审核后端时，可在高级设置的“审核路径”填写实际后端目录，例如 Maven 模块。审核前会核对这些目录的 Git 变更是否全部登记在任务 `files`；漏登会报出文件名。范围外的前端或 SQL 不会被称为已通过本次后端审核。报告会列出项目生效规则数量、分析器状态和未覆盖文件；未覆盖的相关语言会阻断审核。
+
+本地审核只能运行 SonarLint 支持的服务端规则，**通过不等于 SonarQube 服务端 Quality Gate 通过**。涉及全项目数据流、跨文件上下文或仅在服务端实现的规则，仍以团队的 CI 扫描结果为准。旧任务原有的 CI/上传式扫描配置仍可读取，但新项目页面只提供提交前审核。
 
 ### 查看审核、处理误报、沉淀 Rule
 
-测试通过并进入**代码审核**后运行 `dev_task sonar_check`。在**任务台账**展开最近一次审核，可查看来源、原始结果、规则、严重程度、文件位置、人工复核状态和未解决数量。每次扫描在项目 `.dsh/reviews/<任务 ID>/` 生成 Markdown 报告；结构化结果写入 `.dsh/task-<任务 ID>.json`。
+代码审核元技能自动调用 `dev_task sonar_check`。在**任务台账**展开最近一次审核，可查看原始结果、规则、严重程度、文件位置、分析器状态、人工复核状态和未解决数量。每次扫描在项目 `.dsh/reviews/<任务 ID>/` 生成 Markdown 报告；结构化结果写入 `.dsh/task-<任务 ID>.json`。
 
 - **真实问题：** 修复代码，重新测试并复扫。真实、已修复且可复用的案例，可以通过 `learn_rule phase=propose → apply` 预览并沉淀为项目 Rule，供之后创建的任务使用。
 - **疑似本地规则误报：** 用 `sonar_disposition` 指定本次报告的 `issue_key`，提供具体理由与源码证据，由人逐条批准。原始告警仍保留；未批准、证据不足、代码变化或重新扫描后都不能沿用处置。已确认误报不会自动转成 Rule。
-- **CI 或上传式服务端结果：** 插件不能通过本地误报处置绕过服务端 Quality Gate；应按组织流程在 SonarQube 中处理。若自定义规则本身过宽，应反馈给规则维护者，不要为消除告警而破坏业务实现。
+- **自定义规则不准确：** 将问题、代码语义和证据反馈给 SonarQube 规则维护者；不要为消除告警而破坏业务实现。
 
 ## 任务台账与项目文件
 

@@ -21,12 +21,15 @@ test('one review gets a credential-free Markdown report path and issue details',
   const audit = { analysis_id: 'abc12345-0000', checked_at: '2026-10-03T10:11:12.000Z',
     target: 'qdm_gw_chemical_260930', gate: 'ERROR', findings: [{key:'x',rule:'java:S103',
       severity:'MAJOR',file:'A.java',line:12,message:'Line too long'}], blocking:[{key:'x'}],
-    scanned_files:['A.java'],uncovered_files:[] }
+    scanned_files:['A.java'],uncovered_files:[],
+    profile_coverage:[{language:'JAVA',active_rules:66,analyzer:'SYNCED'}] }
   const path = sonarReportPath('QMS-1', audit)
   assert.match(path, /^\.dsh\/reviews\/QMS-1\/2026-/)
   const report = renderSonarReport('QMS-1', {source:'ide-local',project_key:'project',include_paths:['fp-bussiness']}, audit)
   assert.match(report, /java:S103/)
   assert.match(report, /A.java:12/)
+  assert.match(report, /JAVA：服务端启用 66 条规则；本地分析器 SYNCED/)
+  assert.match(report, /不等同 SonarQube 服务端完整扫描或 Quality Gate/)
   assert.equal(report.includes('token-secret'),false)
 })
 

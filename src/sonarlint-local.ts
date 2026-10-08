@@ -1,13 +1,14 @@
 /** Local SonarQube for IDE engine. It reads server rules and source files; it never runs a scanner or uploads an analysis. */
 import { spawn, execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import type { SonarAudit, SonarFinding, SonarPolicy } from './sonar.ts'
 import { isBlockingFinding, isIncludedAuditPath } from './sonar.ts'
+import { resolveSonarLintEngine } from './sonarlint-install.ts'
 
 const run = promisify(execFile)
 const SUPPORTED_FILE = /\.(?:java|js|jsx|ts|tsx|vue|css|scss|html|jsp|xml|json|ya?ml|sql|properties|py|go|kt|kts|cs|c|cc|cpp|h|hpp|php|rb|sh|scala|groovy)$/iu
@@ -92,19 +93,6 @@ export async function changedLines(root: string, reference: string, taskPaths?: 
     && (scoped === undefined || scoped.has(file.path.replaceAll('\\', '/').toLowerCase())))
 }
 
-interface EnginePaths { java: string; lib: string; plugins: string[] }
-
-/** The engine can be installed independently; environment paths point to its Java runtime and SonarLint JARs. */
-function enginePaths(): EnginePaths {
-  const java = process.env.DSH_SONARLINT_JAVA
-  const lib = process.env.DSH_SONARLINT_LIB
-  const plugins = process.env.DSH_SONARLINT_PLUGINS?.split(sep === '\\' ? ';' : ':').filter(Boolean) ?? []
-  if (!java || !lib || !plugins.length || !existsSync(java) || !existsSync(lib) || plugins.some(path => !existsSync(path))) {
-    throw new Error('本地 Sonar 审核需要 DSH_SONARLINT_JAVA、DSH_SONARLINT_LIB 和 DSH_SONARLINT_PLUGINS；请先安装 SonarLint 后台组件并配置路径')
-  }
-  return { java, lib, plugins }
-}
-
 interface RpcPending { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
 
 /** Analyze only changed supported files with the project's synchronized Quality Profile. */
@@ -133,7 +121,7 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
   const branchData = await branchResponse.json() as { branches?: { name?: string; isMain?: boolean }[] }
   const serverMain = branchData.branches?.find(branch => branch.isMain === true)?.name
   if (!serverMain) throw new Error('SonarQube 未返回项目主分支，无法同步本地规则')
-  const paths = enginePaths()
+  const paths = await resolveSonarLintEngine(undefined, signal)
   const supported = changes.filter(change => localLanguage(change.path))
   const files = supported.map(change => {
     const absolute = resolve(root, change.path)
@@ -245,14 +233,32 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
         readyTimer = setTimeout(() => reject(new Error(`SonarLint 项目规则同步超时：${messages.join('; ')}`)), 120_000)
       })])
     } finally { if (readyTimer) clearTimeout(readyTimer) }
-    if (files.length) {
-      notify('file/didUpdateFileSystem', { addedFiles: files, changedFiles: [], removedFiles: [] })
-      const status = await request('file/getFilesStatus', { fileUrisByConfigScopeId: { project: files.map(file => file.uri) } })
-      const excluded = files.filter(file => status.fileStatuses?.[file.uri]?.excluded)
+    const pluginStatus = await request('plugin/getPluginStatuses', { configurationScopeId: 'project' }, 30_000)
+    if (!Array.isArray(pluginStatus?.pluginStatuses)) throw new Error('SonarLint 未返回本地语言分析器状态，不能判定审核覆盖范围')
+    const analyzers = new Map<string, string>(pluginStatus.pluginStatuses.flatMap((entry: any) =>
+      typeof entry.language === 'string' && typeof entry.state === 'string' ? [[entry.language.toUpperCase(), entry.state]] : []))
+    const profileCoverage = profileData.profiles.filter(profile => profile.language && Number(profile.activeRuleCount) > 0)
+      .map(profile => ({ language: profile.language!.toUpperCase(), active_rules: Number(profile.activeRuleCount),
+        analyzer: analyzers.get(profile.language!.toUpperCase()) ?? 'UNAVAILABLE' }))
+    const activeLanguages = new Set(profileCoverage.map(profile => profile.language))
+    const unavailable = supported.filter(change => {
+      const language = localLanguage(change.path)
+      return language && activeLanguages.has(language) && analyzers.get(language) !== 'SYNCED'
+    })
+    const unavailablePaths = new Set(unavailable.map(change => change.path))
+    uncovered.push(...unavailable.map(change => change.path))
+    const scanned = files.filter(file => {
+      const language = localLanguage(file.ideRelativePath)
+      return !!language && activeLanguages.has(language) && !unavailablePaths.has(file.ideRelativePath)
+    })
+    if (scanned.length) {
+      notify('file/didUpdateFileSystem', { addedFiles: scanned, changedFiles: [], removedFiles: [] })
+      const status = await request('file/getFilesStatus', { fileUrisByConfigScopeId: { project: scanned.map(file => file.uri) } })
+      const excluded = scanned.filter(file => status.fileStatuses?.[file.uri]?.excluded)
       if (excluded.length) throw new Error(`SonarLint 排除了新增代码：${excluded.map(file => file.ideRelativePath).join(', ')}`)
     }
-    const response = files.length ? await request('analysis/analyzeFilesAndTrack', {
-      configurationScopeId: 'project', analysisId: randomUUID(), filesToAnalyze: files.map(file => file.uri),
+    const response = scanned.length ? await request('analysis/analyzeFilesAndTrack', {
+      configurationScopeId: 'project', analysisId: randomUUID(), filesToAnalyze: scanned.map(file => file.uri),
       extraProperties: {}, shouldFetchServerIssues: false,
     }) : { rawIssues: [], failedAnalysisFiles: [] }
     if (response.failedAnalysisFiles?.length) throw new Error(`SonarLint 无法分析：${response.failedAnalysisFiles.join(', ')}`)
@@ -273,7 +279,7 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
     return { ce_task_id: 'local', analysis_id: randomUUID(), gate: blocking.length || uncovered.length ? 'ERROR' : 'OK',
       checked_at: new Date().toISOString(), scope_hash: scopeHash, findings, blocking,
       ...(uncovered.length ? { uncovered_files: uncovered } : {}),
-      target: policy.reference_branch, scanned_files: supported.map(file => file.path) }
+      target: policy.reference_branch, scanned_files: scanned.map(file => file.ideRelativePath), profile_coverage: profileCoverage }
   } finally {
     settled = true
     signal?.removeEventListener('abort', onAbort)

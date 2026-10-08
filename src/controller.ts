@@ -320,6 +320,7 @@ export interface TaskLedgerEntry {
       dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
       report_path?: string
       scanned_files?: string[]
+      profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
     }
   }
   task_id: string
@@ -967,6 +968,7 @@ export default class TaskEngineController extends TypertRemoteService {
               uncovered_files: state.sonar_audit.uncovered_files ?? [],
               ...(state.sonar_audit.report_path ? { report_path: state.sonar_audit.report_path } : {}),
               ...(state.sonar_audit.scanned_files ? { scanned_files: state.sonar_audit.scanned_files } : {}),
+              ...(state.sonar_audit.profile_coverage ? { profile_coverage: state.sonar_audit.profile_coverage } : {}),
             } } : {}),
           } } : {}),
           task_id: state.id,

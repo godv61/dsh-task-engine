@@ -171,6 +171,7 @@ export interface TaskLedgerEntry {
       dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
       report_path?: string
       scanned_files?: string[]
+      profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
     }
   }
   task_id: string

@@ -669,12 +669,13 @@ function sonarPolicyFor(project: AdaptiveConfig): SonarPolicy | undefined {
   }
   const mode = sonar.mode ?? 'branch'
   if (mode !== 'branch' && mode !== 'pull-request') throw new Error('sonar.mode must be branch or pull-request')
-  const source = sonar.source ?? 'ci'
+  const source = sonar.source ?? 'ide-local'
   if (source !== 'ci' && source !== 'local' && source !== 'ide-local') throw new Error('sonar.source must be ci, local, or ide-local')
-  if ((source === 'local' || source === 'ide-local') && (mode !== 'branch' || !sonar.reference_branch?.trim())) {
+  const reference_branch = sonar.reference_branch?.trim() || (source === 'ide-local' ? 'HEAD' : undefined)
+  if ((source === 'local' || source === 'ide-local') && (mode !== 'branch' || !reference_branch)) {
     throw new Error('local Sonar review needs branch mode and a reference_branch for new code')
   }
-  if (sonar.reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(sonar.reference_branch)) throw new Error('invalid SonarQube reference_branch')
+  if (reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(reference_branch)) throw new Error('invalid SonarQube reference_branch')
   if (sonar.scan_command && !validLocalScanCommand(sonar.scan_command)) {
     throw new Error('scan_command must be a single Maven or SonarScanner command without shell operators or Token arguments')
   }
@@ -683,7 +684,7 @@ function sonarPolicyFor(project: AdaptiveConfig): SonarPolicy | undefined {
   }
   if (sonar.include_paths?.length && source !== 'ide-local') throw new Error('sonar.include_paths only applies to ide-local reviews')
   return { enabled: true, host_url, project_key, token_env, mode, source,
-    ...(sonar.reference_branch ? { reference_branch: sonar.reference_branch } : {}),
+    ...(reference_branch ? { reference_branch } : {}),
     ...(sonar.scan_command ? { scan_command: sonar.scan_command } : {}),
     ...(sonar.include_paths?.length ? { include_paths: sonar.include_paths } : {}) }
 }
