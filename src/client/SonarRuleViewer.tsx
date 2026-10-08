@@ -39,6 +39,16 @@ export function SonarRuleViewer({ workspace, host, remote, onClose }: { workspac
       else setError(describeError(result.error))
     }, failure => { setBusy(false); setError(describeError(failure)) })
   }
+  const refreshRules = () => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    void remote.readSonarProjectRules({ path: workspace, language: view?.selected_language || undefined }).then(result => {
+      setBusy(false)
+      if (result.ok) setView(result.value)
+      else setError(describeError(result.error))
+    }, failure => { setBusy(false); setError(describeError(failure)) })
+  }
   const hasAnalyzedProfiles = view?.profiles.some(profile => profile.analyzed) ?? false
   const profiles = view?.profiles.filter(profile => showOther || !hasAnalyzedProfiles || profile.analyzed) ?? []
   const query = search.trim().toLowerCase()
@@ -54,9 +64,12 @@ export function SonarRuleViewer({ workspace, host, remote, onClose }: { workspac
       display: 'flex', flexDirection: 'column', gap: 12, boxShadow: '-8px 0 30px rgba(0,0,0,.14)' } },
     createElement('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
       createElement('strong', null, '当前项目的 SonarQube 规则'),
-      createElement(Button, { variant: 'outline', size: 'sm', onClick: onClose }, '关闭')),
+      createElement('div', { style: { display: 'flex', gap: 8 } },
+        createElement(Button, { variant: 'outline', size: 'sm', disabled: busy, onClick: refreshRules },
+          busy ? '读取中…' : '刷新服务器清单'),
+        createElement(Button, { variant: 'outline', size: 'sm', onClick: onClose }, '关闭'))),
     createElement('p', { style: { ...muted, margin: 0 } },
-      '这里列出 SonarQube 当前项目 Quality Profile 中启用的规则；Quality Gate 是扫描结果的通过条件，不是规则列表。'),
+      '这里实时读取当前项目 Quality Profile 中启用的规则；刷新清单只更新页面显示。本地分析器使用新规则请返回配置页点击“更新当前项目规则”。Quality Gate 是扫描结果的通过条件。'),
     error ? createElement('div', { role: 'alert', style: { color: 'var(--dsw-alias-danger, #b42318)' } }, error) : null,
     busy && !view ? createElement('div', { style: muted }, '正在读取当前项目的质量配置和规则…') : null,
     view ? createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0, flex: 1 } },

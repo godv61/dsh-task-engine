@@ -233,8 +233,11 @@ export interface TaskEngineRemote {
   describeSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
   setSonarToken(request: { path: string; token: string }): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
   unsetSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
+  describeSonarRuleUpdate(path: string): Promise<RemoteResult<{ updated_at?: string }>>
   prepareSonarAnalyzer(path: string): Promise<RemoteResult<{ profiles: { language: string; active_rules: number; analyzer: string }[];
-    analyzed_languages: string[]; other_profile_count: number }>>
+    analyzed_languages: string[]; other_profile_count: number; updated_at?: string }>>
+  updateSonarRules(path: string): Promise<RemoteResult<{ profiles: { language: string; active_rules: number; analyzer: string }[];
+    analyzed_languages: string[]; other_profile_count: number; updated_at?: string }>>
   readSonarProjectRules(request: { path: string; language?: string }): Promise<RemoteResult<SonarProjectRuleView>>
   readProjectSkillProfile(request: { path: string; name: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   writeProjectSkillProfile(request: { path: string; name: string; profile: SkillProfile; expected_hash: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>

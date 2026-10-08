@@ -336,7 +336,8 @@ const sonarTokenInfoSchema = z.object({ configured: z.boolean(), source: z.strin
 const sonarTokenWriteSchema = z.object({ path: z.string(), token: z.string().min(1) })
 const sonarAnalyzerStatusSchema = z.object({ profiles: z.array(z.object({
   language: z.string(), active_rules: z.number(), analyzer: z.string(),
-})), analyzed_languages: z.array(z.string()), other_profile_count: z.number() })
+})), analyzed_languages: z.array(z.string()), other_profile_count: z.number(), updated_at: z.string().optional() })
+const sonarRuleUpdateInfoSchema = z.object({ updated_at: z.string().optional() })
 const sonarRuleRequestSchema = z.object({ path: z.string(), language: z.string().optional() })
 const sonarRuleViewSchema = z.object({
   profiles: z.array(z.object({ key: z.string(), name: z.string(), language: z.string(),
@@ -390,7 +391,23 @@ export const TYPERT_REMOTE = {
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenInfo`, create: () => sonarTokenInfoSchema, schema: sonarTokenInfoSchema },
     },
     {
+      id: `${PACKAGE}#task-engine/describeSonarRuleUpdate`, service: 'taskEngineController', namespace: 'task-engine', method: 'describeSonarRuleUpdate',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarRuleUpdateInfo`,
+        create: () => sonarRuleUpdateInfoSchema, schema: sonarRuleUpdateInfoSchema },
+    },
+    {
       id: `${PACKAGE}#task-engine/prepareSonarAnalyzer`, service: 'taskEngineController', namespace: 'task-engine', method: 'prepareSonarAnalyzer',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarAnalyzerStatus`,
+        create: () => sonarAnalyzerStatusSchema, schema: sonarAnalyzerStatusSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/updateSonarRules`, service: 'taskEngineController', namespace: 'task-engine', method: 'updateSonarRules',
       invocation: { kind: 'direct' },
       parameters: [{ name: 'path', wire: 'path', source: 'json',
         codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],

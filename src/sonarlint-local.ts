@@ -1,7 +1,7 @@
 /** Local SonarQube for IDE engine. It reads server rules and source files; it never runs a scanner or uploads an analysis. */
 import { spawn, execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -95,9 +95,54 @@ export async function changedLines(root: string, reference: string, taskPaths?: 
 
 interface RpcPending { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
 
+function localStateDir(policy: SonarPolicy, root: string): string {
+  const cacheKey = `${resolve(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`
+  return join(homedir(), '.dsh', 'sonarlint-cache', createHash('sha256').update(cacheKey).digest('hex').slice(0, 24))
+}
+
+export function lastLocalRuleUpdate(policy: SonarPolicy, root: string): string | undefined {
+  return currentBinding(localStateDir(policy, root))?.updated_at
+}
+
+interface LocalBinding { connection_id: string; updated_at: string }
+
+export function currentBinding(stateDir: string): LocalBinding | undefined {
+  try {
+    const binding = JSON.parse(readFileSync(join(stateDir, 'dsh-binding.json'), 'utf8')) as LocalBinding
+    if (/^project-[0-9a-f-]{36}$/u.test(binding.connection_id) && !Number.isNaN(Date.parse(binding.updated_at))) {
+      return binding
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('本地 SonarQube 规则绑定记录损坏，请检查本机 DSH 缓存')
+  }
+  return undefined
+}
+
+export function saveBinding(stateDir: string, binding: LocalBinding): void {
+  mkdirSync(stateDir, { recursive: true })
+  const temporary = join(stateDir, `.dsh-binding-${randomUUID()}.json`)
+  try {
+    writeFileSync(temporary, JSON.stringify(binding), { encoding: 'utf8', mode: 0o600 })
+    renameSync(temporary, join(stateDir, 'dsh-binding.json'))
+  } finally { rmSync(temporary, { force: true }) }
+}
+
+function connectionCachePath(stateDir: string, connectionId: string): string {
+  if (connectionId !== 'project' && !/^project-[0-9a-f-]{36}$/u.test(connectionId)) {
+    throw new Error('无效的本地 SonarQube 连接标识')
+  }
+  const path = resolve(stateDir, Buffer.from(connectionId).toString('hex'))
+  const relativePath = relative(resolve(stateDir), path)
+  if (!relativePath || relativePath === '..' || relativePath.startsWith(`..${sep}`) || relativePath.startsWith(sep)) {
+    throw new Error('本地 SonarQube 缓存路径超出项目目录')
+  }
+  return path
+}
+
 /** Analyze only changed supported files with the project's synchronized Quality Profile. */
 export async function inspectLocalRules(policy: SonarPolicy, token: string, root: string,
-  scopeHash: string, signal?: AbortSignal, taskPaths?: string[], prepareOnly = false): Promise<SonarAudit> {
+  scopeHash: string, signal?: AbortSignal, taskPaths?: string[], prepareOnly = false,
+  connectionId?: string): Promise<SonarAudit> {
   if (!token) throw new Error('本地规则审核需要当前项目 SonarQube Token')
   if (!policy.reference_branch) throw new Error('本地规则审核需要新代码参考分支')
   const changes = (prepareOnly ? [] : await changedLines(root, policy.reference_branch))
@@ -132,8 +177,8 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
   })
   const fileLines = new Map(supported.map((change, index) => [files[index]!.uri, change.lines]))
   const newFiles = new Set(files.filter((_, index) => supported[index]?.newFile).map(file => file.uri))
-  const cacheKey = `${resolve(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`
-  const stateDir = join(homedir(), '.dsh', 'sonarlint-cache', createHash('sha256').update(cacheKey).digest('hex').slice(0, 24))
+  const stateDir = localStateDir(policy, root)
+  connectionId ??= currentBinding(stateDir)?.connection_id ?? 'project'
   mkdirSync(stateDir, { recursive: true })
   const workDir = mkdtempSync(join(tmpdir(), 'dsh-sonarlint-'))
   const child = spawn(paths.java, ['-cp', join(paths.lib, '*'),
@@ -221,12 +266,12 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
       httpConfiguration: { sslConfiguration: {} }, backendCapabilities: ['FULL_SYNCHRONIZATION'],
       storageRoot: stateDir, workDir, embeddedPluginPaths: paths.plugins, connectedModeEmbeddedPluginPathsByKey: {},
       enabledLanguagesInStandaloneMode: ['JAVA'], extraEnabledLanguagesInConnectedMode: ['JS', 'TS', 'CSS', 'HTML', 'XML'], disabledPluginKeysForAnalysis: [],
-      sonarQubeConnections: [{ connectionId: 'project', serverUrl: policy.host_url, disableNotifications: true }], sonarCloudConnections: [],
+      sonarQubeConnections: [{ connectionId, serverUrl: policy.host_url, disableNotifications: true }], sonarCloudConnections: [],
       standaloneRuleConfigByKey: {}, isFocusOnNewCode: false, automaticAnalysisEnabled: false,
       languageSpecificRequirements: { omnisharpDownloadEnabled: false }, logLevel: 'WARN',
     }, 30_000)
     notify('configuration/didAddConfigurationScopes', { addedScopes: [{ id: 'project', bindable: true, name: 'Project',
-      binding: { connectionId: 'project', sonarProjectKey: policy.project_key, bindingSuggestionDisabled: true } }] })
+      binding: { connectionId, sonarProjectKey: policy.project_key, bindingSuggestionDisabled: true } }] })
     let readyTimer: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([readiness, exited, new Promise((_, reject) => {
@@ -235,6 +280,14 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
     } finally { if (readyTimer) clearTimeout(readyTimer) }
     const pluginStatus = await request('plugin/getPluginStatuses', { configurationScopeId: 'project' }, 30_000)
     if (!Array.isArray(pluginStatus?.pluginStatuses)) throw new Error('SonarLint 未返回本地语言分析器状态，不能判定审核覆盖范围')
+    if (connectionId !== 'project') {
+      const configFile = join(connectionCachePath(stateDir, connectionId), 'projects',
+        Buffer.from(policy.project_key).toString('hex'), 'analyzer_config.pb')
+      for (let attempt = 0; attempt < 20 && !existsSync(configFile); attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+      if (!existsSync(configFile)) throw new Error('SonarLint 尚未写入当前项目的最新规则配置；本次更新未生效')
+    }
     const analyzers = new Map<string, string>(pluginStatus.pluginStatuses.flatMap((entry: any) =>
       typeof entry.language === 'string' && typeof entry.state === 'string' ? [[entry.language.toUpperCase(), entry.state]] : []))
     const profileCoverage = profileData.profiles.filter(profile => profile.language && Number(profile.activeRuleCount) > 0)
@@ -296,7 +349,24 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
 
 /** Prepare the backend and verify project rule synchronization without auditing or uploading source files. */
 export async function prepareLocalAnalyzer(policy: SonarPolicy, token: string, root: string,
-  signal?: AbortSignal): Promise<{ profiles: NonNullable<SonarAudit['profile_coverage']> }> {
-  const audit = await inspectLocalRules(policy, token, root, 'prepare-only', signal, undefined, true)
-  return { profiles: audit.profile_coverage ?? [] }
+  signal?: AbortSignal, updateRules = false): Promise<{ profiles: NonNullable<SonarAudit['profile_coverage']>;
+    updated_at?: string }> {
+  const stateDir = localStateDir(policy, root)
+  const previousId = currentBinding(stateDir)?.connection_id ?? 'project'
+  const connectionId = updateRules ? `project-${randomUUID()}` : undefined
+  let audit: SonarAudit
+  try {
+    audit = await inspectLocalRules(policy, token, root, 'prepare-only', signal, undefined, true, connectionId)
+    if (connectionId) saveBinding(stateDir, { connection_id: connectionId, updated_at: audit.checked_at })
+  } catch (error) {
+    if (connectionId) setTimeout(() => {
+      try { rmSync(connectionCachePath(stateDir, connectionId), { recursive: true, force: true }) } catch { /* The backend may still hold this cache. */ }
+    }, 3000).unref()
+    throw error
+  }
+  if (connectionId && previousId !== connectionId) setTimeout(() => {
+    try { rmSync(connectionCachePath(stateDir, previousId), { recursive: true, force: true }) } catch { /* Keep the old cache if it is in use. */ }
+  }, 3000).unref()
+  const updatedAt = connectionId ? audit.checked_at : currentBinding(stateDir)?.updated_at
+  return { profiles: audit.profile_coverage ?? [], ...(updatedAt ? { updated_at: updatedAt } : {}) }
 }

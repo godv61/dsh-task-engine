@@ -41,9 +41,10 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [sonarToken, setSonarToken] = useState('')
   const [tokenInfo, setTokenInfo] = useState<{ configured: boolean; source?: string; writable: boolean } | null>(null)
   const [tokenBusy, setTokenBusy] = useState(false)
-  const [analyzerBusy, setAnalyzerBusy] = useState(false)
+  const [analyzerOperation, setAnalyzerOperation] = useState<'prepare' | 'update' | ''>('')
   const [analyzerProfiles, setAnalyzerProfiles] = useState<{ language: string; active_rules: number; analyzer: string }[] | null>(null)
   const [analyzerOtherCount, setAnalyzerOtherCount] = useState(0)
+  const [analyzerUpdatedAt, setAnalyzerUpdatedAt] = useState('')
   const [ruleViewerOpen, setRuleViewerOpen] = useState(false)
   const refresh = useCallback(() => {
     setLoading(true)
@@ -52,8 +53,12 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     setTokenInfo(null)
     setAnalyzerProfiles(null)
     setAnalyzerOtherCount(0)
+    setAnalyzerUpdatedAt('')
     void remote.describeSonarToken(workspace).then(result => {
       if (result.ok) setTokenInfo(result.value)
+    }, () => {})
+    void remote.describeSonarRuleUpdate(workspace).then(result => {
+      if (result.ok) setAnalyzerUpdatedAt(result.value.updated_at ?? '')
     }, () => {})
     void Promise.all([remote.readAdaptive(workspace), remote.listSkills(workspace), remote.listRules(workspace)]).then(([config, catalog, ruleCatalog]) => {
       setLoading(false)
@@ -162,16 +167,30 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   }
   const prepareAnalyzer = () => {
     if (dirty) { setMessage('请先保存 SonarQube 审核配置，再检查本地分析器。'); return }
-    setAnalyzerBusy(true)
+    setAnalyzerOperation('prepare')
     setAnalyzerProfiles(null)
     setMessage('正在安装或检查本地分析器，并连接当前项目的 SonarQube；首次下载可能需要较长时间。')
     void remote.prepareSonarAnalyzer(workspace).then(result => {
-      setAnalyzerBusy(false)
+      setAnalyzerOperation('')
       if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
       setAnalyzerProfiles(result.value.profiles)
       setAnalyzerOtherCount(result.value.other_profile_count)
+      setAnalyzerUpdatedAt(result.value.updated_at ?? '')
       setMessage('已连接 SonarQube；下方优先显示本项目最近一次分析涉及的语言。')
-    }, error => { setAnalyzerBusy(false); setMessage('本地分析器检查失败：' + describeError(error)) })
+    }, error => { setAnalyzerOperation(''); setMessage('本地分析器检查失败：' + describeError(error)) })
+  }
+  const updateRules = () => {
+    if (dirty) { setMessage('请先保存 SonarQube 审核配置，再更新规则。'); return }
+    setAnalyzerOperation('update')
+    setMessage('正在从当前 SonarQube 项目重新同步规则；完成后后续审核会使用新配置。')
+    void remote.updateSonarRules(workspace).then(result => {
+      setAnalyzerOperation('')
+      if (!result.ok) { setMessage('更新规则失败：' + describeError(result.error)); return }
+      setAnalyzerProfiles(result.value.profiles)
+      setAnalyzerOtherCount(result.value.other_profile_count)
+      setAnalyzerUpdatedAt(result.value.updated_at ?? '')
+      setMessage('当前项目的本地规则已更新；后续代码审核将使用这次同步的配置。')
+    }, error => { setAnalyzerOperation(''); setMessage('更新规则失败：' + describeError(error)) })
   }
 
   const candidates = [...new Set(skills.map(skill => skill.name))].filter(name =>
@@ -273,11 +292,15 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
         createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
           '无需安装 IDEA、Maven 或 SonarScanner。首次审核会下载官方本地分析后台；语言分析器由后台从 SonarQube 同步。部分服务端规则无法在本地执行，本地通过不等于服务端质量门禁通过。'),
         createElement('div', { style: { ...row, gridColumn: '1 / -1' } },
-          createElement(Button, { variant: 'outline', size: 'sm', disabled: analyzerBusy || saving || dirty,
-            onClick: prepareAnalyzer }, analyzerBusy ? '安装与检查中…' : '安装或检查本地分析器'),
+          createElement(Button, { variant: 'outline', size: 'sm', disabled: !!analyzerOperation || saving || dirty,
+            onClick: prepareAnalyzer }, analyzerOperation === 'prepare' ? '安装与检查中…' : '安装或检查本地分析器'),
+          createElement(Button, { variant: 'outline', size: 'sm', disabled: !!analyzerOperation || saving || dirty,
+            onClick: updateRules }, analyzerOperation === 'update' ? '规则更新中…' : '更新当前项目规则'),
           createElement(Button, { variant: 'outline', size: 'sm', disabled: saving || dirty,
             onClick: () => setRuleViewerOpen(true) }, '查看当前项目规则'),
           createElement('span', { style: label }, '先保存服务地址、项目 Key 和 Token；检查不会审核或上传项目代码。')),
+        analyzerUpdatedAt && !dirty ? createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
+          `上次手动更新：${new Date(analyzerUpdatedAt).toLocaleString()}`) : null,
         analyzerProfiles ? createElement('div', { style: { ...label, gridColumn: '1 / -1' } },
           analyzerProfiles.length ? analyzerProfiles.map(profile =>
             createElement('div', { key: profile.language },

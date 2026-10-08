@@ -4,9 +4,22 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { changedLines, missingLocalAuditScope, uncoveredLocalFiles } from './lib/sonarlint-local.js'
+import { changedLines, currentBinding, missingLocalAuditScope, saveBinding, uncoveredLocalFiles } from './lib/sonarlint-local.js'
 import { isIncludedAuditPath, validAuditIncludePaths } from './lib/sonar.js'
 import { renderSonarReport, sonarReportPath } from './lib/sonar-report.js'
+
+test('manual rule update persists the active project binding without leaving a staging file', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'dsh-sonar-binding-'))
+  try {
+    assert.equal(currentBinding(directory), undefined)
+    const first = { connection_id: 'project-11111111-1111-4111-8111-111111111111', updated_at: '2026-10-08T01:00:00.000Z' }
+    const next = { connection_id: 'project-22222222-2222-4222-8222-222222222222', updated_at: '2026-10-08T02:00:00.000Z' }
+    saveBinding(directory, first)
+    assert.deepEqual(currentBinding(directory), first)
+    saveBinding(directory, next)
+    assert.deepEqual(currentBinding(directory), next)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
 
 test('project scan roots mirror Maven backend scope without including the Vue app', () => {
   const roots = ['fp-bussiness', 'fp-ruoyi', 'fp-ruoyi-spring-boot', 'pom.xml']

@@ -33,7 +33,7 @@ import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject as scanPro
   validateInitResources, type InitResource, type ProjectInventory } from './project-init.ts'
 import { resolveSonarToken, sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
 import { localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
-import { prepareLocalAnalyzer } from './sonarlint-local.ts'
+import { lastLocalRuleUpdate, prepareLocalAnalyzer } from './sonarlint-local.ts'
 import { listSonarProjectRules, projectAnalyzedLanguages, type SonarProjectRuleView } from './sonar-rule-catalog.ts'
 
 export interface AdaptiveProjectConfig {
@@ -679,10 +679,36 @@ export default class TaskEngineController extends TypertRemoteService {
     return this.credentialProvider().describe(ref)
   }
 
+  /** Return the last successful manual update for the saved project binding. */
+  @Remote
+  async describeSonarRuleUpdate(path: string): Promise<{ updated_at?: string }> {
+    path = await this.authorizedPath(path)
+    const view = await this.readAdaptive(path)
+    const sonar = view.config.sonar
+    if (!view.ok || sonar?.enabled !== true || !sonar.host_url || !sonar.project_key) return {}
+    const updatedAt = lastLocalRuleUpdate({ enabled: true, source: 'ide-local', mode: 'branch',
+      host_url: sonar.host_url, project_key: sonar.project_key, reference_branch: 'HEAD',
+      token_env: sonar.token_env ?? 'SONAR_TOKEN' }, path)
+    return updatedAt ? { updated_at: updatedAt } : {}
+  }
+
   /** Install the local backend if needed and check this project's SonarQube rule synchronization. */
   @Remote
   async prepareSonarAnalyzer(path: string): Promise<{ profiles: { language: string; active_rules: number; analyzer: string }[];
-    analyzed_languages: string[]; other_profile_count: number }> {
+    analyzed_languages: string[]; other_profile_count: number; updated_at?: string }> {
+    return this.prepareProjectSonarAnalyzer(path, false)
+  }
+
+  /** Force a fresh project binding so the next local audit uses the latest server rules. */
+  @Remote
+  async updateSonarRules(path: string): Promise<{ profiles: { language: string; active_rules: number; analyzer: string }[];
+    analyzed_languages: string[]; other_profile_count: number; updated_at?: string }> {
+    return this.prepareProjectSonarAnalyzer(path, true)
+  }
+
+  private async prepareProjectSonarAnalyzer(path: string, updateRules: boolean): Promise<{
+    profiles: { language: string; active_rules: number; analyzer: string }[];
+    analyzed_languages: string[]; other_profile_count: number; updated_at?: string }> {
     path = await this.authorizedPath(path)
     const view = await this.readAdaptive(path)
     if (!view.ok || view.config.sonar?.enabled !== true) throw new Error('请先保存当前项目的 SonarQube 审核配置')
@@ -691,11 +717,12 @@ export default class TaskEngineController extends TypertRemoteService {
     if (!token) throw new Error('请先保存当前项目的 SonarQube Token')
     const status = await prepareLocalAnalyzer({ enabled: true, source: 'ide-local', mode: 'branch',
       host_url: sonar.host_url!, project_key: sonar.project_key!, reference_branch: 'HEAD',
-      token_env: sonar.token_env ?? 'SONAR_TOKEN' }, token, path)
+      token_env: sonar.token_env ?? 'SONAR_TOKEN' }, token, path, undefined, updateRules)
     const analyzed_languages = await projectAnalyzedLanguages(sonar.host_url!, sonar.project_key!, token)
     const analyzedProfiles = status.profiles.filter(profile => analyzed_languages.includes(profile.language))
     const profiles = analyzedProfiles.length ? analyzedProfiles : status.profiles
-    return { profiles, analyzed_languages, other_profile_count: status.profiles.length - profiles.length }
+    return { profiles, analyzed_languages, other_profile_count: status.profiles.length - profiles.length,
+      ...(status.updated_at ? { updated_at: status.updated_at } : {}) }
   }
 
   /** Show the effective Quality Profile's active rule keys without installing or running an analyzer. */

@@ -126,6 +126,7 @@ pnpm dsh web --no-open</code></pre>
           <tr><td>Token</td><td>当前项目单独保存；保存后只显示是否已配置，不会回显原值。</td></tr>
         </tbody></table></div>
         <p>保存项目配置和 Token 后，管理员可点击<strong>安装或检查本地分析器</strong>。检查按当前项目 Key 读取生效的 Quality Profile，优先显示该项目最近一次服务端分析涉及的语言；未分析过的项目显示所有已配置语言。检查不会审核或上传代码。未预先点击也可以继续开发，代码审核时会自动准备本机组件。</p>
+        <p>SonarQube 服务器更改了此项目的规则或参数后，点击<strong>更新当前项目规则</strong>。插件重新建立此项目的本地绑定并同步规则；成功后显示手动更新时间，后续代码审核使用新绑定。更新失败则继续使用此前成功的配置。更新不会扫描或上传代码，也不计算服务端 Quality Gate；其它项目不受影响。</p>
         <p>点击<strong>查看当前项目规则</strong>，可按语言查看 Quality Profile 名称和启用规则清单，按编号、名称或严重性搜索，并打开 SonarQube 规则详情。默认只显示最近一次分析涉及的语言，也可展开其它语言配置。规则清单与本地分析器状态是两种信息：<code>SYNCED</code> 表示该语言分析器可用，不能证明清单中的每条规则都能在本地执行。Quality Profile 决定启用规则；Quality Gate 根据服务端扫描结果判断是否通过，提交前本地检查不计算完整 Quality Gate。</p>
         <h3>提交前审核如何运行</h3>
         <p>测试通过并进入代码审核阶段后，代码审核元技能自动调用 <code>dev_task sonar_check</code>。默认以 <code>HEAD</code> 为基线，分析任务中尚未提交的 Git 变更行；无需提交、推送或在页面手动发起。首次审核会下载并校验官方 SonarLint 后台组件，保存在运行 DSH 的用户目录 <code>~/.dsh/sonarlint-runtime/</code>；组件再从 SonarQube 同步当前项目的语言分析器和 Quality Profile 规则。首次安装要求可访问 Maven Central 和 SonarQube。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK；JS/TS/Vue/CSS 分析仍可能需要 Node.js。</p>
