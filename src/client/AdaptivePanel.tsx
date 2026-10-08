@@ -37,11 +37,14 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [sonarToken, setSonarToken] = useState('')
   const [tokenInfo, setTokenInfo] = useState<{ configured: boolean; source?: string; writable: boolean } | null>(null)
   const [tokenBusy, setTokenBusy] = useState(false)
+  const [analyzerBusy, setAnalyzerBusy] = useState(false)
+  const [analyzerProfiles, setAnalyzerProfiles] = useState<{ language: string; active_rules: number; analyzer: string }[] | null>(null)
   const refresh = useCallback(() => {
     setLoading(true)
     setMessage('')
     setSonarToken('')
     setTokenInfo(null)
+    setAnalyzerProfiles(null)
     void remote.describeSonarToken(workspace).then(result => {
       if (result.ok) setTokenInfo(result.value)
     }, () => {})
@@ -150,6 +153,18 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       setMessage('已移除当前项目保存在本机的 SonarQube Token。')
     }, error => { setTokenBusy(false); setMessage('移除 SonarQube Token 失败：' + describeError(error)) })
   }
+  const prepareAnalyzer = () => {
+    if (dirty) { setMessage('请先保存 SonarQube 审核配置，再检查本地分析器。'); return }
+    setAnalyzerBusy(true)
+    setAnalyzerProfiles(null)
+    setMessage('正在安装或检查本地分析器，并连接当前项目的 SonarQube；首次下载可能需要较长时间。')
+    void remote.prepareSonarAnalyzer(workspace).then(result => {
+      setAnalyzerBusy(false)
+      if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
+      setAnalyzerProfiles(result.value.profiles)
+      setMessage('本地分析器已准备，SonarQube 项目规则同步完成。')
+    }, error => { setAnalyzerBusy(false); setMessage('本地分析器检查失败：' + describeError(error)) })
+  }
 
   const candidates = [...new Set(skills.map(skill => skill.name))].filter(name =>
     name !== 'eng-delivery' && !(name in META_STAGES)).sort()
@@ -222,6 +237,15 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
                 }) })))),
         createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
           '无需安装 IDEA、Maven 或 SonarScanner。首次审核会下载官方本地分析后台；语言分析器由后台从 SonarQube 同步。部分服务端规则无法在本地执行，本地通过不等于服务端质量门禁通过。'),
+        createElement('div', { style: { ...row, gridColumn: '1 / -1' } },
+          createElement(Button, { variant: 'outline', size: 'sm', disabled: analyzerBusy || saving || dirty,
+            onClick: prepareAnalyzer }, analyzerBusy ? '安装与检查中…' : '安装或检查本地分析器'),
+          createElement('span', { style: label }, '先保存服务地址、项目 Key 和 Token；检查不会审核或上传项目代码。')),
+        analyzerProfiles ? createElement('div', { style: { ...label, gridColumn: '1 / -1' } },
+          analyzerProfiles.length ? analyzerProfiles.map(profile =>
+            createElement('div', { key: profile.language },
+              `${profile.language}：服务端 ${profile.active_rules} 条规则；本地分析器 ${profile.analyzer}`))
+            : '项目没有返回已启用规则的语言。') : null,
         createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           createElement('span', { style: label }, `当前项目 Token：${tokenInfo === null ? '状态不可用' : tokenInfo.configured ? '已配置' : '未配置'}`),
           createElement('input', { type: 'password', autoComplete: 'new-password', style: input,

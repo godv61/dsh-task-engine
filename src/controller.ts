@@ -31,8 +31,9 @@ import { hashText } from './snapshot.ts'
 import { detectRoot, type FileProbe } from './project.ts'
 import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject as scanProjectInventory,
   validateInitResources, type InitResource, type ProjectInventory } from './project-init.ts'
-import { sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
+import { resolveSonarToken, sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
 import { localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
+import { prepareLocalAnalyzer } from './sonarlint-local.ts'
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
@@ -675,6 +676,20 @@ export default class TaskEngineController extends TypertRemoteService {
     const ref = sonarCredentialRef(path)
     await this.credentialProvider().unset(ref)
     return this.credentialProvider().describe(ref)
+  }
+
+  /** Install the local backend if needed and check this project's SonarQube rule synchronization. */
+  @Remote
+  async prepareSonarAnalyzer(path: string): Promise<{ profiles: { language: string; active_rules: number; analyzer: string }[] }> {
+    path = await this.authorizedPath(path)
+    const view = await this.readAdaptive(path)
+    if (!view.ok || view.config.sonar?.enabled !== true) throw new Error('请先保存当前项目的 SonarQube 审核配置')
+    const sonar = view.config.sonar
+    const token = await resolveSonarToken(this.credentialProvider(), path, process.env[sonar.token_env ?? 'SONAR_TOKEN'])
+    if (!token) throw new Error('请先保存当前项目的 SonarQube Token')
+    return prepareLocalAnalyzer({ enabled: true, source: 'ide-local', mode: 'branch',
+      host_url: sonar.host_url!, project_key: sonar.project_key!, reference_branch: 'HEAD',
+      token_env: sonar.token_env ?? 'SONAR_TOKEN' }, token, path)
   }
 
   private credentialProvider(): SonarCredentialProvider {

@@ -334,6 +334,9 @@ const adaptiveViewSchema = z.object({
 const adaptiveWriteRequestSchema = z.object({ path: z.string(), config: adaptiveConfigSchema, expected_hash: z.string() })
 const sonarTokenInfoSchema = z.object({ configured: z.boolean(), source: z.string().optional(), writable: z.boolean() })
 const sonarTokenWriteSchema = z.object({ path: z.string(), token: z.string().min(1) })
+const sonarAnalyzerStatusSchema = z.object({ profiles: z.array(z.object({
+  language: z.string(), active_rules: z.number(), analyzer: z.string(),
+})) })
 const projectSkillProfileRequestSchema = z.object({ path: z.string(), name: z.string() })
 const projectSkillProfileWriteRequestSchema = projectSkillProfileRequestSchema.extend({
   profile: skillProfileSchema, expected_hash: z.string(),
@@ -378,6 +381,14 @@ export const TYPERT_REMOTE = {
       parameters: [{ name: 'path', wire: 'path', source: 'json',
         codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarTokenInfo`, create: () => sonarTokenInfoSchema, schema: sonarTokenInfoSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/prepareSonarAnalyzer`, service: 'taskEngineController', namespace: 'task-engine', method: 'prepareSonarAnalyzer',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'path', wire: 'path', source: 'json',
+        codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarAnalyzerStatus`,
+        create: () => sonarAnalyzerStatusSchema, schema: sonarAnalyzerStatusSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readProjectSkillProfile`, service: 'taskEngineController', namespace: 'task-engine', method: 'readProjectSkillProfile',

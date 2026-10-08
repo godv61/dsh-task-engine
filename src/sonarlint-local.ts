@@ -97,10 +97,10 @@ interface RpcPending { resolve(value: any): void; reject(error: Error): void; ti
 
 /** Analyze only changed supported files with the project's synchronized Quality Profile. */
 export async function inspectLocalRules(policy: SonarPolicy, token: string, root: string,
-  scopeHash: string, signal?: AbortSignal, taskPaths?: string[]): Promise<SonarAudit> {
+  scopeHash: string, signal?: AbortSignal, taskPaths?: string[], prepareOnly = false): Promise<SonarAudit> {
   if (!token) throw new Error('本地规则审核需要当前项目 SonarQube Token')
   if (!policy.reference_branch) throw new Error('本地规则审核需要新代码参考分支')
-  const changes = (await changedLines(root, policy.reference_branch))
+  const changes = (prepareOnly ? [] : await changedLines(root, policy.reference_branch))
     .filter(file => isIncludedAuditPath(file.path, policy.include_paths))
   if (taskPaths !== undefined) {
     const missing = missingLocalAuditScope(changes.map(file => file.path), taskPaths)
@@ -292,4 +292,11 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
       rmSync(resolvedWorkDir, { recursive: true, force: true })
     }
   }
+}
+
+/** Prepare the backend and verify project rule synchronization without auditing or uploading source files. */
+export async function prepareLocalAnalyzer(policy: SonarPolicy, token: string, root: string,
+  signal?: AbortSignal): Promise<{ profiles: NonNullable<SonarAudit['profile_coverage']> }> {
+  const audit = await inspectLocalRules(policy, token, root, 'prepare-only', signal, undefined, true)
+  return { profiles: audit.profile_coverage ?? [] }
 }

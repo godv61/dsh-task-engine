@@ -137,6 +137,8 @@ pnpm dsh web --no-open
 
 Sonar 的非秘密配置保存在项目 `.dsh/meta.json`；Token **不会写入该文件、任务或报告**。换项目时分别配置。项目的 Quality Profile 和规则本身仍由 SonarQube 服务器管理。
 
+保存配置和 Token 后，管理员可点击**安装或检查本地分析器**。页面会显示当前项目各语言的生效规则数与分析器同步状态；这一步不审核或上传项目代码。首次下载完成后，后续任务的代码审核阶段会自动复用本机组件，即使管理员没有预先点击，审核时也会尝试自动准备。
+
 ### 提交前审核如何运行
 
 测试通过并进入代码审核阶段后，代码审核元技能会调用 `dev_task sonar_check`。默认以 `HEAD` 为基线，读取当前任务尚未提交的 Git 变更，并按 SonarQube 项目的 Quality Profile 分析变更行；**无需提交或推送，也无需在页面手动发起**。首次运行会下载并校验官方 SonarLint 后台组件，缓存在运行 DSH 的用户目录 `~/.dsh/sonarlint-runtime/`；后台从 SonarQube 同步当前项目的语言分析器与规则。安装与同步要求这台机器能访问 Maven Central 和 SonarQube；网络或权限失败时审核会明确报错，不会静默通过。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK。JS/TS/Vue/CSS 分析仍可能需要可用的 Node.js。
