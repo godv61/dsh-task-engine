@@ -162,7 +162,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       setAnalyzerBusy(false)
       if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
       setAnalyzerProfiles(result.value.profiles)
-      setMessage('本地分析器已准备，SonarQube 项目规则同步完成。')
+      setMessage('已连接 SonarQube；请查看下方各语言的本地分析器状态。')
     }, error => { setAnalyzerBusy(false); setMessage('本地分析器检查失败：' + describeError(error)) })
   }
 
@@ -245,7 +245,8 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
           analyzerProfiles.length ? analyzerProfiles.map(profile =>
             createElement('div', { key: profile.language },
               `${profile.language}：服务端 ${profile.active_rules} 条规则；本地分析器 ${profile.analyzer}`))
-            : '项目没有返回已启用规则的语言。') : null,
+            : '项目没有返回已启用规则的语言。',
+          createElement('div', null, '已同步表示该语言分析器可用，不代表服务端全部规则都能在本地执行。')) : null,
         createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           createElement('span', { style: label }, `当前项目 Token：${tokenInfo === null ? '状态不可用' : tokenInfo.configured ? '已配置' : '未配置'}`),
           createElement('input', { type: 'password', autoComplete: 'new-password', style: input,
