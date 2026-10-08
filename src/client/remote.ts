@@ -336,7 +336,14 @@ const sonarTokenInfoSchema = z.object({ configured: z.boolean(), source: z.strin
 const sonarTokenWriteSchema = z.object({ path: z.string(), token: z.string().min(1) })
 const sonarAnalyzerStatusSchema = z.object({ profiles: z.array(z.object({
   language: z.string(), active_rules: z.number(), analyzer: z.string(),
-})) })
+})), analyzed_languages: z.array(z.string()), other_profile_count: z.number() })
+const sonarRuleRequestSchema = z.object({ path: z.string(), language: z.string().optional() })
+const sonarRuleViewSchema = z.object({
+  profiles: z.array(z.object({ key: z.string(), name: z.string(), language: z.string(),
+    active_rules: z.number(), analyzed: z.boolean() })),
+  analyzed_languages: z.array(z.string()), selected_language: z.string(), rule_total: z.number(),
+  rules: z.array(z.object({ key: z.string(), name: z.string(), language: z.string(), severity: z.string() })),
+})
 const projectSkillProfileRequestSchema = z.object({ path: z.string(), name: z.string() })
 const projectSkillProfileWriteRequestSchema = projectSkillProfileRequestSchema.extend({
   profile: skillProfileSchema, expected_hash: z.string(),
@@ -389,6 +396,14 @@ export const TYPERT_REMOTE = {
         codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarAnalyzerStatus`,
         create: () => sonarAnalyzerStatusSchema, schema: sonarAnalyzerStatusSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/readSonarProjectRules`, service: 'taskEngineController', namespace: 'task-engine', method: 'readSonarProjectRules',
+      invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarRuleRequest`, create: () => sonarRuleRequestSchema, schema: sonarRuleRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#SonarRuleView`,
+        create: () => sonarRuleViewSchema, schema: sonarRuleViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readProjectSkillProfile`, service: 'taskEngineController', namespace: 'task-engine', method: 'readProjectSkillProfile',

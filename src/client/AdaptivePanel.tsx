@@ -7,6 +7,7 @@ import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { AdaptiveConfigView, AdaptiveProjectConfig, ReadSkillResult, RuleCatalogEntry, SkillCatalogEntry, TaskEngineRemote } from './TaskEngineSection.tsx'
 import { SkillRuleDialog } from './SkillRuleDialog.tsx'
+import { SonarRuleViewer } from './SonarRuleViewer.tsx'
 
 const card: CSSProperties = { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8,
   padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 8 }
@@ -42,12 +43,15 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [tokenBusy, setTokenBusy] = useState(false)
   const [analyzerBusy, setAnalyzerBusy] = useState(false)
   const [analyzerProfiles, setAnalyzerProfiles] = useState<{ language: string; active_rules: number; analyzer: string }[] | null>(null)
+  const [analyzerOtherCount, setAnalyzerOtherCount] = useState(0)
+  const [ruleViewerOpen, setRuleViewerOpen] = useState(false)
   const refresh = useCallback(() => {
     setLoading(true)
     setMessage('')
     setSonarToken('')
     setTokenInfo(null)
     setAnalyzerProfiles(null)
+    setAnalyzerOtherCount(0)
     void remote.describeSonarToken(workspace).then(result => {
       if (result.ok) setTokenInfo(result.value)
     }, () => {})
@@ -165,7 +169,8 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       setAnalyzerBusy(false)
       if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
       setAnalyzerProfiles(result.value.profiles)
-      setMessage('已连接 SonarQube；请查看下方各语言的本地分析器状态。')
+      setAnalyzerOtherCount(result.value.other_profile_count)
+      setMessage('已连接 SonarQube；下方优先显示本项目最近一次分析涉及的语言。')
     }, error => { setAnalyzerBusy(false); setMessage('本地分析器检查失败：' + describeError(error)) })
   }
 
@@ -270,12 +275,16 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
         createElement('div', { style: { ...row, gridColumn: '1 / -1' } },
           createElement(Button, { variant: 'outline', size: 'sm', disabled: analyzerBusy || saving || dirty,
             onClick: prepareAnalyzer }, analyzerBusy ? '安装与检查中…' : '安装或检查本地分析器'),
+          createElement(Button, { variant: 'outline', size: 'sm', disabled: saving || dirty,
+            onClick: () => setRuleViewerOpen(true) }, '查看当前项目规则'),
           createElement('span', { style: label }, '先保存服务地址、项目 Key 和 Token；检查不会审核或上传项目代码。')),
         analyzerProfiles ? createElement('div', { style: { ...label, gridColumn: '1 / -1' } },
           analyzerProfiles.length ? analyzerProfiles.map(profile =>
             createElement('div', { key: profile.language },
               `${profile.language}：服务端 ${profile.active_rules} 条规则；本地分析器 ${profile.analyzer}`))
             : '项目没有返回已启用规则的语言。',
+          analyzerOtherCount ? createElement('div', null,
+            `其它 ${analyzerOtherCount} 个语言配置已收起；可在“查看当前项目规则”中显示。`) : null,
           createElement('div', null, '已同步表示该语言分析器可用，不代表服务端全部规则都能在本地执行。')) : null,
         createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           createElement('span', { style: label }, `当前项目 Token：${tokenInfo === null ? '状态不可用' : tokenInfo.configured ? '已配置' : '未配置'}`),
@@ -298,6 +307,8 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       message ? createElement('span', { role: 'status', style: { ...label, flexBasis: '100%' } }, message) : null,
     ),
     view?.problems.length ? createElement('p', { role: 'alert', style: styles.status }, view.problems.join('；')) : null,
+    ruleViewerOpen && sonar.enabled === true && sonar.host_url
+      ? createElement(SonarRuleViewer, { workspace, host: sonar.host_url, remote, onClose: () => setRuleViewerOpen(false) }) : null,
     selected ? createElement(SkillRuleDialog, { key: `${selected.skill.source}:${selected.skill.name}`, skill: selected.skill,
       profile: selected.profile, rules,
       description: selected.template

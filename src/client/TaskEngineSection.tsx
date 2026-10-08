@@ -11,6 +11,7 @@
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
 import type { MetaSkill } from '../adaptive.ts'
 import type { InitResource, ProjectInventory } from '../project-init.ts'
+import type { SonarProjectRuleView } from '../sonar-rule-catalog.ts'
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -232,7 +233,9 @@ export interface TaskEngineRemote {
   describeSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
   setSonarToken(request: { path: string; token: string }): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
   unsetSonarToken(path: string): Promise<RemoteResult<{ configured: boolean; source?: string; writable: boolean }>>
-  prepareSonarAnalyzer(path: string): Promise<RemoteResult<{ profiles: { language: string; active_rules: number; analyzer: string }[] }>>
+  prepareSonarAnalyzer(path: string): Promise<RemoteResult<{ profiles: { language: string; active_rules: number; analyzer: string }[];
+    analyzed_languages: string[]; other_profile_count: number }>>
+  readSonarProjectRules(request: { path: string; language?: string }): Promise<RemoteResult<SonarProjectRuleView>>
   readProjectSkillProfile(request: { path: string; name: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   writeProjectSkillProfile(request: { path: string; name: string; profile: SkillProfile; expected_hash: string }): Promise<RemoteResult<{ profile: SkillProfile; hash: string }>>
   write(request: { path: string; flow: string; stage_bindings?: Record<string, StageBinding>; skill_profiles?: Record<string, SkillProfile>; materialize_bundled?: 'project' | 'user' }): Promise<RemoteResult<EngConfigView>>
