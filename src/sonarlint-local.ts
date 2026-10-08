@@ -97,7 +97,8 @@ interface RpcPending { resolve(value: any): void; reject(error: Error): void; ti
 
 function localStateDir(policy: SonarPolicy, root: string): string {
   const cacheKey = `${resolve(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`
-  return join(homedir(), '.dsh', 'sonarlint-cache', createHash('sha256').update(cacheKey).digest('hex').slice(0, 24))
+  return join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sonarlint-cache',
+    createHash('sha256').update(cacheKey).digest('hex').slice(0, 24))
 }
 
 export function lastLocalRuleUpdate(policy: SonarPolicy, root: string): string | undefined {

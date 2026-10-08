@@ -73,7 +73,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     if (name === 'sandboxPolicy') return { resolve(request) { assert.equal(request.session, session); return policy } }
     if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async execute(request) {
       const fail = request.command === 'fail'
-      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : 'checks passed' }, stderr: { text: '' } }
+      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : '# tests 1\n# pass 1' }, stderr: { text: '' } }
       return { result: async () => outcome }
     } }
     return undefined
@@ -250,7 +250,7 @@ test('a previously stored Maven zero-test pass is blocked by current workflow ga
   state.verification = { passed: true, evidence: [], receipt: { command: 'mvn test', exit_code: 0,
     timed_out: false, aborted: false, started_at: 'now', finished_at: 'now',
     stdout: 'Tests run: 0, Failures: 0, Errors: 0, Skipped: 0', stderr: '' } }
-  assert.match(verificationBlockers(state, state.flow.config).join(' '), /no nonzero Surefire/)
+  assert.match(verificationBlockers(state, state.flow.config).join(' '), /no evidence of executed tests/)
 })
 
 test('派发立即反映进行中，重派不复用旧审核且保持单一进行项', async () => {
@@ -386,7 +386,7 @@ test('只声明已测试、或加载失败，均不能冒充执行绑定技能',
 test('绑定技能失败阻止完成；成功后仍须提交真实 Git 回执', async () => {
   const f = fixture('代码审核', { review: { outcome: 'pass' }, artifacts: { review: { conclusion: 'pass', issues: 'none' } }, verification: { passed: true, evidence: ['checks'] } })
   f.load('code-review'); f.load('code-commit'); f.load('software-testing')
-  await f.call({ operation: 'verify', command: 'check', evidence: ['real checks'] })
+  await f.call({ operation: 'verify', command: 'npm test', evidence: ['real checks'] })
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'fail', evidence: ['scenario failed'] })
   await assert.rejects(f.call({ operation: 'advance', target_stage: '完成' }), /skill_result/)
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['scenario passed'] })
@@ -402,17 +402,17 @@ test('绑定技能失败阻止完成；成功后仍须提交真实 Git 回执', 
 test('验证后修改代码会使旧回执失效，必须重新验证', async () => {
   const f = fixture('交付')
   f.load('code-verify')
-  await f.call({ operation: 'verify', command: 'check' })
+  await f.call({ operation: 'verify', command: 'npm test' })
   f.records.set(join(f.cwd, 'app.js'), 'modified source')
   await assert.rejects(f.call({ operation: 'advance', target_stage: '代码审核' }), /stale/)
-  await f.call({ operation: 'verify', command: 'check' })
+  await f.call({ operation: 'verify', command: 'npm test' })
   await f.call({ operation: 'advance', target_stage: '代码审核' })
   assert.equal(f.state().stage, '代码审核')
 })
 
 test('status 提交提示与真实门禁一致，分别披露过期验证和附加技能回执且不改台账', async () => {
   const f = fixture('代码审核', { review: { outcome: 'pass' }, artifacts: { review: { conclusion: 'pass', issues: 'none' } } })
-  await f.call({ operation: 'verify', command: 'check' })
+  await f.call({ operation: 'verify', command: 'npm test' })
   assert.equal(JSON.parse(await f.call({ operation: 'status' })).commit.allowed, false)
   f.load('code-review'); f.load('code-commit'); f.load('software-testing')
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['tested'] })
@@ -425,7 +425,7 @@ test('status 提交提示与真实门禁一致，分别披露过期验证和附�
   assert.equal(stale.evidence_blockers.length, 2)
   assert.equal(JSON.stringify(f.state()), before)
   await assert.rejects(f.call({ operation: 'commit', files: ['app.js'], message: '【LIVE-1】【TASK】done' }), /stale/)
-  await f.call({ operation: 'verify', command: 'check' })
+  await f.call({ operation: 'verify', command: 'npm test' })
   const partial = JSON.parse(await f.call({ operation: 'status' }))
   assert.equal(partial.commit.allowed, false)
   assert.equal(partial.evidence_blockers.length, 1)

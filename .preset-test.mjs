@@ -16,6 +16,7 @@
  */
 
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
@@ -82,6 +83,17 @@ test('re-deriving is stable: the same standard yields the same text', live, () =
   // Idempotence is what lets the seed run on every boot without rewriting.
   const again = derivedEngComposition()
   assert.equal(again.text, derived.text, 'two derivations of one source must agree')
+})
+
+test('the CLI installer writes the same current composition as the boot seeder', live, () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-enable-'))
+  try {
+    execFileSync(process.execPath, ['preset/enable.mjs'], { cwd: process.cwd(), env: { ...process.env, DSH_HOME: home } })
+    const installed = readFileSync(join(home, '.agent-presets', 'eng', 'agent.cordis.yml'), 'utf8')
+    assert.equal(installed, derived.text)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 // The persona plugin renamed `text` to `prefix`/`suffix` in DSH commit 40792330c0

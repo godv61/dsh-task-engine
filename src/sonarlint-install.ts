@@ -80,7 +80,7 @@ async function sha256(path: string): Promise<string> {
 const pending = new Map<string, Promise<SonarLintEnginePaths>>()
 
 /** Caller may pass a cache directory for testing; normal installations live outside project repositories. */
-export async function resolveSonarLintEngine(cacheBase = join(homedir(), '.dsh', 'sonarlint-runtime'),
+export async function resolveSonarLintEngine(cacheBase = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'sonarlint-runtime'),
   signal?: AbortSignal, archivePath?: string): Promise<SonarLintEnginePaths> {
   const explicitJava = process.env.DSH_SONARLINT_JAVA
   const explicitLib = process.env.DSH_SONARLINT_LIB

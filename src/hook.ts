@@ -71,18 +71,48 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     artifacts: (task.artifacts as TaskState['artifacts']) ?? {},
     files: Array.isArray(task.files) ? (task.files as string[]) : [],
     commits: Array.isArray(task.commits) ? (task.commits as TaskState['commits']) : [],
+    ...(task.execution_version === 1 ? { execution_version: 1 as const } : {}),
+    ...(typeof task.root === 'string' ? { root: task.root } : {}),
     ...(task.flow !== undefined ? { flow: task.flow as FlowSnapshot } : {}),
   }
 }
 
+/** Hook installation records only workspace paths inside this Git worktree. */
+function taskRoots(repoRoot: string): string[] {
+  const roots = new Set([repoRoot])
+  const configPath = path.join(__dirname, 'dsh-task-roots.json')
+  const config = readJson(configPath)
+  if (fs.existsSync(configPath) && config === undefined) refuse('提交钩子的工作区配置无法读取或解析')
+  if (config?.roots !== undefined && !Array.isArray(config.roots)) refuse('提交钩子的工作区配置无效')
+  for (const value of (config?.roots ?? []) as unknown[]) {
+    if (typeof value !== 'string' || path.isAbsolute(value)) refuse('提交钩子的工作区配置含非法路径')
+    const root = path.resolve(repoRoot, value)
+    const inside = path.relative(repoRoot, root)
+    if (inside.startsWith('..') || path.isAbsolute(inside)) refuse('提交钩子的工作区配置越界')
+    roots.add(root)
+  }
+  return [...roots]
+}
+
 function loadTasks(): { file: string; task: TaskState }[] {
-  const dir = path.join(process.cwd(), '.dsh')
-  if (!fs.existsSync(dir)) return []
   const out: { file: string; task: TaskState }[] = []
-  const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
-  for (const name of names) {
-    const json = readJson(path.join(dir, name))
-    if (json !== undefined && json.id !== undefined) out.push({ file: path.join(dir, name), task: normalizeTask(json) })
+  for (const root of taskRoots(process.cwd())) {
+    const dir = path.join(root, '.dsh')
+    if (!fs.existsSync(dir)) continue
+    const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
+    for (const name of names) {
+      const json = readJson(path.join(dir, name))
+      if (json === undefined || json.id === undefined) continue
+      const task = normalizeTask(json)
+      const projectRoot = task.root === undefined ? root : path.resolve(task.root)
+      const insideRepo = path.relative(process.cwd(), projectRoot)
+      const workspaceInsideProject = path.relative(projectRoot, root)
+      if (insideRepo.startsWith('..') || path.isAbsolute(insideRepo)
+        || workspaceInsideProject.startsWith('..') || path.isAbsolute(workspaceInsideProject)) {
+        refuse(`任务 ${task.id} 的项目根目录与钩子登记的工作区不一致`)
+      }
+      out.push({ file: path.join(dir, name), task: { ...task, root: projectRoot } })
+    }
   }
   return out
 }
@@ -280,7 +310,7 @@ let config: WorkflowConfig
 if (state.flow !== undefined && state.flow.config !== undefined) {
   config = state.flow.config
 } else {
-  const configPath = path.join(cwd, '.dsh', 'eng.json')
+  const configPath = path.join(state.root ?? cwd, '.dsh', 'eng.json')
   if (fs.existsSync(configPath)) {
     let parsed: { flow?: string; stage_bindings?: unknown }
     try { parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { flow?: string; stage_bindings?: unknown } }
@@ -304,13 +334,18 @@ if (!checkpoint.allowed) {
 if (state.sonar_policy?.enabled && ['代码审核', '完成'].includes(state.stage)) {
   const audit = state.sonar_audit
   const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
-  if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd)
+  if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, state.root ?? cwd)
     || !lastCommit || audit.commit_hash !== lastCommit) {
     refuse('SonarQube 审核未通过或已过期——在代码审核阶段重新扫描并调用 dev_task operation=sonar_check')
   }
 }
 
-const entries = stagedEntries()
+const workspace = state.root ?? cwd
+const entries = stagedEntries().map(entry => {
+  const absolute = path.resolve(cwd, entry.path)
+  const relativePath = path.relative(workspace, absolute).replaceAll('\\', '/')
+  return { ...entry, path: relativePath }
+})
 const scope = checkFileScope(state, entries.map(entry => entry.path), config)
 if (!scope.ok) {
   if (scope.noScope) {

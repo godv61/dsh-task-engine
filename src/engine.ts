@@ -698,7 +698,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
     })
     return { ok: false, errors: [`guards unmet: ${details.join(', ')}`] }
   }
-  if (state.execution_version === 1 && commitRequired(config) && config.commit.policy !== 'manual'
+  if (commitRequired(config) && config.commit.policy !== 'manual'
     && config.commit.checkpoints.includes(state.stage)
     && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
     return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
@@ -805,14 +805,13 @@ export function verificationHeldStages(config: WorkflowConfig): Set<string> {
  * @returns human-readable blockers; empty when the requirement does not apply or holds.
  */
 export function verificationBlockers(state: TaskState, config: WorkflowConfig): string[] {
-  if (state.execution_version !== 1) return []
   if (!verificationHeldStages(config).has(state.stage)) return []
   const blockers: string[] = []
   if (!state.verification.passed) {
     blockers.push('this flow requires a passing verification at this stage, and the current verification is not passing')
   }
   if (state.verification.receipt && !receiptHasRequiredTests(state.verification.receipt)) {
-    blockers.push('Maven verification has no nonzero Surefire/Failsafe test summary; rerun tests with visible results')
+    blockers.push('verification has no evidence of executed tests; rerun a supported test runner with a nonzero test summary')
   }
   if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
     const receipt = state.verification.receipt

@@ -276,7 +276,7 @@ export { wasSeeded }
  * Exported for tests: apply the persona rewrite to an arbitrary composition, so
  * both persona schema generations can be asserted without swapping harnesses.
  */
-export { applyPersona, personaFieldOf, personaShapeOf }
+export { applyPersona, personaFieldOf, personaShapeOf, shippedStandard }
 
 /** Exported for tests: the pre-2026-09-06 persona phrasing this seed must still recognise. */
 export { LEGACY_PERSONA_BLOCK, SEEDED_PERSONA_MARKER }

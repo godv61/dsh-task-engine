@@ -80,6 +80,7 @@ test('init_project proposes project-specific Skills and binds reviewed resources
   const inventory = JSON.parse(await f.call({ operation: 'init_project', phase: 'inspect' }))
   const projectMap = inventory.suggestions.find(entry => entry.name === 'adaptive-project-project-map')
   assert.ok(projectMap)
+  assert.ok(inventory.suggestions.some(entry => entry.name === 'adaptive-project-business-capabilities'))
   assert.match(projectMap.why, /entire repository/)
   assert.match(projectMap.why, /current feature request/)
   assert.match(inventory.caution, /repository-wide/)
@@ -253,7 +254,11 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
+  const oldHost = process.env.DSH_SONAR_TRUSTED_HOST
+  const oldKey = process.env.DSH_SONAR_TRUSTED_PROJECT_KEY
   process.env.SONAR_TOKEN = 'private-token'
+  process.env.DSH_SONAR_TRUSTED_HOST = 'https://sonar.example'
+  process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = 'project'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/navigation/global')
     ? { edition: 'developer' }
     : String(url).includes('/project_branches/list') ? { branches: [{ name: 'main' }] }
@@ -276,6 +281,10 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     globalThis.fetch = oldFetch
     if (oldToken === undefined) delete process.env.SONAR_TOKEN
     else process.env.SONAR_TOKEN = oldToken
+    if (oldHost === undefined) delete process.env.DSH_SONAR_TRUSTED_HOST
+    else process.env.DSH_SONAR_TRUSTED_HOST = oldHost
+    if (oldKey === undefined) delete process.env.DSH_SONAR_TRUSTED_PROJECT_KEY
+    else process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = oldKey
   }
 })
 
@@ -292,7 +301,11 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
+  const oldHost = process.env.DSH_SONAR_TRUSTED_HOST
+  const oldKey = process.env.DSH_SONAR_TRUSTED_PROJECT_KEY
   process.env.SONAR_TOKEN = 'secret-token'
+  process.env.DSH_SONAR_TRUSTED_HOST = 'https://sonar.example'
+  process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = 'project'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-2', componentKey: 'project' } }
     : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'ERROR',
@@ -311,6 +324,10 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     globalThis.fetch = oldFetch
     if (oldToken === undefined) delete process.env.SONAR_TOKEN
     else process.env.SONAR_TOKEN = oldToken
+    if (oldHost === undefined) delete process.env.DSH_SONAR_TRUSTED_HOST
+    else process.env.DSH_SONAR_TRUSTED_HOST = oldHost
+    if (oldKey === undefined) delete process.env.DSH_SONAR_TRUSTED_PROJECT_KEY
+    else process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = oldKey
   }
 })
 

@@ -21,8 +21,6 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const DEFAULT_DSH_ROOT = 'D:/dsharness/deepseek-harness'
-
 const problems = []
 function check(name, ok, detail = '') {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail === '' ? '' : `: ${detail}`}`)
@@ -38,7 +36,11 @@ function protocolDir(root) {
   return candidates.find(dir => existsSync(join(dir, 'package.json')))
 }
 
-const dshRoot = process.argv[2] ?? DEFAULT_DSH_ROOT
+const dshRoot = process.argv[2] ?? process.env.DSH_SOURCE_ROOT
+if (!dshRoot) {
+  console.error('Specify a DSH checkout: npm run verify:dsh -- <path> or set DSH_SOURCE_ROOT')
+  process.exit(2)
+}
 console.log(`DSH checkout: ${dshRoot}`)
 
 if (!existsSync(dshRoot)) {

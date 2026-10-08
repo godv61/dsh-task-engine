@@ -11,6 +11,7 @@
  * @module dsh-task-engine/dev-task
  */
 
+import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
@@ -64,7 +65,7 @@ import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credent
 import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject, validateInitResources, type InitResource } from './project-init.ts'
 import { hashConfig, hashText } from './snapshot.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
-import { mavenTestEvidence } from './verification-tests.ts'
+import { testEvidence } from './verification-tests.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
@@ -407,16 +408,67 @@ async function resolveWorkflow(fs: Fs, cwd?: string): Promise<ResolvedWorkflow> 
   }
 }
 
-/** Write the bundled notch gate into `.git/hooks/` so `git commit` is mechanically gated. */
+/** Resolve the real Git hook directory, including sessions rooted in a monorepo subdirectory. */
+function hookPaths(cwd: string | undefined): { repoRoot: string; hooksRel: string; workspaceRel: string } {
+  if (!cwd) throw new Error('install_hook requires a project workspace')
+  const git = (args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  let repoRoot: string
+  let hooksDir: string
+  try {
+    repoRoot = resolve(git(['rev-parse', '--show-toplevel']))
+    hooksDir = resolve(git(['rev-parse', '--path-format=absolute', '--git-path', 'hooks']))
+  } catch { throw new Error('install_hook requires an accessible Git worktree') }
+  let configured = ''
+  try { configured = git(['config', '--get', 'core.hooksPath']) }
+  catch { /* `git config --get` exits 1 when this optional setting is absent. */ }
+  if (configured) throw new Error('Git 配置了 core.hooksPath；请在自定义钩子目录手工组合提交门禁')
+  const hooksRel = relative(repoRoot, hooksDir)
+  const workspaceRel = relative(repoRoot, resolve(cwd))
+  if (!hooksRel || hooksRel.startsWith('..') || isAbsolute(hooksRel)
+    || workspaceRel.startsWith('..') || isAbsolute(workspaceRel)) {
+    throw new Error('Git hooks or task workspace lie outside the worktree; install_hook cannot safely write there')
+  }
+  return { repoRoot, hooksRel, workspaceRel: workspaceRel || '.' }
+}
+
+/** Install only our hook; preserve an existing unrelated hook for manual composition. */
 async function installCommitHook(fs: Fs, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
-  await writeText(fs, '.git/hooks/commit-msg', HOOK_TEMPLATE, cwd, mode)
-  await writeText(fs, '.git/hooks/package.json', HOOK_PACKAGE_JSON, cwd, mode)
+  const { repoRoot, hooksRel, workspaceRel } = hookPaths(cwd)
+  const hookPath = join(hooksRel, 'commit-msg')
+  const packagePath = join(hooksRel, 'package.json')
+  const rootsPath = join(hooksRel, 'dsh-task-roots.json')
+  const existing = await readText(fs, hookPath, repoRoot)
+  if (existing !== undefined && existing !== HOOK_TEMPLATE
+    && !(existing.includes('dsh-task-engine') && existing.includes('commitCheckpoint'))) {
+    throw new Error('已有非 dsh-task-engine 的 commit-msg hook；请手工组合两个钩子，安装器不会覆盖它')
+  }
+  const packageJson = await readText(fs, packagePath, repoRoot)
+  if (packageJson !== undefined && packageJson.trim() !== HOOK_PACKAGE_JSON.trim()) {
+    throw new Error('Git hook 目录已有不同的 package.json；请手工检查，安装器不会覆盖它')
+  }
+  const oldRoots = await readText(fs, rootsPath, repoRoot)
+  let roots: string[] = []
+  if (oldRoots !== undefined) {
+    try {
+      const parsed = JSON.parse(oldRoots) as { roots?: unknown }
+      if (!Array.isArray(parsed.roots) || parsed.roots.some(root => typeof root !== 'string')) throw new Error()
+      roots = parsed.roots as string[]
+    } catch { throw new Error('Git hook 工作区配置无效；请修复后重试') }
+  }
+  roots = [...new Set([...roots, workspaceRel])]
+  if (existing !== undefined && existing !== HOOK_TEMPLATE) {
+    await writeText(fs, `${hookPath}.backup-${Date.now()}`, existing, repoRoot, mode)
+  }
+  await writeText(fs, hookPath, HOOK_TEMPLATE, repoRoot, mode)
+  await writeText(fs, packagePath, HOOK_PACKAGE_JSON, repoRoot, mode)
+  await writeText(fs, rootsPath, JSON.stringify({ roots }, null, 2) + '\n', repoRoot, mode)
 }
 
 async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
   const raw = await readText(fs, taskPath(id), cwd)
   if (raw === undefined) throw new Error(`no task "${id}" under ${taskPath(id)}`)
   const state = JSON.parse(raw) as TaskState
+  if (state.id !== id) throw new Error(`task id collision: ${taskPath(id)} contains "${state.id}" rather than "${id}"`)
   // Tasks recorded before these features lack the fields; treat them as empty
   // so every engine gate reads complete state instead of crashing on absence.
   state.artifacts = state.artifacts ?? {}
@@ -1078,7 +1130,7 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
     ? [...previous.map(item => result.find(next => next.id === item.id) ?? item),
       ...result.filter(item => !previous.some(old => old.id === item.id))]
     : [...result, ...previous.filter(item => !ids.has(item.id)
-      && (item.status === 'done' || item.dispatch !== undefined || item.review !== undefined))]
+      && (item.status === 'done' || item.status === 'doing' || item.dispatch !== undefined || item.review !== undefined))]
   if (merged.filter(item => item.status === 'doing').length > 1) {
     throw new Error('only one implementation item may be doing')
   }
@@ -1105,7 +1157,6 @@ async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise
 
 /** A previous pass cannot authorize a changed tree. Commands still need meaningful human-reviewed coverage. */
 async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<string[]> {
-  if (state.execution_version !== 1) return []
   const blockers: string[] = []
   const current = await scopeFingerprint(fs, state, cwd)
   // Staleness is judged on the RECORDED verification, not only on a passing one.
@@ -1297,7 +1348,7 @@ export async function approveAdvance(
 const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
-  'Own the engineering delivery workflow as hard state. Read or create the task record, record a ' +
+  'Track engineering delivery in a workspace task record and enforce configured stage guards. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
   'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
   'the stage artifacts; a requirement/solution confirmation guard asks a human to approve instead of ' +
@@ -1362,7 +1413,7 @@ export function registerDevTask(ctx: Context): void {
       notes: { type: 'array', items: { type: 'string' }, description: 'Findings or defects (review_item).' },
       target_stage: { type: 'string', description: 'Stage to advance to (advance), a bound stage for skill_result, or the stage to return to (revise). For revise it must be the stage the changed decision belongs to. Current/upcoming terminal skill binding stage for skill_result.' },
       command: { type: 'string', description: 'Real acceptance command for verify or a command-evidence skill_result. New task verification requires a command receipt; other skills follow their configured evidence kind. Propagate failures when composing shell commands.' },
-      passed: { type: 'boolean', description: 'Legacy tasks only: verification claim when no command can be resolved. New tasks require real command receipts.' },
+      passed: { type: 'boolean', description: 'Deprecated input; verification requires a real command and test result receipt.' },
       evidence: { type: 'array', items: { type: 'string' }, description: 'Supplementary verification evidence (verify).' },
       outcome: { type: 'string', enum: ['pass', 'blocked'], description: 'Review outcome (review).' },
       artifact: { type: 'string', description: 'Artifact id from status.artifact_requirements for the current stage (record).' },
@@ -1442,18 +1493,21 @@ export function registerDevTask(ctx: Context): void {
 
       if (a.operation === 'install_hook') {
         await installCommitHook(fs, cwd, await resolveWriteMode(ctx, a, exec))
-        return 'installed commit-msg hook at .git/hooks/commit-msg — git commit is now gated by the task state'
+        return 'installed commit-msg hook in the Git worktree and registered this task workspace'
       }
 
       if (a.operation === 'verify_hook') {
-        const installed = await readText(fs, '.git/hooks/commit-msg', cwd)
+        const { repoRoot, hooksRel, workspaceRel } = hookPaths(cwd)
+        const installed = await readText(fs, join(hooksRel, 'commit-msg'), repoRoot)
         if (installed === undefined) {
           return 'no .git/hooks/commit-msg installed — run install_hook first'
         }
-        if (hashText(installed) === hashText(HOOK_TEMPLATE)) {
-          return 'hook integrity OK — installed commit-msg matches the bundled gate'
+        const roots = await readText(fs, join(hooksRel, 'dsh-task-roots.json'), repoRoot)
+        if (hashText(installed) === hashText(HOOK_TEMPLATE)
+          && (workspaceRel === '.' || (roots !== undefined && (JSON.parse(roots) as { roots?: string[] }).roots?.includes(workspaceRel)))) {
+          return 'hook integrity OK — installed commit-msg matches the bundled gate and this workspace is registered'
         }
-        throw new Error('hook integrity FAILED — .git/hooks/commit-msg differs from the bundled gate; reinstall with install_hook')
+        throw new Error('hook integrity FAILED — hook differs from the bundle or this workspace is not registered; run install_hook')
       }
 
       if (a.operation === 'init_project') {
@@ -1615,6 +1669,9 @@ export function registerDevTask(ctx: Context): void {
       if (a.operation === 'create') {
         if (!a.task_id || !a.title || !a.branch) {
           throw new Error('create requires task_id, title, and branch')
+        }
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(a.task_id)) {
+          throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
         }
         if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
         if (a.complexity !== undefined && !a.complexity_reason?.trim()) {
@@ -1817,7 +1874,7 @@ export function registerDevTask(ctx: Context): void {
         if (!target) throw new Error('pull-request SonarQube audit requires pull_request')
         const credentialProvider = ctx.get('credentials') as SonarCredentialProvider | undefined
         const token = await resolveSonarToken(credentialProvider, state.root,
-          process.env[state.sonar_policy.token_env])
+          state.sonar_policy.host_url, state.sonar_policy.project_key, process.env[state.sonar_policy.token_env])
         const scopeBefore = await scopeFingerprint(fs, state, cwd)
         if (state.sonar_policy.source === 'ide-local') {
           if (a.ce_task_id) throw new Error('本地规则审核不使用 CI ce_task_id')
@@ -2000,14 +2057,12 @@ export function registerDevTask(ctx: Context): void {
         }
         if (a.hash) {
           if (!/^[0-9a-f]{7,40}$/i.test(a.hash)) throw new Error('commit hash must be a Git object id')
-          if (state.execution_version === 1) {
-            const receipt = await runVerificationCommand(ctx, 'git -c core.quotepath=false log -1 --format=%H%n%s%n --name-only HEAD', state.root ?? cwd, exec)
-            if (receipt.exit_code !== 0 || receipt.aborted || receipt.timed_out || receipt.sandbox?.denied || receipt.sandbox?.runnerFailed) throw new Error('cannot verify the recorded Git commit')
-            const lines = receipt.stdout.trim().split(/\r?\n/)
-            if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
-            const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
-            if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
-          }
+          const receipt = await runVerificationCommand(ctx, 'git -c core.quotepath=false log -1 --format=%H%n%s%n --name-only HEAD', state.root ?? cwd, exec)
+          if (receipt.exit_code !== 0 || receipt.aborted || receipt.timed_out || receipt.sandbox?.denied || receipt.sandbox?.runnerFailed) throw new Error('cannot verify the recorded Git commit')
+          const lines = receipt.stdout.trim().split(/\r?\n/)
+          if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
+          const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
+          if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
           if (!state.commits.some(entry => entry.hash === a.hash)) state.commits.push({ label: checkpoint.label!, hash: a.hash })
         }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
@@ -2223,21 +2278,20 @@ export function registerDevTask(ctx: Context): void {
           if (command !== undefined) {
             approvedWriteMode = await resolveWriteMode(ctx, { ...a, command }, exec)
             const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
-            if (state.execution_version === 1) receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
+            receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
             }
-            const testSummary = mavenTestEvidence(command, `${receipt.stdout}\n${receipt.stderr}`)
-            if (testSummary) receipt.test_summary = testSummary
+            const testSummary = testEvidence(command, `${receipt.stdout}\n${receipt.stderr}`)
+            receipt.test_summary = testSummary
             state.verification = {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied
-                && !receipt.sandbox?.runnerFailed && (testSummary === null || (testSummary.count ?? 0) > 0),
+                && !receipt.sandbox?.runnerFailed && (testSummary.count ?? 0) > 0,
               evidence: a.evidence ?? [],
               receipt,
             }
           } else {
-            if (state.execution_version === 1) throw new Error('verify requires a real validation command; pass command explicitly for this project')
-            state.verification = { passed: a.passed === true, evidence: a.evidence ?? [] }
+            throw new Error('verify requires a real validation command; pass command explicitly for this project')
           }
           note = JSON.stringify({ ok: state.verification.passed, stage: state.stage, verification: state.verification }, null, 2)
           break

@@ -37,10 +37,30 @@ function mavenTestEvidence(command, output) {
   const counts = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:/giu)].map((match) => Number(match[1]));
   return { count: counts.length ? Math.max(...counts) : null };
 }
+function testEvidence(command, output) {
+  if (/(?:\|\||(?<!\|)\|(?!\|)|;)/u.test(command)) return { count: null };
+  if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
+    return { count: 0 };
+  }
+  const maven = mavenTestEvidence(command, output);
+  if (maven) return maven;
+  let match = null;
+  if (/(?:^|\s)(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?test\b|(?:^|\s)node(?:\.exe)?\s+--test\b/iu.test(command)) {
+    match = output.match(/(?:^|\n)\s*#\s*tests\s+(\d+)\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:?\s*(\d+)\s+passed\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:\s*\d+\s+failed,\s*(\d+)\s+passed\b/iu);
+  } else if (/(?:^|\s)(?:python(?:3)?(?:\.exe)?\s+-m\s+)?pytest\b|(?:^|\s)python(?:3)?(?:\.exe)?\s+-m\s+pytest\b/iu.test(command)) {
+    match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
+    if (!match && /no tests ran/iu.test(output)) return { count: 0 };
+  } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
+    return { count: /(?:^|\n)ok\s+\S+/u.test(output) ? 1 : 0 };
+  } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
+    const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map((entry) => Number(entry[1]));
+    return { count: counts.length ? Math.max(...counts) : null };
+  }
+  return { count: match ? Number(match[1]) : null };
+}
 function receiptHasRequiredTests(receipt) {
-  const evidence = mavenTestEvidence(receipt.command, `${receipt.stdout}
-${receipt.stderr}`);
-  return evidence === null || (evidence.count ?? 0) > 0;
+  return (testEvidence(receipt.command, `${receipt.stdout}
+${receipt.stderr}`).count ?? 0) > 0;
 }
 
 // src/engine.ts
@@ -122,14 +142,13 @@ function verificationHeldStages(config2) {
   return held;
 }
 function verificationBlockers(state2, config2) {
-  if (state2.execution_version !== 1) return [];
   if (!verificationHeldStages(config2).has(state2.stage)) return [];
   const blockers = [];
   if (!state2.verification.passed) {
     blockers.push("this flow requires a passing verification at this stage, and the current verification is not passing");
   }
   if (state2.verification.receipt && !receiptHasRequiredTests(state2.verification.receipt)) {
-    blockers.push("Maven verification has no nonzero Surefire/Failsafe test summary; rerun tests with visible results");
+    blockers.push("verification has no evidence of executed tests; rerun a supported test runner with a nonzero test summary");
   }
   if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
     const receipt = state2.verification.receipt;
@@ -449,17 +468,44 @@ function normalizeTask(task) {
     artifacts: task.artifacts ?? {},
     files: Array.isArray(task.files) ? task.files : [],
     commits: Array.isArray(task.commits) ? task.commits : [],
+    ...task.execution_version === 1 ? { execution_version: 1 } : {},
+    ...typeof task.root === "string" ? { root: task.root } : {},
     ...task.flow !== void 0 ? { flow: task.flow } : {}
   };
 }
+function taskRoots(repoRoot) {
+  const roots = /* @__PURE__ */ new Set([repoRoot]);
+  const configPath = import_node_path.default.join(__dirname, "dsh-task-roots.json");
+  const config2 = readJson(configPath);
+  if (import_node_fs.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
+  if (config2?.roots !== void 0 && !Array.isArray(config2.roots)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6548");
+  for (const value of config2?.roots ?? []) {
+    if (typeof value !== "string" || import_node_path.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
+    const root = import_node_path.default.resolve(repoRoot, value);
+    const inside = import_node_path.default.relative(repoRoot, root);
+    if (inside.startsWith("..") || import_node_path.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
+    roots.add(root);
+  }
+  return [...roots];
+}
 function loadTasks() {
-  const dir = import_node_path.default.join(process.cwd(), ".dsh");
-  if (!import_node_fs.default.existsSync(dir)) return [];
   const out = [];
-  const names = import_node_fs.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
-  for (const name of names) {
-    const json = readJson(import_node_path.default.join(dir, name));
-    if (json !== void 0 && json.id !== void 0) out.push({ file: import_node_path.default.join(dir, name), task: normalizeTask(json) });
+  for (const root of taskRoots(process.cwd())) {
+    const dir = import_node_path.default.join(root, ".dsh");
+    if (!import_node_fs.default.existsSync(dir)) continue;
+    const names = import_node_fs.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
+    for (const name of names) {
+      const json = readJson(import_node_path.default.join(dir, name));
+      if (json === void 0 || json.id === void 0) continue;
+      const task = normalizeTask(json);
+      const projectRoot = task.root === void 0 ? root : import_node_path.default.resolve(task.root);
+      const insideRepo = import_node_path.default.relative(process.cwd(), projectRoot);
+      const workspaceInsideProject = import_node_path.default.relative(projectRoot, root);
+      if (insideRepo.startsWith("..") || import_node_path.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path.default.isAbsolute(workspaceInsideProject)) {
+        refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
+      }
+      out.push({ file: import_node_path.default.join(dir, name), task: { ...task, root: projectRoot } });
+    }
   }
   return out;
 }
@@ -598,7 +644,7 @@ var config;
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
 } else {
-  const configPath = import_node_path.default.join(cwd, ".dsh", "eng.json");
+  const configPath = import_node_path.default.join(state.root ?? cwd, ".dsh", "eng.json");
   if (import_node_fs.default.existsSync(configPath)) {
     let parsed;
     try {
@@ -620,11 +666,16 @@ if (!checkpoint.allowed) {
 if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].includes(state.stage)) {
   const audit = state.sonar_audit;
   const lastCommit = state.commits.findLast((entry) => entry.hash !== void 0)?.hash;
-  if (!audit || audit.gate !== "OK" || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, cwd) || !lastCommit || audit.commit_hash !== lastCommit) {
+  if (!audit || audit.gate !== "OK" || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, state.root ?? cwd) || !lastCommit || audit.commit_hash !== lastCommit) {
     refuse("SonarQube \u5BA1\u6838\u672A\u901A\u8FC7\u6216\u5DF2\u8FC7\u671F\u2014\u2014\u5728\u4EE3\u7801\u5BA1\u6838\u9636\u6BB5\u91CD\u65B0\u626B\u63CF\u5E76\u8C03\u7528 dev_task operation=sonar_check");
   }
 }
-var entries = stagedEntries();
+var workspace = state.root ?? cwd;
+var entries = stagedEntries().map((entry) => {
+  const absolute = import_node_path.default.resolve(cwd, entry.path);
+  const relativePath = import_node_path.default.relative(workspace, absolute).replaceAll("\\", "/");
+  return { ...entry, path: relativePath };
+});
 var scope = checkFileScope(state, entries.map((entry) => entry.path), config);
 if (!scope.ok) {
   if (scope.noScope) {

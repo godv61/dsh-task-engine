@@ -11,18 +11,11 @@
  * touches the shipped preset install.
  */
 
-import { createRequire } from 'node:module'
 import { cp, mkdir, readFile, writeFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-
-const require = createRequire(import.meta.url)
-
-/** The persona block `standard` ships, in its exact indentation. */
-const SHIPPED_PERSONA_BLOCK =
-  '    text: >-\n'
-  + '      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.\n'
+import { applyPersona, shippedStandard } from '../lib/seed-preset.js'
 
 const AGENT_ROW = "\n- id: task-engine-agent\n  name: '@godv61/dsh-task-engine/agent'\n"
 
@@ -36,17 +29,14 @@ async function exists(path) {
 }
 
 async function main() {
-  let shippedRoot
-  try {
-    ;({ SHIPPED_PRESET_ROOT: shippedRoot } = require('@deepseek-ai/dsh-agent-presets'))
-  } catch {
+  const source = shippedStandard()
+  if (!source) {
     console.error('未找到 @deepseek-ai/dsh-agent-presets —— 请先执行 dsh plugin --profile <name> add @godv61/dsh-task-engine')
     process.exitCode = 1
     return
   }
 
   const home = process.env.DSH_HOME ?? join(homedir(), '.dsh')
-  const source = join(shippedRoot, 'standard')
   const target = join(home, '.agent-presets', 'eng')
 
   if (await exists(target)) {
@@ -55,23 +45,19 @@ async function main() {
     return
   }
 
-  await mkdir(join(home, '.agent-presets'), { recursive: true })
-  await cp(source, target, { recursive: true })
-
-  const compPath = join(target, 'agent.cordis.yml')
-  let comp = await readFile(compPath, 'utf8')
+  let comp = await readFile(join(source, 'agent.cordis.yml'), 'utf8')
 
   const persona = (await readFile(fileURLToPath(new URL('./persona.md', import.meta.url)), 'utf8')).trimEnd()
-  if (comp.includes(SHIPPED_PERSONA_BLOCK)) {
-    const block = '    text: |-\n' + persona.split('\n').map(line => '      ' + line).join('\n') + '\n'
-    comp = comp.replace(SHIPPED_PERSONA_BLOCK, block)
-  } else {
-    console.warn('未能定位 standard 的 persona 段，跳过 persona 替换（仍会追加 agent 行）。')
-  }
+  const rewritten = applyPersona(comp, persona)
+  if (!rewritten.applied) throw new Error('standard 预设没有可识别的 persona；停止创建以避免不完整的预设')
+  comp = rewritten.text
 
   if (!comp.includes("name: '@godv61/dsh-task-engine/agent'")) {
     comp = comp.trimEnd() + '\n' + AGENT_ROW
   }
+  await mkdir(join(home, '.agent-presets'), { recursive: true })
+  await cp(source, target, { recursive: true })
+  const compPath = join(target, 'agent.cordis.yml')
   await writeFile(compPath, comp, 'utf8')
 
   await writeFile(

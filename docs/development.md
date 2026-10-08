@@ -34,7 +34,7 @@ npm run verify:package
 
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- Maven 测试目标在进程成功之外，还需解析到非零 Surefire/Failsafe 测试数。未输出摘要时失败关闭，其他命令按自身回执判断。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test 或 Cargo test 的可识别摘要。未知命令和缺少摘要的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 

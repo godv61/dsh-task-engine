@@ -125,6 +125,77 @@ test('a task at its checkpoint with the right message commits', async () => {
   }
 })
 
+test('the installed hook rejects a failed verification on a current task', async () => {
+  const config = await standardConfig()
+  const root = repo('failed-verification', approvedTask({
+    execution_version: 1,
+    verification: { passed: false, evidence: [] },
+    flow: { flow: 'standard', version: 2, config },
+  }))
+  try {
+    const result = tryCommit(root, '【HOOK-1】【TASK】probe failed verification')
+    assert.equal(result.allowed, false, 'a failed verification must block the real Git hook')
+    assert.match(result.stderr, /verification is not passing/, 'the refusal names verification')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('removing execution_version cannot bypass the installed verification gate', async () => {
+  const config = await standardConfig()
+  const root = repo('missing-version', approvedTask({
+    verification: { passed: false, evidence: [] },
+    flow: { flow: 'standard', version: 2, config },
+  }))
+  try {
+    const result = tryCommit(root, '【HOOK-1】【TASK】probe missing version')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /verification is not passing/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the installed hook finds a registered task in a monorepo subdirectory', async () => {
+  const config = await standardConfig()
+  const root = mkdtempSync(join(tmpdir(), 'engine-hook-subdir-'))
+  try {
+    git(root, ['init', '-q', '-b', 'main'])
+    git(root, ['config', 'user.email', 'test@example.com'])
+    git(root, ['config', 'user.name', 'Test'])
+    git(root, ['config', 'commit.gpgsign', 'false'])
+    const sub = join(root, 'module')
+    mkdirSync(join(sub, '.dsh'), { recursive: true })
+    mkdirSync(join(sub, 'src'), { recursive: true })
+    const gate = readFileSync(HOOK, 'utf8').replace(/^#![^\n]*\n/u, '')
+    writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`)
+    writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{ "type": "commonjs" }\n')
+    writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{ "roots": ["module"] }\n')
+    writeFileSync(join(sub, '.dsh', 'task-HOOK-1.json'), JSON.stringify(approvedTask({
+      root: sub, files: ['src/app.js'], flow: { flow: 'standard', version: 2, config },
+    })))
+    writeFileSync(join(sub, 'src', 'app.js'), 'console.log(1)\n')
+    git(root, ['add', 'module/src/app.js'])
+    const result = tryCommit(sub, '【HOOK-1】【TASK】probe subdirectory')
+    assert.equal(result.allowed, true, `registered subdirectory task should commit: ${result.stderr}`)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the installed hook fails closed on a damaged workspace registry', async () => {
+  const config = await standardConfig()
+  const root = repo('damaged-roots', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  try {
+    writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{broken')
+    const result = tryCommit(root, '【HOOK-1】【TASK】probe damaged roots')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /工作区配置无法读取或解析/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a message that violates the configured pattern is refused', async () => {
   const config = await standardConfig()
   const root = repo('badmsg', approvedTask({ flow: { flow: 'standard', version: 2, config } }))

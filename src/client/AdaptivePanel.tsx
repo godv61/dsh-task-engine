@@ -85,6 +85,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     update({ ...draft, meta_bindings })
   }
   const updateSonar = (patch: NonNullable<AdaptiveProjectConfig['sonar']>) => {
+    if (patch.host_url !== undefined || patch.project_key !== undefined) setTokenInfo(null)
     update({ ...draft, sonar: { ...draft.sonar, ...patch, source: 'ide-local', mode: 'branch',
       token_env: draft.sonar?.token_env ?? 'SONAR_TOKEN', reference_branch: patch.reference_branch ?? draft.sonar?.reference_branch ?? 'HEAD',
       scan_command: undefined } })
@@ -141,6 +142,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       if (!result.value.ok) { setMessage('配置未保存：' + result.value.problems.join('；')); return }
       setDraft(result.value.config)
       setDirty(false)
+      void remote.describeSonarToken(workspace).then(info => { if (info.ok) setTokenInfo(info.value) }, () => {})
       setMessage('已保存到 .dsh/meta.json；只影响新建任务。')
     }, error => { setSaving(false); setMessage('保存失败：' + describeError(error)) })
   }
@@ -169,7 +171,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     if (dirty) { setMessage('请先保存 SonarQube 审核配置，再检查本地分析器。'); return }
     setAnalyzerOperation('prepare')
     setAnalyzerProfiles(null)
-    setMessage('正在安装或检查本地分析器，并连接当前项目的 SonarQube；首次下载可能需要较长时间。')
+    setMessage('正在安装或检查本地分析器，并连接当前项目的 SonarQube。首次约需下载 93 MiB；网络较慢时请保持页面打开，失败会显示原因。')
     void remote.prepareSonarAnalyzer(workspace).then(result => {
       setAnalyzerOperation('')
       if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
@@ -267,6 +269,8 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
           onChange: (event: { target: HTMLInputElement }) => updateSonar({ enabled: event.target.checked }) }),
         '启用（仅代码审核阶段）')),
       createElement('span', { style: label }, '测试通过后，代码审核元技能会检查提交前的新增代码。首次审核自动准备本地分析组件，并从 SonarQube 同步当前项目的规则。Token 按项目保存在本机 DSH 凭据存储。'),
+      sonar.enabled === true && sonar.host_url?.startsWith('http://') ? createElement('span', { style: { ...label, color: '#b45309' } },
+        '当前使用 HTTP：Token 会通过未加密的网络连接发送到此服务地址。仅在可信内网使用；Token 与此地址及项目 Key 绑定，变更后需重新保存。') : null,
       sonar.enabled === true && sonar.source && sonar.source !== 'ide-local' ? createElement('span', { style: label },
         '此项目仍是旧审核模式；保存配置后，新任务将使用提交前本地审核。已有任务按创建时的配置继续。') : null,
       sonar.enabled === true ? createElement('div', { style: grid },
@@ -315,7 +319,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
             value: sonarToken, placeholder: '输入用户令牌（保存后不回显）',
             onChange: (event: { target: HTMLInputElement }) => setSonarToken(event.target.value) }),
           createElement('div', { style: row },
-            createElement(Button, { variant: 'outline', size: 'sm', disabled: tokenBusy || !sonarToken.trim() || tokenInfo?.writable === false,
+            createElement(Button, { variant: 'outline', size: 'sm', disabled: dirty || tokenBusy || !sonarToken.trim() || tokenInfo?.writable === false,
               onClick: saveToken }, tokenBusy ? '处理中…' : '保存 Token'),
             tokenInfo?.configured ? createElement(Button, { variant: 'outline', size: 'sm',
               disabled: tokenBusy || tokenInfo.writable === false, onClick: clearToken }, '移除 Token') : null),

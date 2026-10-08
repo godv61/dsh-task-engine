@@ -3,8 +3,8 @@ import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
+import { join, parse, resolve, sep } from 'node:path'
 import { prepareImport, commitImport } from './lib/resource-import.js'
 
 const file = (path, text) => ({path,base64:Buffer.from(text).toString('base64')})
@@ -147,4 +147,26 @@ test('ledger exposes Sonar findings without project credentials',async()=>{
  assert.equal(tasks[0].sonar.audit.blocking_count,1)
  assert.deepEqual(tasks[0].sonar.audit.findings[0],{key:'issue-1',rule:'java:S103',message:'Line too long',severity:'MAJOR',file:'Sample.java',line:3})
  assert.equal(JSON.stringify(tasks).includes('SONAR_TOKEN'),false)
+})
+
+test('project resource remotes reject a missing workspace before touching files', async () => {
+ const {default:Controller}=await import('./lib/controller.js')
+ const receiver={authorizedPath:async()=>{throw new Error('must not resolve an absent workspace')}}
+ for (const [method, request] of [
+   ['writeSkill',{level:'project',name:'sample',description:'sample',content:'body'}],
+   ['writeRule',{level:'project',name:'sample',content:'body'}],
+   ['readSkill',{level:'project',name:'sample'}],
+   ['readRule',{level:'project',name:'sample'}],
+   ['deleteSkill',{level:'project',name:'sample'}],
+   ['deleteRule',{level:'project',name:'sample'}],
+   ['installSkill',{level:'project',name:'sample',sourceDir:'/tmp/sample'}],
+ ]) await assert.rejects(()=>Controller.prototype[method].call(receiver,request),/必须指定已注册工作区/)
+})
+
+test('directory picker rejects an unregistered location outside the user home', async () => {
+ const {default:Controller}=await import('./lib/controller.js')
+ const receiver={authorizedPath:async()=>{throw new Error('unregistered')}}
+ const view=await Controller.prototype.listDirs.call(receiver,{path:parse(homedir()).root})
+ assert.equal(view.ok,false)
+ assert.match(view.error,/只能浏览用户主目录或已注册的工作区/)
 })

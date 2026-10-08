@@ -115,7 +115,6 @@ function evidenceBlockers(
 }
 
 export function skillBlockers(state: TaskState, workflow: WorkflowConfig, session?: SkillSession): string[] {
-  if (state.execution_version !== 1) return []
   const loaded = loadedSkills(session)
   return obligationStages(state, workflow).flatMap(stage => (workflow.stage_bindings?.[stage]?.skills ?? []).flatMap(entry => {
     // The host skill tool uses a bare name. A Codex project Skill instead uses

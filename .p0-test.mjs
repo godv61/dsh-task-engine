@@ -363,7 +363,7 @@ await assertThrows(
   const receipt = overrides => ({
     command: 'npm test', exit_code: 0, timed_out: false, aborted: false,
     started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z',
-    stdout: '', stderr: '', ...overrides,
+    stdout: '# tests 1\n# pass 1', stderr: '', ...overrides,
   })
   const mk = () => {
     const s = newTask({ id: 'L1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'high_risk', flow: snapshot })
@@ -555,18 +555,14 @@ function memProbe(files) {
   assert(hook.includes('sha256') || hook.includes('createHash'), 'hook bundles the sha256 snapshot check')
 }
 
-// ── 24. 0.22-B: installed-hook integrity check ─────────────────────────────
+// ── 24. Hook installation must never guess the process directory ──────────
 {
   const fs = makeFs({})
   const exe = await registered(fs)
-  assert((await exe({ operation: 'verify_hook' }, EXEC)).includes('run install_hook'), 'verify_hook reports an absent hook')
-  await exe({ operation: 'install_hook' }, EXEC)
-  assert((await exe({ operation: 'verify_hook' }, EXEC)).includes('integrity OK'), 'verify_hook passes on the bundled hook')
-  fs._files.set('.git/hooks/commit-msg', fs._files.get('.git/hooks/commit-msg') + '\n// tampered')
   await assertThrows(
-    () => exe({ operation: 'verify_hook' }, EXEC),
-    'integrity FAILED',
-    'verify_hook rejects a tampered hook',
+    () => exe({ operation: 'install_hook' }, EXEC),
+    'requires a project workspace',
+    'install_hook refuses a session without a workspace',
   )
 }
 
@@ -635,8 +631,8 @@ function memProbe(files) {
   const legacy = JSON.parse(fs._files.get('.dsh/task-V-3.json'))
   delete legacy.execution_version
   fs._files.set('.dsh/task-V-3.json', JSON.stringify(legacy))
-  assert(JSON.parse(await exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC)).ok,
-    'legacy tasks retain their verification contract')
+  await assertThrows(() => exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC),
+    'real validation command', 'deleting execution_version cannot enable self-reported verification')
 }
 {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })

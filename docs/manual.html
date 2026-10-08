@@ -68,6 +68,7 @@ pnpm dsh web --no-open</code></pre>
           <tr><td>确认写入项目</td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
         </tbody></table></div>
         <p>常见产物是 <code>.dsh/skills/&lt;项目名&gt;-project-map/SKILL.md</code>、技术栈和后端/前端开发 Skill，以及 <code>.dsh/rules/</code> 下的项目规则。项目地图写模块职责、依赖、通用入口与版本证据；某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
+        <p>提案还会建议可选的 <code>&lt;项目名&gt;-business-capabilities</code> Skill。只有页面、路由、接口、测试或业务文档能支持业务能力描述时才保留；每项能力应给出证据路径，并分别标注代码事实、合理推导和待业务确认。它可挂载到需求分析和架构设计，供后续需求复用。</p>
         <p>团队共享时，审阅后将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code>、<code>.dsh/meta.json</code> 纳入 Git。Token 和本地审核报告不应随代码提交。</p>
       </section>
 
@@ -88,6 +89,7 @@ pnpm dsh web --no-open</code></pre>
           <tr><td>超高</td><td>完整新模块或大范围重构</td><td>需求分析 → 架构设计 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
         </tbody></table></div>
         <p>需求分析交付目标、范围、非目标和可验证的验收条件；架构设计交付边界、影响与取舍；任务编排交付按实现先后排列的实施项 ID、依赖和交接产物；代码开发交付变更文件及逐项规格/质量审查；测试交付真实命令与覆盖说明；代码审核交付结论及可选 Sonar 报告。<strong>实施项是推进顺序，不是给团队成员派活。</strong>风险等级与复杂度独立判断。</p>
+        <p>项目已有 CodeGraph 索引时，可在需求和架构阶段核对调用链与影响；不可用时直接读源码。已有 OpenSpec Change 时，可引用已确认的规格编号。两者由团队按需使用，不会自动安装，也不替代当前任务的台账、阶段产物或测试。</p>
       </section>
 
       <section id="task">
@@ -95,7 +97,7 @@ pnpm dsh web --no-open</code></pre>
         <ol>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
-          <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；已完成或有审查记录的项仍受保护。</li>
+          <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；实施中、已完成或有审查记录的项仍受保护。</li>
           <li>实现每项时记录 <code>dispatch</code>、<code>review_item</code>；开发者可在当前会话直接实施，不要求分派给别人。变更文件登记在任务 <code>files</code> 范围内。修改代码后旧测试和审核回执会失效。</li>
           <li>测试阶段调用 <code>verify</code> 执行真实命令；代码审核阶段运行 <code>sonar_check</code>（若启用 Sonar），处理问题后记录 <code>review</code>。通过门禁后按 <code>status.commit</code> 的提示提交并完成任务。</li>
         </ol>
@@ -106,30 +108,31 @@ pnpm dsh web --no-open</code></pre>
 只在当前分支工作，不要推送。</code></pre>
         <p>会话应先展示复杂度依据和任务状态。若发现已有任务，先核对任务 ID 与分支，避免把这条需求写进其他任务。你可以随时在“任务台账”查看它记录的实施项和下一门禁。</p>
         <p>一个任务只负责其记录的分支、文件范围和流程。多会话并行时应给不同任务使用独立分支或工作区，避免另一任务的未提交代码混进本次审核。</p>
+        <p>需要拦截直接执行的 <code>git commit</code> 时，在工程会话调用 <code>dev_task install_hook</code> 和 <code>verify_hook</code>。安装器登记当前 Git 工作区；仓库子目录也能定位任务。已有其它 <code>commit-msg</code> 钩子时安装会停止，需人工组合；更新已有 DSH 钩子前会备份。任务 JSON 可以由拥有工作区写权限的人修改，因此门禁用于防止遗漏和误操作，不是防恶意篡改机制。</p>
       </section>
 
       <section id="tests">
         <h2>测试和证据</h2>
-        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；对于 Maven <code>test</code>、<code>verify</code>、<code>package</code> 或 <code>install</code> 命令，输出还必须显示 Surefire/Failsafe 至少运行一个测试。输出显示 0 个或没有测试摘要时，任务验证不通过。请使用能输出测试摘要的命令，并核对实际测试报告；不要用只编译、跳过测试的命令冒充功能验证。</p>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test 和 Cargo test 的常见输出必须能证明至少运行一个测试。输出显示 0 个、没有可识别摘要，或只运行编译、<code>true</code> 等命令时不能算通过。使用可输出测试结果的命令，并核对实际测试报告。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
 
       <section id="sonar">
         <h2>按项目配置 SonarQube</h2>
         <p><strong>不需要 Sonar：</strong>保持“自适应流程”中的 Sonar 开关关闭；不必填写地址、Key 或 Token。代码审核元技能和项目 Rule 仍会运行。</p>
-        <p><strong>需要 Sonar：</strong>先在工作台顶部选对项目，再开启 Sonar，填写服务地址和项目 Key。项目 Key 在 Sonar 项目设置中查；Token 在 Sonar 个人安全设置生成，需能读取该项目的规则。Token 在同页单独保存到本机 DSH 凭据存储，按项目工作区隔离，只显示“已配置”，不会写入 <code>.dsh/meta.json</code> 或审核报告。换项目应分别配置。</p>
+        <p><strong>需要 Sonar：</strong>先在工作台顶部选对项目，再开启 Sonar，填写并保存服务地址和项目 Key。项目 Key 在 Sonar 项目设置中查；Token 在 Sonar 个人安全设置生成，需能读取该项目的规则。Token 在同页单独保存到本机 DSH 凭据存储，绑定当前工作区、服务地址和项目 Key，只显示“已配置”，不会写入 <code>.dsh/meta.json</code> 或审核报告。换项目、地址或 Key 时需重新保存 Token；旧版只按工作区保存的 Token 升级后需重新输入。内部 HTTP 服务可用，但传输没有 TLS 保护，应核对网络边界。</p>
         <div class="scroll"><table><thead><tr><th>页面字段</th><th>怎样填写</th></tr></thead><tbody>
           <tr><td>服务地址</td><td>填 SonarQube 根地址，例如 <code>https://sonar.example.com</code>，不带项目页面路径。</td></tr>
           <tr><td>项目 Key</td><td>填当前代码库在 SonarQube 中的项目标识；每个项目可不同。</td></tr>
           <tr><td>Git 参考版本</td><td>高级设置；默认 <code>HEAD</code>，审核尚未提交的变更。需要时可填写本机已有的分支或提交。</td></tr>
           <tr><td>审核路径</td><td>高级设置；留空审核本次任务全部代码。若只需后端审核，填写项目相对目录。</td></tr>
-          <tr><td>Token</td><td>当前项目单独保存；保存后只显示是否已配置，不会回显原值。</td></tr>
+          <tr><td>Token</td><td>保存服务地址与 Key 后单独保存；按工作区、地址和 Key 隔离，不会回显原值。</td></tr>
         </tbody></table></div>
         <p>保存项目配置和 Token 后，管理员可点击<strong>安装或检查本地分析器</strong>。检查按当前项目 Key 读取生效的 Quality Profile，优先显示该项目最近一次服务端分析涉及的语言；未分析过的项目显示所有已配置语言。检查不会审核或上传代码。未预先点击也可以继续开发，代码审核时会自动准备本机组件。</p>
         <p>SonarQube 服务器更改了此项目的规则或参数后，点击<strong>更新当前项目规则</strong>。插件重新建立此项目的本地绑定并同步规则；成功后显示手动更新时间，后续代码审核使用新绑定。更新失败则继续使用此前成功的配置。更新不会扫描或上传代码，也不计算服务端 Quality Gate；其它项目不受影响。</p>
         <p>点击<strong>查看当前项目规则</strong>，可按语言查看 Quality Profile 名称和启用规则清单，按编号、名称或严重性搜索，并打开 SonarQube 规则详情。默认只显示最近一次分析涉及的语言，也可展开其它语言配置。规则清单与本地分析器状态是两种信息：<code>SYNCED</code> 表示该语言分析器可用，不能证明清单中的每条规则都能在本地执行。Quality Profile 决定启用规则；Quality Gate 根据服务端扫描结果判断是否通过，提交前本地检查不计算完整 Quality Gate。</p>
         <h3>提交前审核如何运行</h3>
-        <p>测试通过并进入代码审核阶段后，代码审核元技能自动调用 <code>dev_task sonar_check</code>。默认以 <code>HEAD</code> 为基线，分析任务中尚未提交的 Git 变更行；无需提交、推送或在页面手动发起。首次审核会下载并校验官方 SonarLint 后台组件，保存在运行 DSH 的用户目录 <code>~/.dsh/sonarlint-runtime/</code>；组件再从 SonarQube 同步当前项目的语言分析器和 Quality Profile 规则。首次安装要求可访问 Maven Central 和 SonarQube。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK；JS/TS/Vue/CSS 分析仍可能需要 Node.js。</p>
+        <p>测试通过并进入代码审核阶段后，代码审核元技能自动调用 <code>dev_task sonar_check</code>。默认以 <code>HEAD</code> 为基线，分析任务中尚未提交的 Git 变更行；无需提交、推送或在页面手动发起。首次审核会下载并校验官方 SonarLint 后台组件，保存在 <code>DSH_HOME/sonarlint-runtime/</code>（未设置时为 <code>~/.dsh/sonarlint-runtime/</code>）；组件再从 SonarQube 同步当前项目的语言分析器和 Quality Profile 规则。首次安装要求可访问 Maven Central 和 SonarQube。通常无需安装 IDEA、Maven、SonarScanner 或单独配置 JDK；JS/TS/Vue/CSS 分析仍可能需要 Node.js。</p>
         <p>首次下载约 93 MiB，慢速网络可能等待较久。若运行 DSH 的机器访问 Maven Central 需要代理，请在启动 DSH 前设置 <code>DSH_SONARLINT_PROXY=http://127.0.0.1:7897</code>（替换为实际地址），或使用 <code>HTTPS_PROXY</code>，然后重启 DSH。代理是安装组件的本机网络设置，不写入项目配置。已经手工安装后台组件时，可选用 <code>DSH_SONARLINT_JAVA</code> 和 <code>DSH_SONARLINT_LIB</code> 指向现有安装。</p>
         <p>若只审后端代码，在高级设置的“审核路径”填写相对目录，例如 Maven 模块。审核前会检查这些目录的 Git 变更是否全部登记到任务 <code>files</code>；漏登会报出文件名。项目范围外的前端或 SQL 不会被称为已通过本次审核。报告列出项目生效规则数量、分析器状态和未覆盖文件；相关语言未覆盖时会阻断。</p>
         <p>SonarLint 只能运行支持本地分析的服务端规则；本地通过不等于完整 SonarQube Quality Gate 通过。涉及全项目数据流、跨文件上下文或只在服务端实现的规则，仍以团队 CI 扫描为准。旧任务原有的审核设置可以继续读取，新项目页面只提供提交前审核。</p>
@@ -163,7 +166,7 @@ pnpm dsh web --no-open</code></pre>
         <h3>为什么初始化没有直接生成文件？</h3>
         <p>工作台会先生成供审阅的草稿，不会在扫描时直接写文件。检查通过后，点击“确认写入项目”。若提示没有默认模型，先在 DSH“模型”页选择模型。工程化会话也保留 <code>init_project inspect → propose → apply</code> 的调用方式。</p>
         <h3>为什么 Maven 显示构建成功，任务仍不能前进？</h3>
-        <p>如果验证命令是 Maven 测试目标，插件还要求输出中有至少一个实际测试。检查 Surefire 版本、是否跳过测试、JUnit 引擎和测试摘要；重新运行可见摘要的命令。</p>
+        <p>验证命令需要输出至少一个实际测试的结果。检查运行器是否发现测试、是否跳过测试和摘要是否可见；重新运行有明确测试结果的命令。</p>
         <h3>为什么 Sonar 报了业务上必须创建的对象？</h3>
         <p>自定义规则可能过宽。保留告警，核查每行对象是否必须独立；本地分析可逐条提交证据由人批准，服务端规则仍应由维护者修正。不要复用同一个实体或挪代码隐藏告警。</p>
         <h3>为什么审核提示补文件范围？</h3>

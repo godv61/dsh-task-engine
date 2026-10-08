@@ -88,7 +88,7 @@ async function runPreset(preset) {
           return {
             exitCode: 0, timedOut: false, aborted: false,
             sandbox: { mode: 'workspace-write', denied: false },
-            stdout: { text: isLog ? `${HASH}\n${lastMessage}\n\nsrc/a.js\n` : 'checks passed' },
+            stdout: { text: isLog ? `${HASH}\n${lastMessage}\n\nsrc/a.js\n` : '# tests 1\n# pass 1' },
             stderr: { text: '' },
           }
         },
