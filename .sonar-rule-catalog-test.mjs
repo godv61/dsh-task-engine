@@ -24,6 +24,8 @@ test('project rule browser selects analyzed languages and pages only the selecte
   assert.deepEqual(view.profiles.map(profile => [profile.language, profile.analyzed]), [['JAVA', true], ['JS', false]])
   assert.ok(requests.every(request => request.authorization === 'Bearer secret'))
   assert.equal(requests.find(request => request.url.pathname.endsWith('/qualityprofiles/search')).url.searchParams.get('project'), 'qms-key')
+  assert.equal(requests.find(request => request.url.pathname.endsWith('/measures/component')).url.searchParams.get('metricKeys'),
+    'ncloc_language_distribution')
   assert.ok(requests.filter(request => request.url.pathname.endsWith('/rules/search'))
     .every(request => request.url.searchParams.get('qprofile') === 'project-java'
       && request.url.searchParams.get('activation') === 'true'))
