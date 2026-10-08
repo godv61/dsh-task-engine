@@ -1,6 +1,6 @@
 {
   "name": "@godv61/dsh-task-engine",
-  "version": "0.30.2",
+  "version": "0.30.3",
   "description": "Task-scoped engineering workflows for DeepSeek Harness: four complexity grades, project Skill/Rule initialization, verified tests, and optional review-time SonarQube checks.",
   "type": "module",
   "main": "lib/index.js",
