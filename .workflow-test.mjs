@@ -232,7 +232,29 @@ test('Gradle projects default to wrapper test with a visible summary', async () 
   f.records.set(join(f.cwd, 'build.gradle'), 'plugins { id "java" }')
   f.records.set(join(f.cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew'), 'wrapper')
   await f.call({ operation: 'verify' })
-  assert.equal(f.runs[0].command, process.platform === 'win32' ? 'gradlew.bat test --info' : './gradlew test --info')
+  assert.equal(f.runs[0].command, process.platform === 'win32' ? 'gradlew.bat test --rerun-tasks' : './gradlew test --rerun-tasks')
+})
+
+test('Gradle verify accepts fresh JUnit XML and refuses a stale report', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-gradle-verify-'))
+  const reportDir = join(root, 'build', 'test-results', 'test')
+  let writeReport = true
+  const shell = { resolve: request => request, execute: async () => ({ result: async () => {
+    if (writeReport) {
+      mkdirSync(reportDir, { recursive: true })
+      writeFileSync(join(reportDir, 'TEST-example.xml'), '<testsuite tests="2" failures="0" errors="0" skipped="0"/>')
+    }
+    return { exitCode: 0, timedOut: false, aborted: false, stdout: { text: 'BUILD SUCCESSFUL' }, stderr: { text: '' } }
+  } }) }
+  try {
+    const f = fixture('测试', { root }, { shell })
+    await f.call({ operation: 'verify', command: 'gradle test --rerun-tasks' })
+    assert.equal(f.state().verification.passed, true)
+    assert.deepEqual(f.state().verification.receipt.gradle_report, { count: 2, files: 1 })
+    writeReport = false
+    await f.call({ operation: 'verify', command: 'gradle test --rerun-tasks' })
+    assert.equal(f.state().verification.passed, false)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })
 
 test('Maven verify rejects zero or missing Surefire tests even when the command exits zero', async () => {

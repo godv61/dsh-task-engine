@@ -27,7 +27,7 @@ import {
 } from './engine.ts'
 import { resolveFlow, type ProjectConfig } from './workflows.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
-import { DEFAULT_RISK_POLICY } from './project.ts'
+import { DEFAULT_RISK_POLICY, isSensitivePath } from './project.ts'
 import { sonarCommitBlockers } from './sonar.ts'
 import { verificationEvidenceBlockers } from './evidence-gate.ts'
 
@@ -243,8 +243,7 @@ function scopeHash(state: TaskState, root: string): string {
 function riskyPaths(entries: { status: string; path: string }[]): string[] {
   return entries
     .filter(entry => !isEngineMeta(entry.path))
-    .filter(entry => DEFAULT_RISK_POLICY.sensitive_paths.some(prefix =>
-      entry.path === prefix || entry.path.startsWith(`${prefix}/`)))
+    .filter(entry => isSensitivePath(entry.path))
     .map(entry => entry.path)
 }
 

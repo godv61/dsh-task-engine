@@ -185,6 +185,9 @@ export async function inspectSonar(policy: SonarPolicy, token: string, ceTaskId:
     } else {
       const newConditions = gateStatus.conditions.map(object).filter(condition =>
         typeof condition.metricKey === 'string' && condition.metricKey.startsWith('new_'))
+      if (newConditions.length === 0 && serverGate !== 'OK') {
+        throw new Error('SonarQube Quality Gate failed but has no new-code conditions; cannot claim new code passed')
+      }
       gate = newConditions.some(condition => condition.status !== 'OK') ? 'ERROR' : 'OK'
     }
   }

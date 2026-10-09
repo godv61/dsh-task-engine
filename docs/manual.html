@@ -113,7 +113,7 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="tests">
         <h2>测试和证据</h2>
-        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Gradle（<code>--info</code> 输出测试数）、Node TAP/Jest/Vitest、pytest、Go test 和 Cargo test 的常见输出必须能证明至少运行一个实际通过的测试。全部跳过、没有可识别摘要，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目优先使用 wrapper 的 <code>test --info</code>。</p>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
 
@@ -136,6 +136,7 @@ pnpm dsh web --no-open</code></pre>
         <p>首次下载约 93 MiB，慢速网络可能等待较久。若运行 DSH 的机器访问 Maven Central 需要代理，请在启动 DSH 前设置 <code>DSH_SONARLINT_PROXY=http://127.0.0.1:7897</code>（替换为实际地址），或使用 <code>HTTPS_PROXY</code>，然后重启 DSH。代理是安装组件的本机网络设置，不写入项目配置。已经手工安装后台组件时，可选用 <code>DSH_SONARLINT_JAVA</code> 和 <code>DSH_SONARLINT_LIB</code> 指向现有安装。</p>
         <p>若只审后端代码，在高级设置的“审核路径”填写相对目录，例如 Maven 模块。审核前会检查这些目录的 Git 变更是否全部登记到任务 <code>files</code>；漏登会报出文件名。项目范围外的前端或 SQL 不会被称为已通过本次审核。报告列出项目生效规则数量、分析器状态和未覆盖文件；相关语言未覆盖时会阻断。</p>
         <p>SonarLint 只能运行支持本地分析的服务端规则；本地通过不等于完整 SonarQube Quality Gate 通过。涉及全项目数据流、跨文件上下文或只在服务端实现的规则，仍以团队 CI 扫描为准。旧任务原有的审核设置可以继续读取，新项目页面只提供提交前审核。</p>
+        <p>如旧项目还使用上传式扫描的 <code>sonar.scan_command</code>，当前只接受单独的 <code>sonar-scanner</code> 或固定 Maven Sonar 目标 <code>org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar</code>（可附 <code>-DskipTests</code>、<code>-Dmaven.test.skip=true</code>）。旧配置若因自定义命令或内嵌 Token 校验失败，请改用上述命令，并把 Token 留在项目凭据中。</p>
         <div class="note warn">Sonar 配置是每项目独立的；启用规则不保证规则本身适用于所有代码。碰到疑似自定义规则误报，应核对语义和证据，不应为了让计数归零而破坏业务实现。</div>
       </section>
 

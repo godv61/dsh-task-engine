@@ -45,14 +45,17 @@ function validationCommandProblem(command) {
   }
   return void 0;
 }
+function isGradleTestCommand(command) {
+  return /(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command);
+}
 function testEvidence(command, output) {
   if (validationCommandProblem(command)) return { count: null };
-  if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
+  if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|(?:^|\n)\s*(?:Tests?|Test Suites?):\s*[^\r\n]*\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
     return { count: 0 };
   }
   const maven = mavenTestEvidence(command, output);
   if (maven) return maven;
-  if (/(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command)) {
+  if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];
     if (!summaries.length) return { count: null };
@@ -67,10 +70,12 @@ function testEvidence(command, output) {
     const skipped = output.match(/(?:^|\n)\s*#\s*skipped\s+(\d+)\b/iu);
     if (!passed && total && skipped) return { count: Math.max(0, Number(total[1]) - Number(skipped[1])) };
   } else if (/(?:^|\s)(?:python(?:3)?(?:\.exe)?\s+-m\s+)?pytest\b|(?:^|\s)python(?:3)?(?:\.exe)?\s+-m\s+pytest\b/iu.test(command)) {
+    if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 };
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
     if (!match && /no tests ran/iu.test(output)) return { count: 0 };
   } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
-    return { count: /(?:^|\n)ok\s+\S+/u.test(output) ? 1 : 0 };
+    const successfulPackages = output.split(/\r?\n/u).filter((line) => /^ok\s+\S+/u.test(line) && !/\[no tests to run\]/iu.test(line));
+    return { count: successfulPackages.length > 0 ? 1 : 0 };
   } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map((entry) => Number(entry[1]));
     return { count: counts.length ? Math.max(...counts) : null };
@@ -78,6 +83,7 @@ function testEvidence(command, output) {
   return { count: match ? Number(match[1]) : null };
 }
 function receiptHasRequiredTests(receipt) {
+  if (isGradleTestCommand(receipt.command) && receipt.gradle_report !== void 0) return receipt.gradle_report.count > 0;
   return (testEvidence(receipt.command, `${receipt.stdout}
 ${receipt.stderr}`).count ?? 0) > 0;
 }
@@ -460,6 +466,12 @@ var DEFAULT_RISK_POLICY = {
   sensitive_paths: [".git", ".env", ".credentials.yaml", "credentials", "secrets"],
   risky_operations: ["D", "T"]
 };
+function isSensitivePath(path2) {
+  const normalized = path2.replace(/\\/gu, "/").toLowerCase();
+  const parts = normalized.split("/");
+  if (DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true;
+  return parts.some((part) => /^\.env(?:\..+)?$/u.test(part) || /^credentials(?:\.[^.]+)?$/u.test(part) || /\.(?:pem|p12|pfx|key)$/u.test(part) || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part));
+}
 var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
 
 // src/sonar.ts
@@ -675,7 +687,7 @@ function scopeHash(state2, root) {
   return hashText(JSON.stringify(entries2));
 }
 function riskyPaths(entries2) {
-  return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => entry.path === prefix || entry.path.startsWith(`${prefix}/`))).map((entry) => entry.path);
+  return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => isSensitivePath(entry.path)).map((entry) => entry.path);
 }
 function riskVerified(state2) {
   const receipt = state2.verification.receipt;

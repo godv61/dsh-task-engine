@@ -126,7 +126,7 @@ pnpm dsh web --no-open
 4. **记录实现与逐项审查。** 用 `dispatch` 和 `review_item` 留痕。开发者可以在当前会话直接实施，不要求把任务派给其他人。把所有变更文件登记到任务 `files` 范围；代码变动会使旧测试和审核回执失效。
 5. **验证与审核。** `verify` 执行真实命令；进入代码审核后，若启用 Sonar，调用 `sonar_check` 并处理结果，再记录 `review`。门禁通过后按 `status.commit` 提示提交并完成任务。
 
-**测试回执的要求：** 退出码为 0 只是必要条件。Maven Surefire/Failsafe、Gradle（`--info` 输出测试数）、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出必须能证明至少执行一个实际通过的测试；全部跳过、没有可识别摘要，或仅运行 `true`、编译命令时不能算通过。验证命令不能通过串联、管道、重定向或命令替换掩盖失败。项目使用其他运行器时，先用能输出受支持摘要的测试命令；记录未覆盖项，不能用文字自报通过。Maven 项目的建议命令为 `mvn -B test`，Gradle 项目会优先使用 wrapper 的 `test --info`。
+**测试回执的要求：** 退出码为 0 只是必要条件。Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，以及本次 Gradle `test` 执行新生成的 JUnit XML，必须证明至少执行一个实际通过的测试；全部跳过、没有可识别证据，或仅运行 `true`、编译命令时不能算通过。验证命令不能通过串联、管道、重定向或命令替换掩盖失败。项目使用其他运行器时，先用能输出受支持摘要的测试命令；记录未覆盖项，不能用文字自报通过。Maven 项目的建议命令为 `mvn -B test`，Gradle 项目默认使用 wrapper 的 `test --rerun-tasks`。升级前保存的验证回执若缺少当前要求的测试证据或文件指纹，需重新运行 `verify`。
 
 如需对 `git commit` 启用同一任务门禁，在工程会话调用 `dev_task install_hook`，再调用 `verify_hook`。安装器会登记当前工作区（包括 Git 仓库的子目录）；已有其他团队的 `commit-msg` 或设置了 `core.hooksPath` 时会停止并提示人工组合，更新已有 DSH 钩子前会备份。钩子配置保存在该 Git 工作树的 `.git/hooks/`，不随 Git 提交。提交时钩子要求当前分支能唯一对应一项未完成任务，并核对真实验证回执、任务文件范围与暂存区内容。测试后改过文件、暂存了不同版本，或旧任务只有手写的 `passed=true` 而没有回执时，需要重新运行 `verify`。任务状态仍是工作区内可编辑的 JSON，门禁用来防止误操作和遗漏，**不提供对恶意修改任务文件的防篡改保证**。
 
@@ -163,6 +163,8 @@ Sonar 的非秘密配置保存在项目 `.dsh/meta.json`；Token **不会写入�
 项目仅审核后端时，可在高级设置的“审核路径”填写实际后端目录，例如 Maven 模块。审核前会核对这些目录的 Git 变更是否全部登记在任务 `files`；漏登会报出文件名。范围外的前端或 SQL 不会被称为已通过本次后端审核。报告会列出项目生效规则数量、分析器状态和未覆盖文件；未覆盖的相关语言会阻断审核。
 
 本地审核只能运行 SonarLint 支持的服务端规则，**通过不等于 SonarQube 服务端 Quality Gate 通过**。涉及全项目数据流、跨文件上下文或仅在服务端实现的规则，仍以团队的 CI 扫描结果为准。旧任务原有的 CI/上传式扫描配置仍可读取，但新项目页面只提供提交前审核。
+
+已有上传式扫描配置若使用 `.dsh/meta.json` 的 `sonar.scan_command`，当前只接受单独的 `sonar-scanner`，或固定 Maven Sonar 目标 `org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar`（可附 `-DskipTests`、`-Dmaven.test.skip=true`）。不再接受 shell 串联、自定义 Maven 目标或把 Token 写进命令；升级后配置不通过校验时请改为上述形式，Token 仍通过项目凭据传入。
 
 ### 查看审核、处理误报、沉淀 Rule
 

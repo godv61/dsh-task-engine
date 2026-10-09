@@ -81,6 +81,17 @@ export const DEFAULT_RISK_POLICY: RiskPolicy = {
   risky_operations: ['D', 'T'],
 }
 
+/** Match credential filenames as well as sensitive directories at any project depth. */
+export function isSensitivePath(path: string): boolean {
+  const normalized = path.replace(/\\/gu, '/').toLowerCase()
+  const parts = normalized.split('/')
+  if (DEFAULT_RISK_POLICY.sensitive_paths.some(prefix => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true
+  return parts.some(part => /^\.env(?:\..+)?$/u.test(part)
+    || /^credentials(?:\.[^.]+)?$/u.test(part)
+    || /\.(?:pem|p12|pfx|key)$/u.test(part)
+    || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part))
+}
+
 /** All marker files across languages, for root discovery. */
 const ALL_MARKERS: readonly string[] = Object.values(TYPE_MARKERS).flat()
 

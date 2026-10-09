@@ -1,6 +1,6 @@
 /** Validate complete resource packages before exclusive installation. */
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, relative, sep } from 'node:path'
 import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 
@@ -13,7 +13,13 @@ export function assertRealPath(path: string): void {
   let cursor = resolve(path)
   for (;;) {
     try {
-      if (lstatSync(cursor).isSymbolicLink()) throw new Error('不允许符号链接或目录联接：' + cursor)
+      const linked = lstatSync(cursor).isSymbolicLink()
+      // Resolving the deepest existing parent also resolves every ancestor link.
+      // This avoids requiring access to protected ancestors of an accessible path.
+      const actual = realpathSync.native(cursor)
+      const key = (value: string) => process.platform === 'win32' ? value.replace(/\\/gu, '/').toLowerCase() : value
+      if (linked || key(actual) !== key(cursor)) throw new Error('不允许符号链接或目录联接：' + cursor)
+      return
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
@@ -45,6 +51,7 @@ function sourceEntries(source: string): Entry[] {
   let nodes = 0
   const walk = (dir: string, depth: number): void => {
     if (depth > IMPORT_LIMITS.depth) throw new Error('目录超过 20 层')
+    assertRealPath(dir)
     for (const item of readdirSync(dir, { withFileTypes: true })) {
       if (SKIP.has(item.name)) continue
       if (++nodes > 3000) throw new Error('目录项过多')

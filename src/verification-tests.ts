@@ -17,16 +17,30 @@ export function validationCommandProblem(command: string): string | undefined {
   return undefined
 }
 
+/** Reject commands that only manufacture a successful receipt. */
+export function skillCommandProblem(command: string): string | undefined {
+  const syntax = validationCommandProblem(command)
+  if (syntax) return syntax
+  if (/^\s*(?:echo|printf|true|:|exit)(?:\s|$)/iu.test(command)) {
+    return '技能命令必须执行实际检查，不能用 echo、printf、true 或 exit 生成通过回执'
+  }
+  return undefined
+}
+
 /** Recognise a completed test suite, including the default runners for supported project types. */
+export function isGradleTestCommand(command: string): boolean {
+  return /(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command)
+}
+
 export function testEvidence(command: string, output: string): { count: number | null } {
   // A later shell command or pipeline can turn a failing test process into exit 0.
   if (validationCommandProblem(command)) return { count: null }
-  if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
+  if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|(?:^|\n)\s*(?:Tests?|Test Suites?):\s*[^\r\n]*\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
     return { count: 0 }
   }
   const maven = mavenTestEvidence(command, output)
   if (maven) return maven
-  if (/(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command)) {
+  if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]
     if (!summaries.length) return { count: null }
@@ -43,10 +57,13 @@ export function testEvidence(command: string, output: string): { count: number |
     const skipped = output.match(/(?:^|\n)\s*#\s*skipped\s+(\d+)\b/iu)
     if (!passed && total && skipped) return { count: Math.max(0, Number(total[1]) - Number(skipped[1])) }
   } else if (/(?:^|\s)(?:python(?:3)?(?:\.exe)?\s+-m\s+)?pytest\b|(?:^|\s)python(?:3)?(?:\.exe)?\s+-m\s+pytest\b/iu.test(command)) {
+    if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 }
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu)
     if (!match && /no tests ran/iu.test(output)) return { count: 0 }
   } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
-    return { count: /(?:^|\n)ok\s+\S+/u.test(output) ? 1 : 0 }
+    const successfulPackages = output.split(/\r?\n/u).filter(line => /^ok\s+\S+/u.test(line)
+      && !/\[no tests to run\]/iu.test(line))
+    return { count: successfulPackages.length > 0 ? 1 : 0 }
   } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map(entry => Number(entry[1]))
     return { count: counts.length ? Math.max(...counts) : null }
@@ -55,6 +72,8 @@ export function testEvidence(command: string, output: string): { count: number |
 }
 
 /** Re-evaluate stored receipts so older zero-test passes cannot cross a current gate. */
-export function receiptHasRequiredTests(receipt: { command: string; stdout: string; stderr: string }): boolean {
+export function receiptHasRequiredTests(receipt: { command: string; stdout: string; stderr: string;
+  gradle_report?: { count: number; files: number } }): boolean {
+  if (isGradleTestCommand(receipt.command) && receipt.gradle_report !== undefined) return receipt.gradle_report.count > 0
   return (testEvidence(receipt.command, `${receipt.stdout}\n${receipt.stderr}`).count ?? 0) > 0
 }

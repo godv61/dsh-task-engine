@@ -53,6 +53,10 @@ check('only current documentation ships', JSON.stringify(listing.filter(line => 
 for (const required of ['hooks/commit-msg', 'lib/index.js', 'lib/client.js', 'lib/client.d.ts', 'preset/enable.mjs', 'README.md', '.p0-test.mjs', '.acceptance.mjs', '.hook-consistency.mjs', '.resource-test.mjs', '.workflow-test.mjs', '.hook-test.mjs', '.preset-test.mjs', '.assessment-batch1.mjs', '.e2e-presets.mjs', '.revision-test.mjs', '.freeze-test.mjs', '.enforce-test.mjs', '.evidence-test.mjs', '.roundtrip-test.mjs', '.filter-test.mjs', '.adaptive-test.mjs']) {
   check(`tarball contains ${required}`, listing.includes(required))
 }
+const manifestScripts = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).scripts ?? {}
+for (const filename of new Set(String(manifestScripts.test ?? '').match(/\.[\w-]+-test\.mjs|\.gradle-report-test\.mjs/gu) ?? [])) {
+  check(`tarball contains test ${filename}`, listing.includes(filename))
+}
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
 check('tarball excludes build scripts', !listing.some(line => line.endsWith('build-client.mjs') || line.endsWith('build-hook.mjs')))
 
@@ -120,7 +124,7 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
 } catch (error) { check('in-package resource, workflow and hook behavior', false, String(error.stderr ?? error)) }
 

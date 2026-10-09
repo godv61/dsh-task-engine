@@ -303,6 +303,24 @@ test('adaptive task can make its first CI commit before Sonar review', async () 
   }
 })
 
+test('common credential filenames also require a high-risk receipt', async () => {
+  const config = await standardConfig()
+  for (const filename of ['.env.local', 'credentials.json']) {
+    const root = await repo('credential-name', approvedTask({
+      files: ['src/app.js', filename],
+      flow: { flow: 'standard', version: 2, config },
+    }))
+    try {
+      writeFileSync(join(root, filename), 'secret=1\n')
+      git(root, ['add', filename])
+      await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
+      const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
+      assert.equal(result.allowed, false, filename)
+      assert.match(result.stderr, /敏感路径/, filename)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  }
+})
+
 test('deleting a scoped file needs a high-risk task and fresh verification', async () => {
   const config = await standardConfig()
   const root = await repo('delete-risk', approvedTask({ flow: { flow: 'standard', version: 3, config } }))

@@ -129,3 +129,12 @@ test('evidence: an undeclared extra skill still owes a command receipt', () => {
   assert.ok(blockers.some(b => b.includes('validation command')),
     `an undeclared skill must still owe a command receipt; got ${JSON.stringify(blockers)}`)
 })
+
+test('evidence: a stored echo receipt cannot satisfy a command skill', () => {
+  const config = withEvidence('command')
+  const session = sessionWith(['doc-skill'])
+  const receipt = { command: 'echo ok', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-01-01T00:00:00Z', finished_at: '2026-01-01T00:00:01Z', stdout: 'ok', stderr: '' }
+  const recorded = state({ skill_results: { '开发': { 'doc-skill': { evidence: ['checked'], receipt } } } })
+  assert.ok(skillBlockers(recorded, config, session).some(problem => problem.includes('validation command')))
+})

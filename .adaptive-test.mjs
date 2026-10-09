@@ -241,6 +241,11 @@ test('local Sonar audit ignores failing old-code gate conditions', async () => {
         { metricKey: 'new_coverage', status: 'ERROR' }] } }) }
       : fetcher(url), true)
   assert.equal(newFailure.gate, 'ERROR')
+  await assert.rejects(inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope',
+    async url => String(url).includes('/qualitygates/project_status')
+      ? { ok: true, json: async () => ({ projectStatus: { status: 'ERROR', conditions: [
+        { metricKey: 'bugs', status: 'ERROR' }] } }) }
+      : fetcher(url), true), /no new-code conditions/)
 })
 
 test('local scanner configuration rejects shell operators before receiving the Token', () => {
@@ -298,7 +303,8 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
       : String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-local', componentKey: 'project', branch: 'feature' } }
     : String(url).includes('/qualitygates/project_status')
-      ? { projectStatus: { status: 'ERROR', conditions: [{ metricKey: 'bugs', status: 'ERROR' }] } }
+      ? { projectStatus: { status: 'ERROR', conditions: [
+        { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
       : { paging: { total: 0 }, issues: [] } })
   try {
     const result = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'LOCAL-1' }))

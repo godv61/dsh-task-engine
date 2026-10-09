@@ -1,5 +1,6 @@
 /** Correlate successful skill calls with the trusted session log, never model claims. */
 import type { EvidenceKind, TaskState, WorkflowConfig } from './engine.ts'
+import { skillCommandProblem } from './verification-tests.ts'
 
 export interface SkillSession {
   id?: string
@@ -134,7 +135,7 @@ export function skillBlockers(state: TaskState, workflow: WorkflowConfig, sessio
     }
     if (!needsSkillReceipt(name, entry.evidence)) return []
     const result = state.skill_results?.[stage]?.[name]
-    if (!result || !result.receipt || result.receipt.exit_code !== 0 || result.receipt.aborted || result.receipt.timed_out
+    if (!result || !result.receipt || skillCommandProblem(result.receipt.command) || result.receipt.exit_code !== 0 || result.receipt.aborted || result.receipt.timed_out
       || result.receipt.sandbox?.denied || result.receipt.sandbox?.runnerFailed) {
       return [`${stage}: execute "${name}" and record skill_result with skill_name, target_stage, evidence and a real validation command`]
     }

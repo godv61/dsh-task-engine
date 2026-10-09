@@ -66,7 +66,8 @@ import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject, validateI
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { verificationEvidenceBlockers } from './evidence-gate.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
-import { testEvidence, validationCommandProblem } from './verification-tests.ts'
+import { isGradleTestCommand, skillCommandProblem, testEvidence, validationCommandProblem } from './verification-tests.ts'
+import { freshGradleReportSummary, snapshotGradleReports } from './gradle-reports.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
@@ -74,6 +75,7 @@ import {
   defaultVerifyCommand,
   listProjectRules,
   listProjectSkills,
+  isSensitivePath,
   presentGovernanceFiles,
   type FileProbe,
 } from './project.ts'
@@ -188,7 +190,7 @@ async function resolveVerifyCommand(fs: Fs, cwd?: string): Promise<string | unde
   if (await probe.read(root, 'build.gradle') !== undefined || await probe.read(root, 'build.gradle.kts') !== undefined) {
     const wrapper = process.platform === 'win32' ? await probe.read(root, 'gradlew.bat') !== undefined
       : await probe.read(root, 'gradlew') !== undefined
-    return `${wrapper ? process.platform === 'win32' ? 'gradlew.bat' : './gradlew' : 'gradle'} test --info`
+    return `${wrapper ? process.platform === 'win32' ? 'gradlew.bat' : './gradlew' : 'gradle'} test --rerun-tasks`
   }
   return defaultVerifyCommand(await detectType(projectProbe(fs), root))
 }
@@ -2064,6 +2066,13 @@ export function registerDevTask(ctx: Context): void {
               : `commit touches files outside the task scope: ${scope.outside.join(', ')}`)
           }
         }
+        const riskReceipt = state.verification.receipt
+        const riskApproved = state.risk_level === 'high_risk' && riskReceipt !== undefined
+          && riskReceipt.exit_code === 0 && !riskReceipt.timed_out && !riskReceipt.aborted
+          && !riskReceipt.sandbox?.denied && !riskReceipt.sandbox?.runnerFailed
+        if ((a.files ?? []).some(isSensitivePath) && !riskApproved) {
+          throw new Error('敏感路径提交要求 high_risk 任务和有效的真实验证回执')
+        }
         const message = validateCommitMessage(a.message ?? '', workflow)
         if (!message.ok) throw new Error(message.errors!.join('; '))
         const committedId = taskIdFromMessage(a.message ?? '', workflow)
@@ -2078,6 +2087,7 @@ export function registerDevTask(ctx: Context): void {
           if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
           const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
           if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
+          if (paths.some(isSensitivePath) && !riskApproved) throw new Error('实际提交触及敏感路径，但任务缺少 high_risk 验证回执')
           if (!state.commits.some(entry => entry.hash === a.hash)) state.commits.push({ label: checkpoint.label!, hash: a.hash })
         }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
@@ -2295,14 +2305,21 @@ export function registerDevTask(ctx: Context): void {
             if (problem) throw new Error(problem)
             const scopeBefore = await scopeFingerprint(fs, state, cwd)
             approvedWriteMode = await resolveWriteMode(ctx, { ...a, command }, exec)
+            const gradleBefore = verifyRoot && isGradleTestCommand(command) ? snapshotGradleReports(verifyRoot) : undefined
             const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
+            if (gradleBefore && verifyRoot) {
+              const report = freshGradleReportSummary(gradleBefore, snapshotGradleReports(verifyRoot))
+              if (report) receipt.gradle_report = report
+            }
             receipt.scope_hash = scopeBefore
             const scopeAfter = await scopeFingerprint(fs, state, cwd)
             if (scopeBefore !== scopeAfter) receipt.scope_changed_during_run = true
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
             }
-            const testSummary = testEvidence(command, `${receipt.stdout}\n${receipt.stderr}`)
+            const testSummary = receipt.gradle_report
+              ? { count: receipt.gradle_report.count }
+              : testEvidence(command, `${receipt.stdout}\n${receipt.stderr}`)
             receipt.test_summary = testSummary
             state.verification = {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied
@@ -2353,7 +2370,7 @@ export function registerDevTask(ctx: Context): void {
             throw new Error(`${entry.evidence} skill evidence is recorded by its node operation; skill_result is only for command or manual evidence`)
           }
           if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')
-          const commandProblem = validationCommandProblem(a.command)
+          const commandProblem = skillCommandProblem(a.command)
           if (commandProblem) throw new Error(commandProblem)
           const scopeBefore = await scopeFingerprint(fs, state, cwd)
           approvedWriteMode = await resolveWriteMode(ctx, a, exec)

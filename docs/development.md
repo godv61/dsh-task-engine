@@ -11,7 +11,7 @@
 | `src/adaptive.ts`、`src/workflows.ts`、`src/engine.ts` | 四档流程、兼容流程与任务状态机。 |
 | `src/dev-task.ts` | `dev_task` 操作、阶段门禁和任务留痕。 |
 | `src/sonarlint-local.ts`、`src/sonar.ts`、`src/sonar-report.ts` | 本地规则分析、服务端结果与 Markdown 报告。 |
-| `src/verification-tests.ts` | Maven 测试摘要门禁。 |
+| `src/verification-tests.ts`、`src/gradle-reports.ts` | 多语言测试摘要与本次 Gradle JUnit XML 门禁。 |
 | `src/project-init.ts` | 项目扫描与初始化覆盖检查。 |
 | `src/controller.ts`、`src/client/` | 工作台读写接口与界面。 |
 | `skills/`、`preset/` | 会话编排与元技能正文。 |
@@ -28,13 +28,13 @@ npm test
 npm run verify:package
 ```
 
-`verify:package` 将当前 tarball 安装到隔离临时目录，检查可发布入口、客户端注册、包内测试和 CLI 语法。CI 在 Windows 的 Node 22、24 上运行。提交前检查 `git status`，确认没有本机凭据、临时审核文件或生成包进入版本控制。
+`verify:package` 将当前 tarball 安装到隔离临时目录，检查可发布入口、客户端注册、包内测试和 CLI 语法。CI 在 Windows 与 Ubuntu 的 Node 22、24 上运行；DSH 契约作业还检查固定版本，最新主线为提示性信号。提交前检查 `git status`，确认没有本机凭据、临时审核文件或生成包进入版本控制。
 
 ## 当前质量约束
 
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test 或 Cargo test 的可识别摘要。未知命令和缺少摘要的成功退出也不能让测试门禁通过。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 

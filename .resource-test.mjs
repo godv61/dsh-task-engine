@@ -83,6 +83,13 @@ test('host scanner rejects symlink or junction source paths',t=>{
  symlinkSync(src,link,process.platform==='win32'?'junction':'dir')
  assert.throws(()=>prepareImport({...baseRequest(),files:[],sourceDir:link},base,()=>false),/符号链接/)
 })
+test('host scanner rejects a nested junction inside an otherwise valid skill',t=>{
+ const {root,base}=fixture(t),src=join(root,'source'),outside=join(root,'outside')
+ mkdirSync(src);mkdirSync(outside)
+ writeFileSync(join(src,'SKILL.md'),skill);writeFileSync(join(outside,'foreign.txt'),'outside')
+ symlinkSync(outside,join(src,'linked'),process.platform==='win32'?'junction':'dir')
+ assert.throws(()=>prepareImport({...baseRequest(),files:[],sourceDir:src},base,()=>false),/符号链接|目录联接/)
+})
 test('ordinary Rule edits reject a linked directory outside the project', async t => {
  const {root}=fixture(t),outside=join(root,'outside'),project=join(root,'project')
  mkdirSync(outside);mkdirSync(join(project,'.dsh'),{recursive:true})

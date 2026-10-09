@@ -76,23 +76,26 @@ function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>)
   }
   if (config.sonar?.enabled !== undefined && typeof config.sonar.enabled !== 'boolean') problems.push('sonar.enabled 必须是布尔值')
   if (config.sonar?.enabled === true) {
+    const source = config.sonar.source ?? 'ide-local'
+    const mode = config.sonar.mode ?? 'branch'
     if (!config.sonar.host_url || !/^https?:\/\//u.test(config.sonar.host_url) || !config.sonar.project_key?.trim()) {
       problems.push('启用 SonarQube 时需配置服务地址和项目 Key')
     }
-    if (config.sonar.mode !== 'branch' && config.sonar.mode !== 'pull-request') problems.push('SonarQube 模式必须是分支或合并请求')
+    if (mode !== 'branch' && mode !== 'pull-request') problems.push('SonarQube 模式必须是分支或合并请求')
     if (!/^[A-Z][A-Z0-9_]*$/u.test(config.sonar.token_env ?? 'SONAR_TOKEN')) problems.push('SonarQube Token 环境变量名无效')
     if (config.sonar.source !== undefined && !['ci', 'local', 'ide-local'].includes(config.sonar.source)) {
       problems.push('SonarQube 审核来源必须是 CI、上传式本机扫描或本地规则审核')
     }
-    if (config.sonar.source === 'local' || config.sonar.source === 'ide-local') {
-      if (config.sonar.mode !== 'branch') problems.push('本地 SonarQube 审核仅支持分支模式')
-      if (!config.sonar.reference_branch || !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('本地审核需要有效的新代码参考分支')
+    if (source === 'local' || source === 'ide-local') {
+      if (mode !== 'branch') problems.push('本地 SonarQube 审核仅支持分支模式')
+      const reference = config.sonar.reference_branch?.trim() || (source === 'ide-local' ? 'HEAD' : undefined)
+      if (!reference || !/^[A-Za-z0-9._/-]+$/u.test(reference)) problems.push('本地审核需要有效的新代码参考分支')
     }
     if (config.sonar.reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('SonarQube 新代码参考分支无效')
     if (config.sonar.scan_command && !validLocalScanCommand(config.sonar.scan_command)) problems.push('扫描命令只能使用固定的 Maven Sonar 目标或 sonar-scanner')
-    if (config.sonar.source === 'ide-local' && config.sonar.scan_command) problems.push('本地规则审核不执行 scan_command')
+    if (source === 'ide-local' && config.sonar.scan_command) problems.push('本地规则审核不执行 scan_command')
     if (config.sonar.include_paths !== undefined && !validAuditIncludePaths(config.sonar.include_paths)) problems.push('审核范围须为项目内相对路径列表，不能包含上级目录')
-    if (config.sonar.include_paths?.length && config.sonar.source !== 'ide-local') problems.push('审核范围仅适用于本地规则审核')
+    if (config.sonar.include_paths?.length && source !== 'ide-local') problems.push('审核范围仅适用于本地规则审核')
   }
   return problems
 }
@@ -1368,12 +1371,12 @@ export default class TaskEngineController extends TypertRemoteService {
       return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '路径必须是绝对路径' }
     }
     let canonical: string
-    try { canonical = realpathSync(dir) }
+    try { canonical = realpathSync.native(dir) }
     catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '目录不存在或不可读取' } }
-    let homeRoot: string
-    try { homeRoot = realpathSync(homedir()) }
-    catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '用户主目录不可读取' } }
-    if (!isInside(homeRoot, canonical)) {
+    let homeRoot: string | undefined
+    try { homeRoot = realpathSync.native(homedir()) }
+    catch { /* A registered workspace remains usable when the home directory is inaccessible. */ }
+    if (!homeRoot || !isInside(homeRoot, canonical)) {
       try { await this.authorizedPath(canonical) }
       catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false,
         error: '只能浏览用户主目录或已注册的工作区' } }

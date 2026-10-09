@@ -373,10 +373,12 @@ export interface VerificationReceipt {
   stdout: string
   /** Captured stderr tail. */
   stderr: string
-  /** Largest nonzero Surefire/Failsafe method count observed in Maven test output; null means no summary. */
+  /** Count of tests that ran; null means no trustworthy summary. */
   test_summary?: { count: number | null }
+  /** Fresh Gradle JUnit XML reports written by this command, when available. */
+  gradle_report?: { count: number; files: number }
   sandbox?: { mode: string; denied: boolean; enforcement?: string; runnerFailed?: boolean }
-  /** Fingerprint of declared task files after validation; code edits invalidate the receipt. */
+  /** Fingerprint of declared task files before validation; code edits invalidate the receipt. */
   scope_hash?: string
   /** Code changed while this command ran, so its result cannot verify either revision. */
   scope_changed_during_run?: boolean
