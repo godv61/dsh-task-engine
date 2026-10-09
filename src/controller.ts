@@ -1370,22 +1370,25 @@ export default class TaskEngineController extends TypertRemoteService {
     let canonical: string
     try { canonical = realpathSync(dir) }
     catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '目录不存在或不可读取' } }
-    if (!isInside(realpathSync(homedir()), canonical)) {
+    let homeRoot: string
+    try { homeRoot = realpathSync(homedir()) }
+    catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: '用户主目录不可读取' } }
+    if (!isInside(homeRoot, canonical)) {
       try { await this.authorizedPath(canonical) }
       catch { return { ok: false, path: dir, entries: [], roots, currentHasSkill: false,
         error: '只能浏览用户主目录或已注册的工作区' } }
     }
     let entries: Dirent[]
     try {
-      entries = readdirSync(dir, { withFileTypes: true })
+      entries = readdirSync(canonical, { withFileTypes: true })
     } catch (error) {
       return { ok: false, path: dir, entries: [], roots, currentHasSkill: false, error: error instanceof Error ? error.message : String(error) }
     }
     const list = entries
       .filter(entry => entry.isDirectory() && !SKILL_DIR_FILTER.has(entry.name))
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map(entry => ({ name: entry.name, hasSkill: existsSync(join(dir, entry.name, 'SKILL.md')) }))
-    return { ok: true, path: dir, entries: list, roots, currentHasSkill: existsSync(join(dir, 'SKILL.md')) }
+      .map(entry => ({ name: entry.name, hasSkill: existsSync(join(canonical, entry.name, 'SKILL.md')) }))
+    return { ok: true, path: canonical, entries: list, roots, currentHasSkill: existsSync(join(canonical, 'SKILL.md')) }
   }
 
   /**
