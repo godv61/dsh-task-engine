@@ -378,6 +378,8 @@ export interface VerificationReceipt {
   sandbox?: { mode: string; denied: boolean; enforcement?: string; runnerFailed?: boolean }
   /** Fingerprint of declared task files after validation; code edits invalidate the receipt. */
   scope_hash?: string
+  /** Code changed while this command ran, so its result cannot verify either revision. */
+  scope_changed_during_run?: boolean
 }
 
 export interface TaskState {
@@ -722,7 +724,9 @@ export function unmetGuards(state: TaskState, targetStage: string, config: Workf
 /** Validate a commit summary against the configured message pattern. */
 export function validateCommitMessage(message: string, config: WorkflowConfig): Result {
   if (config.commit.message_pattern === '') return { ok: true }
-  const re = new RegExp(config.commit.message_pattern)
+  let re: RegExp
+  try { re = new RegExp(config.commit.message_pattern) }
+  catch { return { ok: false, errors: ['commit.message_pattern is not a valid regular expression'] } }
   if (re.test(message)) return { ok: true }
   return {
     ok: false,
@@ -739,7 +743,9 @@ export function validateCommitMessage(message: string, config: WorkflowConfig): 
  */
 export function taskIdFromMessage(message: string, config: WorkflowConfig): string | undefined {
   if (config.commit.message_pattern === '') return undefined
-  const match = new RegExp(config.commit.message_pattern).exec(message)
+  let match: RegExpExecArray | null
+  try { match = new RegExp(config.commit.message_pattern).exec(message) }
+  catch { return undefined }
   return match?.[1]
 }
 
@@ -807,6 +813,9 @@ export function verificationHeldStages(config: WorkflowConfig): Set<string> {
 export function verificationBlockers(state: TaskState, config: WorkflowConfig): string[] {
   if (!verificationHeldStages(config).has(state.stage)) return []
   const blockers: string[] = []
+  if (state.verification.receipt?.scope_changed_during_run) {
+    blockers.push('task files changed while verification ran; rerun tests on an unchanged source tree')
+  }
   if (!state.verification.passed) {
     blockers.push('this flow requires a passing verification at this stage, and the current verification is not passing')
   }

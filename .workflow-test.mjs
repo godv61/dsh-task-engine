@@ -102,7 +102,9 @@ test('manual skill evidence is approved by the host without a shell command', as
   assert.equal(f.runs.length, 0)
   assert.equal(approvals.length, 1)
   assert.equal(f.state().skill_results['开发']['human-check'].approved, true)
-  assert.deepEqual(JSON.parse(await f.call({ operation: 'status' })).skill_blockers, [])
+  const manualStatus = JSON.parse(await f.call({ operation: 'status' }))
+  assert.deepEqual(manualStatus.skill_blockers, [])
+  assert.deepEqual(manualStatus.evidence_blockers, [])
   const denied = fixture('开发', { flow: { flow: 'minimal', version: 3, config } }, {
     approval: { request: async () => 'rejected' },
   })
@@ -223,6 +225,14 @@ test('重排实施项时不静默丢弃已完成项和审查记录', async () =>
   assert.equal(f.state().items[0].dispatch.description, 'direct implementation')
   await f.call({ operation: 'items', items_mode: 'replace', items: [{ id: 'I3', title: 'service', status: 'todo' }] })
   assert.deepEqual(f.state().items.map(item => item.id), ['I3', 'I1'])
+})
+
+test('Gradle projects default to wrapper test with a visible summary', async () => {
+  const f = fixture('测试')
+  f.records.set(join(f.cwd, 'build.gradle'), 'plugins { id "java" }')
+  f.records.set(join(f.cwd, process.platform === 'win32' ? 'gradlew.bat' : 'gradlew'), 'wrapper')
+  await f.call({ operation: 'verify' })
+  assert.equal(f.runs[0].command, process.platform === 'win32' ? 'gradlew.bat test --info' : './gradlew test --info')
 })
 
 test('Maven verify rejects zero or missing Surefire tests even when the command exits zero', async () => {
@@ -372,10 +382,24 @@ test('验证使用会话策略与取消信号，并明确返回失败及沙箱�
   assert.equal(result.verification.receipt.sandbox.mode, 'workspace-write')
 })
 
+test('测试执行期间修改任务文件不会生成有效回执', async () => {
+  let f
+  const shell = { resolve: request => request, async execute() {
+    f.records.set(join(f.cwd, 'app.js'), 'changed during tests')
+    return { result: async () => ({ exitCode: 0, timedOut: false, aborted: false,
+      stdout: { text: '# tests 1\n# pass 1' }, stderr: { text: '' } }) }
+  } }
+  f = fixture('交付', {}, { shell })
+  const result = JSON.parse(await f.call({ operation: 'verify', command: 'npm test' }))
+  assert.equal(result.verification.passed, false)
+  assert.equal(result.verification.receipt.scope_changed_during_run, true)
+})
+
 test('只声明已测试、或加载失败，均不能冒充执行绑定技能', async () => {
   // 代码审核坐在验证门之后，所以该阶段本就要求验证通过；
   // 不给出验证状态会让验证阻塞先于本用例要测的技能阻塞。
   const f = fixture('代码审核', { verification: { passed: true, evidence: ['checks passed'] } })
+  await f.call({ operation: 'verify', command: 'npm test', evidence: ['real checks'] })
   f.load('code-review'); f.load('code-commit'); f.load('software-testing', false)
   await assert.rejects(f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['tested'] }), /load skill/)
   await assert.rejects(f.call({ operation: 'advance', target_stage: '完成' }), /software-testing/)

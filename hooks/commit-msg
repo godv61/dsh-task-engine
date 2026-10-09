@@ -34,19 +34,38 @@ function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
   const testGoal = /(?:^|\s)(?:test|verify|package|install)(?=\s|$)/iu.test(command);
   if (!maven || !testGoal) return null;
-  const counts = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:/giu)].map((match) => Number(match[1]));
-  return { count: counts.length ? Math.max(...counts) : null };
+  const summaries = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:\s*(\d+)\s*,\s*Errors:\s*(\d+)\s*,\s*Skipped:\s*(\d+)/giu)];
+  if (!summaries.length) return { count: null };
+  if (summaries.some((match) => Number(match[2]) > 0 || Number(match[3]) > 0)) return { count: 0 };
+  return { count: Math.max(...summaries.map((match) => Math.max(0, Number(match[1]) - Number(match[4])))) };
+}
+function validationCommandProblem(command) {
+  if (/[;&|`<>\r\n]/u.test(command) || /\$\(/u.test(command)) {
+    return "\u9A8C\u8BC1\u547D\u4EE4\u53EA\u80FD\u5305\u542B\u4E00\u4E2A\u6D4B\u8BD5\u7A0B\u5E8F\uFF1B\u8BF7\u79FB\u9664\u7BA1\u9053\u3001\u547D\u4EE4\u8FDE\u63A5\u3001\u91CD\u5B9A\u5411\u548C\u547D\u4EE4\u66FF\u6362";
+  }
+  return void 0;
 }
 function testEvidence(command, output) {
-  if (/(?:\|\||(?<!\|)\|(?!\|)|;)/u.test(command)) return { count: null };
+  if (validationCommandProblem(command)) return { count: null };
   if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
     return { count: 0 };
   }
   const maven = mavenTestEvidence(command, output);
   if (maven) return maven;
+  if (/(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command)) {
+    if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
+    const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];
+    if (!summaries.length) return { count: null };
+    if (summaries.some((entry) => Number(entry[2] ?? 0) > 0)) return { count: 0 };
+    return { count: Math.max(...summaries.map((entry) => Math.max(0, Number(entry[1]) - Number(entry[3] ?? 0)))) };
+  }
   let match = null;
   if (/(?:^|\s)(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?test\b|(?:^|\s)node(?:\.exe)?\s+--test\b/iu.test(command)) {
-    match = output.match(/(?:^|\n)\s*#\s*tests\s+(\d+)\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:?\s*(\d+)\s+passed\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:\s*\d+\s+failed,\s*(\d+)\s+passed\b/iu);
+    const passed = output.match(/(?:^|\n)\s*#\s*pass\s+(\d+)\b/iu);
+    const total = output.match(/(?:^|\n)\s*#\s*tests\s+(\d+)\b/iu);
+    match = passed ?? total ?? output.match(/(?:^|\n)\s*Tests?\s*:?\s*(\d+)\s+passed\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:\s*\d+\s+failed,\s*(\d+)\s+passed\b/iu);
+    const skipped = output.match(/(?:^|\n)\s*#\s*skipped\s+(\d+)\b/iu);
+    if (!passed && total && skipped) return { count: Math.max(0, Number(total[1]) - Number(skipped[1])) };
   } else if (/(?:^|\s)(?:python(?:3)?(?:\.exe)?\s+-m\s+)?pytest\b|(?:^|\s)python(?:3)?(?:\.exe)?\s+-m\s+pytest\b/iu.test(command)) {
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
     if (!match && /no tests ran/iu.test(output)) return { count: 0 };
@@ -121,7 +140,12 @@ function guardSatisfied(guard, state2, config2) {
 }
 function validateCommitMessage(message2, config2) {
   if (config2.commit.message_pattern === "") return { ok: true };
-  const re = new RegExp(config2.commit.message_pattern);
+  let re;
+  try {
+    re = new RegExp(config2.commit.message_pattern);
+  } catch {
+    return { ok: false, errors: ["commit.message_pattern is not a valid regular expression"] };
+  }
   if (re.test(message2)) return { ok: true };
   return {
     ok: false,
@@ -144,6 +168,9 @@ function verificationHeldStages(config2) {
 function verificationBlockers(state2, config2) {
   if (!verificationHeldStages(config2).has(state2.stage)) return [];
   const blockers = [];
+  if (state2.verification.receipt?.scope_changed_during_run) {
+    blockers.push("task files changed while verification ran; rerun tests on an unchanged source tree");
+  }
   if (!state2.verification.passed) {
     blockers.push("this flow requires a passing verification at this stage, and the current verification is not passing");
   }
@@ -411,6 +438,9 @@ var import_node_crypto = require("node:crypto");
 function hashText(text) {
   return (0, import_node_crypto.createHash)("sha256").update(text).digest("hex");
 }
+function hashBytes(bytes) {
+  return (0, import_node_crypto.createHash)("sha256").update(bytes).digest("hex");
+}
 function hashConfig(config2) {
   return hashText(JSON.stringify(config2));
 }
@@ -431,6 +461,46 @@ var DEFAULT_RISK_POLICY = {
   risky_operations: ["D", "T"]
 };
 var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
+
+// src/sonar.ts
+function unresolvedBlockingFindings(audit) {
+  const approved = new Set((audit.dispositions ?? []).filter((entry) => entry.kind === "false_positive").map((entry) => entry.issue_key));
+  return audit.blocking.filter((finding) => !approved.has(finding.key));
+}
+function localReviewGate(audit) {
+  return unresolvedBlockingFindings(audit).length === 0 && !audit.uncovered_files?.length ? "OK" : "ERROR";
+}
+function sonarCommitBlockers(policy, audit, currentScopeHash, latestCommitHash) {
+  if (!audit) return ["SonarQube audit is enabled but has not been run; call sonar_check in code review"];
+  const problems = [];
+  if (audit.scope_hash !== currentScopeHash) problems.push("SonarQube audit is stale after file changes; rerun the scan and sonar_check");
+  if (policy.source === "ide-local") {
+    if (localReviewGate(audit) !== "OK") problems.push("\u672C\u5730\u89C4\u5219\u5BA1\u6838\u5C1A\u6709\u672A\u89E3\u51B3\u95EE\u9898\u6216\u672A\u8986\u76D6\u6587\u4EF6");
+    const unresolved = unresolvedBlockingFindings(audit);
+    if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`);
+  } else {
+    if (!latestCommitHash || audit.commit_hash !== latestCommitHash) {
+      problems.push("SonarQube audit does not match the task's latest recorded commit");
+    }
+    if (audit.gate !== "OK") problems.push(`SonarQube Quality Gate is ${audit.gate}`);
+    if (audit.blocking.length) problems.push(`${audit.blocking.length} medium/high SonarQube new-code findings remain`);
+  }
+  if (audit.uncovered_files?.length) problems.push(`\u672C\u5730\u89C4\u5219\u5BA1\u6838\u672A\u8986\u76D6 ${audit.uncovered_files.length} \u4E2A\u65B0\u589E\u4EE3\u7801\u6587\u4EF6`);
+  return problems;
+}
+
+// src/evidence-gate.ts
+function verificationEvidenceBlockers(state2, workflow, currentScopeHash) {
+  const needsVerification = verificationHeldStages(workflow).has(state2.stage) || workflow.transitions.some((edge) => edge.from === state2.stage && (edge.requires ?? []).includes("verified"));
+  if (!needsVerification || !state2.verification.passed) return [];
+  const receipt = state2.verification.receipt;
+  if (!receipt) return ["verification has no command receipt; rerun verify on the current files"];
+  if (receipt.scope_changed_during_run) return ["task files changed while verification ran; rerun tests"];
+  if (!receipt.scope_hash || receipt.scope_hash !== currentScopeHash) {
+    return ["verification is stale after file/scope changes; rerun verify on the current files"];
+  }
+  return [];
+}
 
 // src/hook.ts
 var messageFile = process.argv[2];
@@ -468,6 +538,7 @@ function normalizeTask(task) {
     artifacts: task.artifacts ?? {},
     files: Array.isArray(task.files) ? task.files : [],
     commits: Array.isArray(task.commits) ? task.commits : [],
+    ...task.completed !== void 0 ? { completed: task.completed } : {},
     ...task.execution_version === 1 ? { execution_version: 1 } : {},
     ...typeof task.root === "string" ? { root: task.root } : {},
     ...task.flow !== void 0 ? { flow: task.flow } : {}
@@ -511,7 +582,7 @@ function loadTasks() {
 }
 function currentBranch() {
   try {
-    return (0, import_node_child_process.execSync)("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim();
+    return (0, import_node_child_process.execSync)("git symbolic-ref --quiet --short HEAD", { encoding: "utf8" }).trim();
   } catch {
     return "";
   }
@@ -542,23 +613,39 @@ function stagedEntries() {
     }
     return entries2;
   } catch {
-    return [];
+    refuse("\u65E0\u6CD5\u8BFB\u53D6 Git \u6682\u5B58\u533A\uFF0C\u4E0D\u80FD\u786E\u8BA4\u5B9E\u9645\u63D0\u4EA4\u5185\u5BB9");
   }
 }
-function fileMtime(file) {
+function assertIndexMatchesWorktree(repoRoot, file) {
+  const staged = (0, import_node_child_process.execFileSync)("git", ["ls-files", "--stage", "-z", "--", file], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
+  const exact = staged.filter((line) => line.endsWith(`	${file}`));
+  const target = import_node_path.default.resolve(repoRoot, file);
+  if (exact.length === 0) {
+    if (import_node_fs.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
+    return;
+  }
+  if (exact.length !== 1) refuse(`\u6682\u5B58\u533A\u5B58\u5728\u672A\u89E3\u51B3\u51B2\u7A81\uFF1A${file}`);
+  const match = /^(100644|100755|120000) ([0-9a-f]+) 0\t/u.exec(exact[0]);
+  if (!match) refuse(`\u6682\u5B58\u6587\u4EF6\u7C7B\u578B\u4E0D\u53D7\u652F\u6301\uFF1A${file}`);
+  let info;
   try {
-    return import_node_fs.default.statSync(file).mtimeMs;
+    info = import_node_fs.default.lstatSync(target);
   } catch {
-    return 0;
+    refuse(`\u6682\u5B58\u533A\u4E0E\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
   }
+  if (!info.isFile() || match[1] === "120000") refuse(`\u4EFB\u52A1\u63D0\u4EA4\u4E0D\u652F\u6301\u7B26\u53F7\u94FE\u63A5\uFF1A${file}`);
+  if (process.platform !== "win32" && match[1] === "100755" !== ((info.mode & 73) !== 0)) {
+    refuse(`\u6682\u5B58\u533A\u6587\u4EF6\u6743\u9650\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}`);
+  }
+  const worktreeOid = (0, import_node_child_process.execFileSync)("git", ["hash-object", `--path=${file}`, "--", file], { cwd: repoRoot, encoding: "utf8" }).trim();
+  if (worktreeOid !== match[2]) refuse(`\u6682\u5B58\u533A\u5185\u5BB9\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
 }
-function pickTask(tasks2, branch) {
-  if (tasks2.length === 0) return void 0;
-  const byBranch = tasks2.find(({ task }) => task.branch === branch);
-  if (byBranch) return byBranch.task;
-  if (tasks2.length === 1) return tasks2[0].task;
-  const sorted = [...tasks2].sort((a, b) => fileMtime(b.file) - fileMtime(a.file));
-  return sorted[0].task;
+function pickTask(tasks2, branch2) {
+  const candidates = tasks2.filter(({ task }) => task.branch === branch2 && task.stage !== "\u5B8C\u6210" && task.completed === void 0);
+  if (candidates.length > 1) {
+    refuse(`\u5F53\u524D\u5206\u652F\u6709\u591A\u4E2A\u672A\u5B8C\u6210\u4EFB\u52A1\uFF08${candidates.map(({ task }) => task.id).join("\u3001")}\uFF09\uFF1B\u8BF7\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011`);
+  }
+  return candidates[0]?.task;
 }
 function readCommitMessage(file) {
   return import_node_fs.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
@@ -576,9 +663,12 @@ function scopeHash(state2, root) {
     const inside = import_node_path.default.relative(root, target);
     if (inside.startsWith("..") || import_node_path.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
     try {
-      return [file, hashText(import_node_fs.default.readFileSync(target, "utf8"))];
+      const info = import_node_fs.default.lstatSync(target);
+      if (!info.isFile()) refuse(`\u4EFB\u52A1\u8303\u56F4\u542B\u975E\u666E\u901A\u6587\u4EF6: ${file}`);
+      const executable = process.platform === "win32" ? false : (info.mode & 73) !== 0;
+      return [file, hashBytes(import_node_fs.default.readFileSync(target)), executable];
     } catch (error) {
-      if (error.code === "ENOENT") return [file, null];
+      if (error.code === "ENOENT") return [file, null, null];
       refuse(`\u65E0\u6CD5\u8BFB\u53D6\u4EFB\u52A1\u6587\u4EF6 ${file}: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
@@ -626,16 +716,21 @@ var tasks = loadTasks();
 var taskId = extractTaskId(message);
 var state;
 if (taskId !== void 0) {
-  const found = tasks.find(({ task }) => task.id === taskId);
-  if (!found) {
+  const found = tasks.filter(({ task }) => task.id === taskId);
+  if (found.length === 0) {
     refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-<id>.json\uFF09`);
   }
-  state = found.task;
+  if (found.length > 1) refuse(`\u4EFB\u52A1 id "${taskId}" \u5728\u591A\u4E2A\u5DE5\u4F5C\u533A\u91CD\u590D\uFF1B\u8BF7\u5148\u6D88\u9664\u6B67\u4E49`);
+  state = found[0].task;
 } else {
   state = pickTask(tasks, currentBranch());
 }
 if (!state) {
-  refuse("\u6CA1\u6709\u627E\u5230 dev_task \u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-*.json\uFF09\u2014\u2014\u8BF7\u5148 dev_task operation=create \u5EFA\u7ACB\u4EFB\u52A1");
+  refuse("\u5F53\u524D\u5206\u652F\u6CA1\u6709\u53EF\u63D0\u4EA4\u7684 dev_task \u4EFB\u52A1\u2014\u2014\u8BF7\u5148\u5EFA\u7ACB\u4EFB\u52A1\uFF0C\u6216\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011");
+}
+var branch = currentBranch();
+if (!branch || branch === "HEAD" || state.branch !== branch) {
+  refuse(`\u4EFB\u52A1 ${state.id} \u8BB0\u5F55\u7684\u5206\u652F\u662F ${state.branch}\uFF0C\u5F53\u524D Git \u5206\u652F\u662F ${branch || "\u672A\u77E5"}\uFF1B\u8BF7\u5207\u56DE\u4EFB\u52A1\u5206\u652F`);
 }
 if (state.flow?.hash !== void 0 && hashConfig(state.flow.config) !== state.flow.hash) {
   refuse(`\u4EFB\u52A1 ${state.id} \u7684\u6D41\u7A0B\u5FEB\u7167 hash \u4E0D\u5339\u914D\u2014\u2014task \u8BB0\u5F55\u5728\u521B\u5EFA\u540E\u88AB\u6539\u52A8\u8FC7\uFF0C\u4FEE\u590D\u6216\u91CD\u5EFA\u4EFB\u52A1\u540E\u518D\u63D0\u4EA4`);
@@ -663,12 +758,12 @@ var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? "commit checkpoint rejected") + "\uFF08\u5F53\u524D\u9636\u6BB5: " + state.stage + "\uFF09");
 }
+var evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd));
+if (evidence.length) refuse(evidence.join("; "));
 if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].includes(state.stage)) {
-  const audit = state.sonar_audit;
   const lastCommit = state.commits.findLast((entry) => entry.hash !== void 0)?.hash;
-  if (!audit || audit.gate !== "OK" || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, state.root ?? cwd) || !lastCommit || audit.commit_hash !== lastCommit) {
-    refuse("SonarQube \u5BA1\u6838\u672A\u901A\u8FC7\u6216\u5DF2\u8FC7\u671F\u2014\u2014\u5728\u4EE3\u7801\u5BA1\u6838\u9636\u6BB5\u91CD\u65B0\u626B\u63CF\u5E76\u8C03\u7528 dev_task operation=sonar_check");
-  }
+  const blockers = sonarCommitBlockers(state.sonar_policy, state.sonar_audit, scopeHash(state, state.root ?? cwd), lastCommit);
+  if (blockers.length) refuse(blockers.join("; "));
 }
 var workspace = state.root ?? cwd;
 var entries = stagedEntries().map((entry) => {
@@ -687,10 +782,14 @@ if (!scope.ok) {
   });
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
+for (const entry of entries) {
+  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path.default.relative(cwd, import_node_path.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
+}
 var sensitive = riskyPaths(entries);
-if (sensitive.length > 0 && !riskVerified(state)) {
+var riskyChanges = entries.filter((entry) => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? "")).map((entry) => `${entry.status}	${entry.path}`);
+if ((sensitive.length > 0 || riskyChanges.length > 0) && !riskVerified(state)) {
   refuse(
-    "\u63D0\u4EA4\u89E6\u53CA\u654F\u611F\u8DEF\u5F84: " + sensitive.join(", ") + " \u2014 \u8FD9\u7C7B\u53D8\u66F4\u8981\u6C42\u4EFB\u52A1\u58F0\u660E\u4E3A high_risk\uFF0C\u4E14\u9A8C\u8BC1\u5FC5\u987B\u662F\u771F\u5B9E\u547D\u4EE4\u56DE\u6267\uFF08exit 0\uFF09"
+    "\u63D0\u4EA4\u89E6\u53CA\u654F\u611F\u8DEF\u5F84\u6216\u9AD8\u98CE\u9669\u64CD\u4F5C: " + [...sensitive, ...riskyChanges].join(", ") + " \u2014 \u8FD9\u7C7B\u53D8\u66F4\u8981\u6C42\u4EFB\u52A1\u58F0\u660E\u4E3A high_risk\uFF0C\u4E14\u9A8C\u8BC1\u5FC5\u987B\u662F\u771F\u5B9E\u547D\u4EE4\u56DE\u6267\uFF08exit 0\uFF09"
   );
 }
 process.exit(0);

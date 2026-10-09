@@ -470,7 +470,7 @@ function memProbe(files) {
 }
 {
   assert(project.defaultVerifyCommand('node') === 'npm test', 'node default verify command')
-  assert(project.defaultVerifyCommand('java') === 'mvn -q test', 'java default verify command')
+  assert(project.defaultVerifyCommand('java') === 'mvn -B test', 'java default verify command')
   assert(project.defaultVerifyCommand('go') === 'go test ./...', 'go default verify command')
   assert(project.defaultVerifyCommand('unknown') === undefined, 'unknown type has no default command')
 }
@@ -827,7 +827,7 @@ function memProbe(files) {
 // mode, so every path asserted VALID here must be registered first.
 {
   const ctl = await import('./lib/controller.js')
-  const valid = ['D:/work/my project', 'D:/mydir/users-guide', 'D:/proj/one/']
+  const valid = ['D:/work/my project', 'D:/mydir/users-guide', 'D:/proj/one/', 'C:/Users/alice/projects/app']
   for (const good of valid) ctl.registerWorkspace(good)
   // Must still accept ordinary workspaces, including names that merely look risky.
   for (const good of valid) {
@@ -843,6 +843,7 @@ function memProbe(files) {
   await assertThrows(() => ctl.checkedPath('D:/proj/../../Windows'), 'not an allowed workspace', 'traversal into a system dir is rejected after normalization')
   await assertThrows(() => ctl.checkedPath('C:/Users/x/../../Windows'), 'not an allowed workspace', 'traversal out of C:/Users into Windows is rejected')
   await assertThrows(() => ctl.checkedPath('D:/proj/../../../Users'), 'not an allowed workspace', 'traversal into a user tree is rejected')
+  await assertThrows(() => ctl.checkedPath('C:/Users/alice/AppData/Roaming'), 'not an allowed workspace', 'user application data is rejected')
   // The system list is drive-agnostic: matching only c:/windows left D:/Windows open.
   await assertThrows(() => ctl.checkedPath('D:/Windows'), 'not an allowed workspace', 'a system dir on a non-C drive is rejected')
   await assertThrows(() => ctl.checkedPath('E:/Program Files/x'), 'not an allowed workspace', 'Program Files on any drive is rejected')

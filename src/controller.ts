@@ -9,9 +9,9 @@
  * @module dsh-task-engine/controller
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
+import { constants, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
 import { authorizedWorkspace } from './workspace-access.ts'
-import { prepareImport, commitImport } from './resource-import.ts'
+import { assertRealPath, prepareImport, commitImport } from './resource-import.ts'
 import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -89,7 +89,8 @@ function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>)
       if (!config.sonar.reference_branch || !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('本地审核需要有效的新代码参考分支')
     }
     if (config.sonar.reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(config.sonar.reference_branch)) problems.push('SonarQube 新代码参考分支无效')
-    if (config.sonar.scan_command && !validLocalScanCommand(config.sonar.scan_command)) problems.push('扫描命令须为单条 Maven 或 SonarScanner 命令，不能包含 Shell 运算符或 Token')
+    if (config.sonar.scan_command && !validLocalScanCommand(config.sonar.scan_command)) problems.push('扫描命令只能使用固定的 Maven Sonar 目标或 sonar-scanner')
+    if (config.sonar.source === 'ide-local' && config.sonar.scan_command) problems.push('本地规则审核不执行 scan_command')
     if (config.sonar.include_paths !== undefined && !validAuditIncludePaths(config.sonar.include_paths)) problems.push('审核范围须为项目内相对路径列表，不能包含上级目录')
     if (config.sonar.include_paths?.length && config.sonar.source !== 'ide-local') problems.push('审核范围仅适用于本地规则审核')
   }
@@ -630,14 +631,13 @@ export default class TaskEngineController extends TypertRemoteService {
   async writeAdaptive(request: { path: string; config: AdaptiveProjectConfig; expected_hash: string }): Promise<AdaptiveConfigView> {
     const path = await this.authorizedPath(request.path)
     const fs = this.fs()
-    const raw = await readTextAt(fs, path, '.dsh/meta.json')
+    const { raw, info } = await readVersionedTextAt(fs, path, '.dsh/meta.json')
     if (request.expected_hash !== hashText(raw ?? '')) throw new Error('自适应配置已被其他会话修改，请刷新后重试')
     const available = new Set((await this.listSkills(path)).skills.map(skill => skill.name))
     const problems = adaptiveProblems(request.config, available)
     if (problems.length) return { ok: false, source: 'invalid', config: request.config,
       hash: hashText(raw ?? ''), problems, grades: adaptiveGrades() }
     const target = await fs.resolve('.dsh/meta.json', { cwd: path })
-    const info = await fs.lstat('.dsh/meta.json', { cwd: path })
     await fs.writeText(target, JSON.stringify(request.config, null, 2) + '\n',
       info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version },
       undefined, { mode: 'workspace-write', workspaceRoot: path })
@@ -762,7 +762,7 @@ export default class TaskEngineController extends TypertRemoteService {
     const fs = this.fs()
     if (await readTextAt(fs, path, `.dsh/skills/${request.name}/SKILL.md`) === undefined) throw new Error('项目级技能不存在')
     const profilePath = `.dsh/skills/${request.name}/profile.json`
-    const raw = await readTextAt(fs, path, profilePath)
+    const { raw, info } = await readVersionedTextAt(fs, path, profilePath)
     if (request.expected_hash !== hashText(raw ?? '')) throw new Error('技能规则档案已改变，请刷新后重试')
     if (!Array.isArray(request.profile.rules) || request.profile.rules.some(rule => !rule ||
       !['project', 'user', 'bundled'].includes(rule.source) || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(rule.name))
@@ -772,7 +772,6 @@ export default class TaskEngineController extends TypertRemoteService {
     const available = new Set((await this.listRules(path)).rules.map(rule => formatResourceRef(rule.ref)))
     for (const rule of request.profile.rules) if (!available.has(formatResourceRef(rule))) throw new Error(`规则 ${formatResourceRef(rule)} 不存在`)
     const target = await fs.resolve(profilePath, { cwd: path })
-    const info = await fs.lstat(profilePath, { cwd: path })
     await fs.writeText(target, JSON.stringify(request.profile, null, 2) + '\n',
       info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version },
       undefined, { mode: 'workspace-write', workspaceRoot: path })
@@ -1280,6 +1279,8 @@ export default class TaskEngineController extends TypertRemoteService {
     }
     const path = await this.projectInitRoot(request.path)
     const fs = this.fs()
+    const metaSnapshot = await readVersionedTextAt(fs, path, '.dsh/meta.json')
+    if (hashText(metaSnapshot.raw ?? '') !== proposal.existing_hash) throw new Error('项目配置已改变，请重新检查提案')
     const write = async (relative: string, content: string): Promise<void> => {
       const target = await fs.resolve(relative, { cwd: path })
       await fs.writeText(target, content, { kind: 'createIfAbsent' }, undefined, { mode: 'workspace-write', workspaceRoot: path })
@@ -1293,15 +1294,13 @@ export default class TaskEngineController extends TypertRemoteService {
       const profile: SkillProfile = { rules: (resource.rules ?? []).map(name => ({ source: 'project', name })), evidence: 'none' }
       await write(`.dsh/skills/${resource.name}/profile.json`, JSON.stringify(profile, null, 2) + '\n')
     }
-    const metaRaw = await readTextAt(fs, path, '.dsh/meta.json')
-    if (hashText(metaRaw ?? '') !== proposal.existing_hash) throw new Error('项目配置在写入期间发生变化，请检查已创建文件并重新加载')
-    const meta = metaRaw === undefined ? {} as AdaptiveProjectConfig : JSON.parse(metaRaw) as AdaptiveProjectConfig
+    const meta = metaSnapshot.raw === undefined ? {} as AdaptiveProjectConfig : JSON.parse(metaSnapshot.raw) as AdaptiveProjectConfig
     const bindings = { ...meta.meta_bindings }
     for (const resource of proposal.resources.filter(resource => resource.kind === 'skill')) {
       for (const stage of resource.meta_skills ?? []) bindings[stage] = [...new Set([...(bindings[stage] ?? []), resource.name])]
     }
     const target = await fs.resolve('.dsh/meta.json', { cwd: path })
-    const info = await fs.lstat('.dsh/meta.json', { cwd: path })
+    const info = metaSnapshot.info
     await fs.writeText(target, JSON.stringify({ ...meta, meta_bindings: bindings }, null, 2) + '\n',
       info === undefined ? { kind: 'createIfAbsent' } : { kind: 'replaceIfVersion', version: info.version },
       undefined, { mode: 'workspace-write', workspaceRoot: path })
@@ -1544,6 +1543,7 @@ function copyRecommendedResources(
     const target = copy.kind === 'skill'
       ? join(root, 'skills', copy.targetName, 'SKILL.md')
       : join(root, 'rules', `${copy.targetName}.md`)
+    assertRealPath(target)
     const label = `${level}:${copy.targetName}`
     const raw = readResourceFile(source)
     if (raw === undefined) throw new Error(`内置资源无法读取：${copy.kind}:${copy.name}`)
@@ -1558,6 +1558,7 @@ function copyRecommendedResources(
       continue
     }
     mkdirSync(dirname(target), { recursive: true })
+    assertRealPath(target)
     const content = parsed
       ? renderSkillFile(copy.targetName, parsed.description, parsed.whenToUse, parsed.content)
       : raw.trimEnd() + '\n'
@@ -1571,8 +1572,14 @@ function copyRecommendedResources(
 /** Write a resource file, creating parent directories; never throws to the wire. */
 function writeResourceFile(file: string, content: string, name: string, createOnly = false): WriteResourceResult {
   try {
+    assertRealPath(file)
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, content, { encoding: 'utf8', flag: createOnly ? 'wx' : 'w' })
+    assertRealPath(file)
+    const flags = constants.O_WRONLY | constants.O_CREAT | (createOnly ? constants.O_EXCL : constants.O_TRUNC)
+      | (constants.O_NOFOLLOW ?? 0)
+    const descriptor = openSync(file, flags, 0o600)
+    try { writeFileSync(descriptor, content, 'utf8') }
+    finally { closeSync(descriptor) }
     return { ok: true, name, path: file }
   } catch (error) {
     return { ok: false, name, path: file, error: error instanceof Error ? error.message : String(error) }
@@ -1582,6 +1589,7 @@ function writeResourceFile(file: string, content: string, name: string, createOn
 /** Read a resource file's text, or `undefined` when absent/unreadable. */
 function readResourceFile(file: string): string | undefined {
   try {
+    assertRealPath(file)
     return readFileSync(file, 'utf8')
   } catch {
     return undefined
@@ -1591,6 +1599,7 @@ function readResourceFile(file: string): string | undefined {
 /** Delete one resource file; never throws to the wire. */
 function deleteResourceFile(file: string, name: string): WriteResourceResult {
   try {
+    assertRealPath(file)
     rmSync(file, { force: true })
     return { ok: true, name, path: file }
   } catch (error) {
@@ -1601,6 +1610,7 @@ function deleteResourceFile(file: string, name: string): WriteResourceResult {
 /** Delete one skill directory (its SKILL.md plus the empty dir); never throws to the wire. */
 function deleteResourceDir(dir: string, name: string): WriteResourceResult {
   try {
+    assertRealPath(dir)
     rmSync(dir, { recursive: true, force: true })
     return { ok: true, name, path: dir }
   } catch (error) {
@@ -1665,7 +1675,7 @@ export function enableStrictWorkspaces(): void {
  * `D:/Windows` reachable on a machine whose system volume is not C:.
  */
 const FORBIDDEN_WINDOWS = [
-  'windows', 'program files', 'program files (x86)', 'programdata', 'users',
+  'windows', 'program files', 'program files (x86)', 'programdata',
   '$recycle.bin', 'system volume information', 'perflogs', 'recovery',
 ]
 /** POSIX system roots, absolute and lower-case. */
@@ -1713,6 +1723,10 @@ export function checkedPath(raw: string): string {
     if (key === prefix || key.startsWith(`${prefix}/`)) {
       throw new RemoteError('gateway/internal', `task-engine: path is not an allowed workspace: ${raw}`, {})
     }
+  }
+  if (process.platform === 'win32' && (/^users(?:\/[^/]+)?$/u.test(key)
+    || /^users\/[^/]+\/(?:appdata|application data)(?:\/|$)/u.test(key))) {
+    throw new RemoteError('gateway/internal', `task-engine: path is not an allowed workspace: ${raw}`, {})
   }
   workspaceRegistry.assertAllowed(normalized)
   return normalized
@@ -1850,6 +1864,17 @@ async function readTextAt(fs: NonNullable<Context['fs']>, path: string, rel: str
   } catch {
     return undefined
   }
+}
+
+/** Keep the content hash and CAS version from one stable observed revision. */
+async function readVersionedTextAt(fs: NonNullable<Context['fs']>, path: string, rel: string) {
+  const before = await fs.lstat(rel, { cwd: path })
+  const raw = await readTextAt(fs, path, rel)
+  const after = await fs.lstat(rel, { cwd: path })
+  if (before?.version !== after?.version || (raw === undefined) !== (after === undefined)) {
+    throw new Error(`${rel} 在读取期间发生变化或无法读取，请刷新后重试`)
+  }
+  return { raw, info: after }
 }
 
 /**

@@ -8,6 +8,15 @@ import { validateWorkflow } from './lib/engine.js'
 import { plannedItemIds, registerDevTask } from './lib/dev-task.js'
 import { assertLocalSonarReady, inspectSonar, validLocalScanCommand } from './lib/sonar.js'
 import Controller from './lib/controller.js'
+import { hashText } from './lib/snapshot.js'
+
+function recordedVerification() {
+  return { passed: true, evidence: ['verified'], receipt: {
+    command: 'npm test', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-10-01T00:00:00.000Z', finished_at: '2026-10-01T00:00:01.000Z',
+    stdout: '# tests 1\n# pass 1', stderr: '', scope_hash: hashText(JSON.stringify([['app.js', null, null]])),
+  } }
+}
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-adaptive-'))
 process.env.DSH_HOME = home
@@ -150,6 +159,28 @@ test('workbench adaptive settings persist meta bindings with a version check', a
     { path: f.cwd, config, expected_hash: before.hash }), /已被其他会话修改/)
 })
 
+test('adaptive settings reject a concurrent edit during skill lookup', async () => {
+  const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: false } }) })
+  const target = join(f.cwd, '.dsh/meta.json')
+  const original = f.files.get(target)
+  let revision = 1
+  f.fs.lstat = async path => f.files.has(join(f.cwd, path)) ? { version: `v${revision}` } : undefined
+  f.fs.writeText = async (resolved, content, intent) => {
+    if (intent.kind === 'replaceIfVersion' && intent.version !== `v${revision}`) throw new Error('version conflict')
+    f.files.set(resolved.path, content)
+    revision++
+  }
+  const receiver = { authorizedPath: async path => path, fs: () => f.fs,
+    listSkills: async () => {
+      f.files.set(target, JSON.stringify({ sonar: { enabled: true } }))
+      revision++
+      return { skills: [] }
+    }, readAdaptive: Controller.prototype.readAdaptive }
+  await assert.rejects(Controller.prototype.writeAdaptive.call(receiver,
+    { path: f.cwd, config: { sonar: { enabled: false } }, expected_hash: hashText(original) }), /version conflict/)
+  assert.deepEqual(JSON.parse(f.files.get(target)), { sonar: { enabled: true } })
+})
+
 test('Sonar audit reads the exact CI analysis gate and filters new-code medium/high findings', async () => {
   const calls = []
   const fetcher = async (url, options) => {
@@ -214,6 +245,8 @@ test('local Sonar audit ignores failing old-code gate conditions', async () => {
 
 test('local scanner configuration rejects shell operators before receiving the Token', () => {
   assert.equal(validLocalScanCommand('mvn org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar -DskipTests'), true)
+  assert.equal(validLocalScanCommand('mvn org.codehaus.mojo:exec-maven-plugin:exec -Dexec.executable=id'), false)
+  assert.equal(validLocalScanCommand('sonar-scanner -Dsonar.projectKey=other'), false)
   assert.equal(validLocalScanCommand('mvn sonar:sonar; curl http://example'), false)
   assert.equal(validLocalScanCommand('mvn sonar:sonar -Dsonar.token=secret'), false)
   assert.equal(validLocalScanCommand('curl http://example'), false)
@@ -249,7 +282,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
   const state = f.state('LOCAL-1')
   state.stage = '代码审核'
-  state.verification = { passed: true, evidence: ['verified'] }
+  state.verification = recordedVerification()
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
   f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
@@ -295,7 +328,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
   const state = f.state('S-1')
   state.stage = '代码审核'
-  state.verification = { passed: true, evidence: ['verified'] }
+  state.verification = recordedVerification()
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
   f.files.set(join(f.cwd, '.dsh/task-S-1.json'), JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)

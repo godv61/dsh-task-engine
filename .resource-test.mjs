@@ -83,6 +83,18 @@ test('host scanner rejects symlink or junction source paths',t=>{
  symlinkSync(src,link,process.platform==='win32'?'junction':'dir')
  assert.throws(()=>prepareImport({...baseRequest(),files:[],sourceDir:link},base,()=>false),/符号链接/)
 })
+test('ordinary Rule edits reject a linked directory outside the project', async t => {
+ const {root}=fixture(t),outside=join(root,'outside'),project=join(root,'project')
+ mkdirSync(outside);mkdirSync(join(project,'.dsh'),{recursive:true})
+ symlinkSync(outside,join(project,'.dsh','rules'),process.platform==='win32'?'junction':'dir')
+ const {default:Controller}=await import('./lib/controller.js')
+ const controller=Object.create(Controller.prototype)
+ controller.authorizedPath=async path=>path
+ const result=await controller.writeRule({level:'project',path:project,name:'probe-rule',content:'Do not write outside'})
+ assert.equal(result.ok,false)
+ assert.match(result.error,/符号链接|目录联接/)
+ assert.equal(existsSync(join(outside,'probe-rule.md')),false)
+})
 test('deep directories and oversized files fail before installation',t=>{
  const {base}=fixture(t)
  assert.throws(()=>prepareImport({...baseRequest(),files:[file('SKILL.md',skill),file('a/'.repeat(21)+'b','x')]},base,()=>false),/20 层/)

@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { test } from 'node:test'
@@ -51,8 +51,25 @@ function tryCommit(cwd, message) {
   }
 }
 
+async function stampReceipt(root, taskFile) {
+  const { hashBytes, hashText } = await import('./lib/snapshot.js')
+  const task = JSON.parse(readFileSync(taskFile, 'utf8'))
+  const entries = [...new Set(task.files)].sort().map(file => {
+    const target = join(root, file)
+    if (!existsSync(target)) return [file, null, null]
+    const info = lstatSync(target)
+    return [file, hashBytes(readFileSync(target)), process.platform === 'win32' ? false : (info.mode & 0o111) !== 0]
+  })
+  task.verification.receipt = {
+    command: 'node --test', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-10-01T00:00:00.000Z', finished_at: '2026-10-01T00:00:01.000Z',
+    stdout: '# tests 1\n# pass 1', stderr: '', scope_hash: hashText(JSON.stringify(entries)),
+  }
+  writeFileSync(taskFile, JSON.stringify(task, null, 2))
+}
+
 /** Build a throwaway repository with the real hook installed and one staged file. */
-function repo(name, task) {
+async function repo(name, task) {
   const root = mkdtempSync(join(tmpdir(), `engine-hook-${name}-`))
   git(root, ['init', '-q', '-b', 'main'])
   git(root, ['config', 'user.email', 'test@example.com'])
@@ -68,6 +85,7 @@ function repo(name, task) {
   writeFileSync(join(root, '.dsh', `task-${task.id}.json`), JSON.stringify(task, null, 2))
   writeFileSync(join(root, 'src', 'app.js'), 'console.log(1)\n')
   git(root, ['add', 'src/app.js'])
+  if (task.verification.passed) await stampReceipt(root, join(root, '.dsh', `task-${task.id}.json`))
   return root
 }
 
@@ -115,7 +133,7 @@ async function standardConfig() {
 
 test('a task at its checkpoint with the right message commits', async () => {
   const config = await standardConfig()
-  const root = repo('allow', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  const root = await repo('allow', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
   try {
     const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
     assert.equal(result.allowed, true, `expected the commit to proceed, stderr: ${result.stderr}`)
@@ -127,7 +145,7 @@ test('a task at its checkpoint with the right message commits', async () => {
 
 test('the installed hook rejects a failed verification on a current task', async () => {
   const config = await standardConfig()
-  const root = repo('failed-verification', approvedTask({
+  const root = await repo('failed-verification', approvedTask({
     execution_version: 1,
     verification: { passed: false, evidence: [] },
     flow: { flow: 'standard', version: 2, config },
@@ -143,7 +161,7 @@ test('the installed hook rejects a failed verification on a current task', async
 
 test('removing execution_version cannot bypass the installed verification gate', async () => {
   const config = await standardConfig()
-  const root = repo('missing-version', approvedTask({
+  const root = await repo('missing-version', approvedTask({
     verification: { passed: false, evidence: [] },
     flow: { flow: 'standard', version: 2, config },
   }))
@@ -176,6 +194,7 @@ test('the installed hook finds a registered task in a monorepo subdirectory', as
     })))
     writeFileSync(join(sub, 'src', 'app.js'), 'console.log(1)\n')
     git(root, ['add', 'module/src/app.js'])
+    await stampReceipt(sub, join(sub, '.dsh', 'task-HOOK-1.json'))
     const result = tryCommit(sub, '【HOOK-1】【TASK】probe subdirectory')
     assert.equal(result.allowed, true, `registered subdirectory task should commit: ${result.stderr}`)
   } finally {
@@ -185,7 +204,7 @@ test('the installed hook finds a registered task in a monorepo subdirectory', as
 
 test('the installed hook fails closed on a damaged workspace registry', async () => {
   const config = await standardConfig()
-  const root = repo('damaged-roots', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  const root = await repo('damaged-roots', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
   try {
     writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{broken')
     const result = tryCommit(root, '【HOOK-1】【TASK】probe damaged roots')
@@ -198,7 +217,7 @@ test('the installed hook fails closed on a damaged workspace registry', async ()
 
 test('a message that violates the configured pattern is refused', async () => {
   const config = await standardConfig()
-  const root = repo('badmsg', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  const root = await repo('badmsg', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
   try {
     const result = tryCommit(root, 'no task id here')
     assert.equal(result.allowed, false, 'a malformed summary must be refused')
@@ -210,7 +229,7 @@ test('a message that violates the configured pattern is refused', async () => {
 
 test('a commit touching files outside the declared scope is refused', async () => {
   const config = await standardConfig()
-  const root = repo('scope', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  const root = await repo('scope', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
   try {
     writeFileSync(join(root, 'src', 'other.js'), 'console.log(2)\n')
     git(root, ['add', 'src/other.js'])
@@ -224,7 +243,7 @@ test('a commit touching files outside the declared scope is refused', async () =
 
 test('a commit before the checkpoint stage is refused', async () => {
   const config = await standardConfig()
-  const root = repo('stage', approvedTask({ stage: '开发', flow: { flow: 'standard', version: 2, config } }))
+  const root = await repo('stage', approvedTask({ stage: '开发', flow: { flow: 'standard', version: 2, config } }))
   try {
     const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
     assert.equal(result.allowed, false, 'committing before the checkpoint must be refused')
@@ -237,7 +256,7 @@ test('a commit before the checkpoint stage is refused', async () => {
 test('a task whose frozen snapshot was edited is refused', async () => {
   const config = await standardConfig()
   const tampered = { ...config, start_stage: '开发' }
-  const root = repo('tamper', approvedTask({
+  const root = await repo('tamper', approvedTask({
     flow: { flow: 'standard', version: 2, config: tampered, hash: 'not-the-real-hash' },
   }))
   try {
@@ -251,13 +270,14 @@ test('a task whose frozen snapshot was edited is refused', async () => {
 
 test('touching a sensitive path without a high-risk receipt is refused', async () => {
   const config = await standardConfig()
-  const root = repo('sensitive', approvedTask({
+  const root = await repo('sensitive', approvedTask({
     files: ['src/app.js', '.env'],
     flow: { flow: 'standard', version: 2, config },
   }))
   try {
     writeFileSync(join(root, '.env'), 'SECRET=1\n')
     git(root, ['add', '.env'])
+    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
     const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
     assert.equal(result.allowed, false, 'a sensitive path without a high-risk receipt must be refused')
     assert.match(result.stderr, /敏感路径/, 'the refusal names the sensitive path')
@@ -269,7 +289,7 @@ test('touching a sensitive path without a high-risk receipt is refused', async (
 test('adaptive task can make its first CI commit before Sonar review', async () => {
   const { adaptiveWorkflow } = await import('./lib/adaptive.js')
   const config = adaptiveWorkflow('medium')
-  const root = repo('adaptive-sonar', approvedTask({
+  const root = await repo('adaptive-sonar', approvedTask({
     stage: '测试',
     review: { outcome: 'pending' },
     sonar_policy: { enabled: true, host_url: 'https://sonar.example.test', project_key: 'example', mode: 'branch', token_env: 'SONAR_TOKEN' },
@@ -281,4 +301,89 @@ test('adaptive task can make its first CI commit before Sonar review', async () 
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('deleting a scoped file needs a high-risk task and fresh verification', async () => {
+  const config = await standardConfig()
+  const root = await repo('delete-risk', approvedTask({ flow: { flow: 'standard', version: 3, config } }))
+  try {
+    git(root, ['-c', 'core.hooksPath=missing-hooks', 'commit', '-m', 'seed'])
+    rmSync(join(root, 'src', 'app.js'))
+    git(root, ['add', '-u'])
+    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
+    const result = tryCommit(root, '【HOOK-1】【TASK】remove app')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /高风险操作/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('the hook rejects a receipt after source code changes', async () => {
+  const config = await standardConfig()
+  const root = await repo('stale-receipt', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  try {
+    writeFileSync(join(root, 'src', 'app.js'), 'console.log(2)\n')
+    git(root, ['add', 'src/app.js'])
+    const result = tryCommit(root, '【HOOK-1】【TASK】changed after tests')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /verification is stale/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('the hook rejects staged bytes that differ from the tested worktree', async () => {
+  const config = await standardConfig()
+  const root = await repo('index-mismatch', approvedTask({ flow: { flow: 'standard', version: 2, config } }))
+  try {
+    writeFileSync(join(root, 'src', 'app.js'), 'console.log(2)\n')
+    git(root, ['add', 'src/app.js'])
+    writeFileSync(join(root, 'src', 'app.js'), 'console.log(1)\n')
+    const result = tryCommit(root, '【HOOK-1】【TASK】stage different bytes')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /暂存区内容与已验证工作区不一致/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('an explicit task id on another branch is rejected', async () => {
+  const config = await standardConfig()
+  const root = await repo('wrong-branch', approvedTask({ branch: 'feature/other', flow: { flow: 'standard', version: 2, config } }))
+  try {
+    const result = tryCommit(root, '【HOOK-1】【TASK】wrong branch')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /记录的分支/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('a pattern-less commit cannot guess between two active tasks on one branch', async () => {
+  const { adaptiveWorkflow } = await import('./lib/adaptive.js')
+  const config = adaptiveWorkflow('low')
+  const root = await repo('ambiguous', approvedTask({ stage: '测试', flow: { flow: 'adaptive-low', version: 1, config } }))
+  try {
+    const second = approvedTask({ id: 'HOOK-2', stage: '测试', flow: { flow: 'adaptive-low', version: 1, config } })
+    writeFileSync(join(root, '.dsh', 'task-HOOK-2.json'), JSON.stringify(second))
+    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-2.json'))
+    const result = tryCommit(root, 'unqualified task commit')
+    assert.equal(result.allowed, false)
+    assert.match(result.stderr, /多个未完成任务/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('approved local Sonar false positives retain the raw error but allow a first commit', async () => {
+  const config = await standardConfig()
+  const root = await repo('local-disposition', approvedTask({
+    sonar_policy: { enabled: true, source: 'ide-local', host_url: 'https://sonar.example.test', project_key: 'example', mode: 'branch', token_env: 'SONAR_TOKEN' },
+    flow: { flow: 'standard', version: 2, config },
+  }))
+  try {
+    const taskFile = join(root, '.dsh', 'task-HOOK-1.json')
+    const task = JSON.parse(readFileSync(taskFile, 'utf8'))
+    const finding = { key: 'issue-1', rule: 'java:S1', message: 'false positive', severity: 'MAJOR', file: 'src/app.js' }
+    task.sonar_audit = { ce_task_id: 'local', analysis_id: 'local', gate: 'ERROR',
+      checked_at: '2026-10-01T00:00:00.000Z', scope_hash: task.verification.receipt.scope_hash,
+      findings: [finding], blocking: [finding], target: 'main',
+      dispositions: [{ issue_key: 'issue-1', kind: 'false_positive', reason: 'reviewed', evidence: ['manual review'], approved_at: '2026-10-01T00:00:00.000Z' }] }
+    writeFileSync(taskFile, JSON.stringify(task))
+    const result = tryCommit(root, '【HOOK-1】【TASK】approved local finding')
+    assert.equal(result.allowed, true, result.stderr)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

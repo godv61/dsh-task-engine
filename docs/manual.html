@@ -108,12 +108,12 @@ pnpm dsh web --no-open</code></pre>
 只在当前分支工作，不要推送。</code></pre>
         <p>会话应先展示复杂度依据和任务状态。若发现已有任务，先核对任务 ID 与分支，避免把这条需求写进其他任务。你可以随时在“任务台账”查看它记录的实施项和下一门禁。</p>
         <p>一个任务只负责其记录的分支、文件范围和流程。多会话并行时应给不同任务使用独立分支或工作区，避免另一任务的未提交代码混进本次审核。</p>
-        <p>需要拦截直接执行的 <code>git commit</code> 时，在工程会话调用 <code>dev_task install_hook</code> 和 <code>verify_hook</code>。安装器登记当前 Git 工作区；仓库子目录也能定位任务。已有其它 <code>commit-msg</code> 钩子时安装会停止，需人工组合；更新已有 DSH 钩子前会备份。任务 JSON 可以由拥有工作区写权限的人修改，因此门禁用于防止遗漏和误操作，不是防恶意篡改机制。</p>
+        <p>需要拦截直接执行的 <code>git commit</code> 时，在工程会话调用 <code>dev_task install_hook</code> 和 <code>verify_hook</code>。安装器登记当前 Git 工作区；仓库子目录也能定位任务。已有其它 <code>commit-msg</code> 钩子时安装会停止，需人工组合；更新已有 DSH 钩子前会备份。提交时钩子要求当前分支唯一对应一个未完成任务，并核对真实验证回执、任务范围和暂存内容。测试后改动代码、暂存不同版本，或旧任务只有 <code>passed=true</code> 而无回执时，应重新运行 <code>verify</code>。任务 JSON 可以由拥有工作区写权限的人修改，因此门禁用于防止遗漏和误操作，不是防恶意篡改机制。</p>
       </section>
 
       <section id="tests">
         <h2>测试和证据</h2>
-        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test 和 Cargo test 的常见输出必须能证明至少运行一个测试。输出显示 0 个、没有可识别摘要，或只运行编译、<code>true</code> 等命令时不能算通过。使用可输出测试结果的命令，并核对实际测试报告。</p>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Gradle（<code>--info</code> 输出测试数）、Node TAP/Jest/Vitest、pytest、Go test 和 Cargo test 的常见输出必须能证明至少运行一个实际通过的测试。全部跳过、没有可识别摘要，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目优先使用 wrapper 的 <code>test --info</code>。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
 

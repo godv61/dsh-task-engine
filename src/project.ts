@@ -44,7 +44,7 @@ const TYPE_MARKERS: Record<Exclude<ProjectType, 'unknown'>, readonly string[]> =
 /** Default verification command per language; a project can override via `.dsh/eng.json`. */
 export const DEFAULT_VERIFY_COMMANDS: Record<Exclude<ProjectType, 'unknown'>, string> = {
   node: 'npm test',
-  java: 'mvn -q test',
+  java: 'mvn -B test',
   python: 'python -m pytest',
   go: 'go test ./...',
   rust: 'cargo test',

@@ -10,7 +10,7 @@
  * @module dsh-task-engine/hook
  */
 
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import {
@@ -26,8 +26,10 @@ import {
   type ReviewDepth,
 } from './engine.ts'
 import { resolveFlow, type ProjectConfig } from './workflows.ts'
-import { hashConfig, hashText } from './snapshot.ts'
+import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY } from './project.ts'
+import { sonarCommitBlockers } from './sonar.ts'
+import { verificationEvidenceBlockers } from './evidence-gate.ts'
 
 const messageFile = process.argv[2]
 
@@ -71,6 +73,7 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     artifacts: (task.artifacts as TaskState['artifacts']) ?? {},
     files: Array.isArray(task.files) ? (task.files as string[]) : [],
     commits: Array.isArray(task.commits) ? (task.commits as TaskState['commits']) : [],
+    ...(task.completed !== undefined ? { completed: task.completed as NonNullable<TaskState['completed']> } : {}),
     ...(task.execution_version === 1 ? { execution_version: 1 as const } : {}),
     ...(typeof task.root === 'string' ? { root: task.root } : {}),
     ...(task.flow !== undefined ? { flow: task.flow as FlowSnapshot } : {}),
@@ -119,7 +122,7 @@ function loadTasks(): { file: string; task: TaskState }[] {
 
 function currentBranch(): string {
   try {
-    return execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf8' }).trim()
+    return execSync('git symbolic-ref --quiet --short HEAD', { encoding: 'utf8' }).trim()
   } catch {
     return ''
   }
@@ -157,26 +160,41 @@ function stagedEntries(): { status: string; path: string }[] {
     }
     return entries
   } catch {
-    return []
+    refuse('无法读取 Git 暂存区，不能确认实际提交内容')
   }
 }
 
-function fileMtime(file: string): number {
-  try {
-    return fs.statSync(file).mtimeMs
-  } catch {
-    return 0
+/** A commit must contain the same bytes and file type currently covered by the receipt. */
+function assertIndexMatchesWorktree(repoRoot: string, file: string): void {
+  const staged = execFileSync('git', ['ls-files', '--stage', '-z', '--', file], { cwd: repoRoot, encoding: 'utf8' })
+    .split('\0').filter(Boolean)
+  const exact = staged.filter(line => line.endsWith(`\t${file}`))
+  const target = path.resolve(repoRoot, file)
+  if (exact.length === 0) {
+    if (fs.existsSync(target)) refuse(`暂存区已删除但工作区仍有文件：${file}；重新暂存并验证`)
+    return
   }
+  if (exact.length !== 1) refuse(`暂存区存在未解决冲突：${file}`)
+  const match = /^(100644|100755|120000) ([0-9a-f]+) 0\t/u.exec(exact[0]!)
+  if (!match) refuse(`暂存文件类型不受支持：${file}`)
+  let info: fs.Stats
+  try { info = fs.lstatSync(target) }
+  catch { refuse(`暂存区与工作区不一致：${file}；重新暂存并验证`) }
+  if (!info.isFile() || match[1] === '120000') refuse(`任务提交不支持符号链接：${file}`)
+  if (process.platform !== 'win32' && ((match[1] === '100755') !== ((info.mode & 0o111) !== 0))) {
+    refuse(`暂存区文件权限与已验证工作区不一致：${file}`)
+  }
+  const worktreeOid = execFileSync('git', ['hash-object', `--path=${file}`, '--', file], { cwd: repoRoot, encoding: 'utf8' }).trim()
+  if (worktreeOid !== match[2]) refuse(`暂存区内容与已验证工作区不一致：${file}；重新暂存并验证`)
 }
 
-/** Fallback only for pattern-less flows: newest task on the branch, else the sole task. */
+/** A pattern-less legacy flow may select only an unambiguous active task on this branch. */
 function pickTask(tasks: { file: string; task: TaskState }[], branch: string): TaskState | undefined {
-  if (tasks.length === 0) return undefined
-  const byBranch = tasks.find(({ task }) => task.branch === branch)
-  if (byBranch) return byBranch.task
-  if (tasks.length === 1) return tasks[0]!.task
-  const sorted = [...tasks].sort((a, b) => fileMtime(b.file) - fileMtime(a.file))
-  return sorted[0]!.task
+  const candidates = tasks.filter(({ task }) => task.branch === branch && task.stage !== '完成' && task.completed === undefined)
+  if (candidates.length > 1) {
+    refuse(`当前分支有多个未完成任务（${candidates.map(({ task }) => task.id).join('、')}）；请在提交消息开头写明【任务ID】`)
+  }
+  return candidates[0]?.task
 }
 
 function readCommitMessage(file: string): string {
@@ -207,9 +225,14 @@ function scopeHash(state: TaskState, root: string): string {
     const target = path.resolve(root, file)
     const inside = path.relative(root, target)
     if (inside.startsWith('..') || path.isAbsolute(inside)) refuse(`任务范围路径越界: ${file}`)
-    try { return [file, hashText(fs.readFileSync(target, 'utf8'))] }
+    try {
+      const info = fs.lstatSync(target)
+      if (!info.isFile()) refuse(`任务范围含非普通文件: ${file}`)
+      const executable = process.platform === 'win32' ? false : (info.mode & 0o111) !== 0
+      return [file, hashBytes(fs.readFileSync(target)), executable]
+    }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [file, null]
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [file, null, null]
       refuse(`无法读取任务文件 ${file}: ${error instanceof Error ? error.message : String(error)}`)
     }
   })
@@ -289,16 +312,21 @@ const tasks = loadTasks()
 const taskId = extractTaskId(message)
 let state: TaskState | undefined
 if (taskId !== undefined) {
-  const found = tasks.find(({ task }) => task.id === taskId)
-  if (!found) {
+  const found = tasks.filter(({ task }) => task.id === taskId)
+  if (found.length === 0) {
     refuse(`提交消息里的任务 id "${taskId}" 找不到对应的任务记录（.dsh/task-<id>.json）`)
   }
-  state = found.task
+  if (found.length > 1) refuse(`任务 id "${taskId}" 在多个工作区重复；请先消除歧义`)
+  state = found[0]!.task
 } else {
   state = pickTask(tasks, currentBranch())
 }
 if (!state) {
-  refuse('没有找到 dev_task 任务记录（.dsh/task-*.json）——请先 dev_task operation=create 建立任务')
+  refuse('当前分支没有可提交的 dev_task 任务——请先建立任务，或在提交消息开头写明【任务ID】')
+}
+const branch = currentBranch()
+if (!branch || branch === 'HEAD' || state.branch !== branch) {
+  refuse(`任务 ${state.id} 记录的分支是 ${state.branch}，当前 Git 分支是 ${branch || '未知'}；请切回任务分支`)
 }
 
 if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
@@ -328,16 +356,15 @@ const checkpoint = commitCheckpoint(state, config)
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
 }
+const evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd))
+if (evidence.length) refuse(evidence.join('; '))
 
 // Adaptive tasks commit at the Test checkpoint; a local Sonar scan does not
 // require pushing that commit. The audit gates Code Review and Completion.
 if (state.sonar_policy?.enabled && ['代码审核', '完成'].includes(state.stage)) {
-  const audit = state.sonar_audit
   const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
-  if (!audit || audit.gate !== 'OK' || audit.blocking.length > 0 || audit.scope_hash !== scopeHash(state, state.root ?? cwd)
-    || !lastCommit || audit.commit_hash !== lastCommit) {
-    refuse('SonarQube 审核未通过或已过期——在代码审核阶段重新扫描并调用 dev_task operation=sonar_check')
-  }
+  const blockers = sonarCommitBlockers(state.sonar_policy, state.sonar_audit, scopeHash(state, state.root ?? cwd), lastCommit)
+  if (blockers.length) refuse(blockers.join('; '))
 }
 
 const workspace = state.root ?? cwd
@@ -357,11 +384,16 @@ if (!scope.ok) {
   })
   refuse('提交了任务范围之外的文件: ' + described.join(', '))
 }
+for (const entry of entries) {
+  if (!isEngineMeta(entry.path)) assertIndexMatchesWorktree(cwd, path.relative(cwd, path.resolve(workspace, entry.path)).replaceAll('\\', '/'))
+}
 
 const sensitive = riskyPaths(entries)
-if (sensitive.length > 0 && !riskVerified(state)) {
+const riskyChanges = entries.filter(entry => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? ''))
+  .map(entry => `${entry.status}\t${entry.path}`)
+if ((sensitive.length > 0 || riskyChanges.length > 0) && !riskVerified(state)) {
   refuse(
-    '提交触及敏感路径: ' + sensitive.join(', ') +
+    '提交触及敏感路径或高风险操作: ' + [...sensitive, ...riskyChanges].join(', ') +
     ' — 这类变更要求任务声明为 high_risk，且验证必须是真实命令回执（exit 0）',
   )
 }

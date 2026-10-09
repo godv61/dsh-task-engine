@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,14 +58,15 @@ import {
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
   type Complexity, type MetaSkill } from './adaptive.ts'
-import { assertLocalSonarReady, inspectSonar, localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
+import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlockers, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
 import { inspectLocalRules } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
 import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject, validateInitResources, type InitResource } from './project-init.ts'
-import { hashConfig, hashText } from './snapshot.ts'
+import { hashBytes, hashConfig, hashText } from './snapshot.ts'
+import { verificationEvidenceBlockers } from './evidence-gate.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
-import { testEvidence } from './verification-tests.ts'
+import { testEvidence, validationCommandProblem } from './verification-tests.ts'
 import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
 import {
   detectRoot,
@@ -167,8 +168,8 @@ export function assertInsideRoot(root: string, cwd: string, relPath: string): vo
 /**
  * The verification command a bare `verify` should run: the project's
  * `.dsh/eng.json` override wins, then the language default (node → `npm test`,
- * java → `mvn -q test`, …). `undefined` means no default exists and the legacy
- * self-reported `passed` path applies.
+ * java → `mvn -B test` or the Gradle wrapper, …). `undefined` means the
+ * project must provide a test command explicitly.
  */
 async function resolveVerifyCommand(fs: Fs, cwd?: string): Promise<string | undefined> {
   const raw = await readText(fs, '.dsh/eng.json', cwd)
@@ -183,6 +184,12 @@ async function resolveVerifyCommand(fs: Fs, cwd?: string): Promise<string | unde
     }
   }
   const root = await detectRoot(projectProbe(fs), cwd ?? '')
+  const probe = projectProbe(fs)
+  if (await probe.read(root, 'build.gradle') !== undefined || await probe.read(root, 'build.gradle.kts') !== undefined) {
+    const wrapper = process.platform === 'win32' ? await probe.read(root, 'gradlew.bat') !== undefined
+      : await probe.read(root, 'gradlew') !== undefined
+    return `${wrapper ? process.platform === 'win32' ? 'gradlew.bat' : './gradlew' : 'gradle'} test --info`
+  }
   return defaultVerifyCommand(await detectType(projectProbe(fs), root))
 }
 
@@ -460,6 +467,10 @@ async function installCommitHook(fs: Fs, cwd: string | undefined, mode: 'workspa
     await writeText(fs, `${hookPath}.backup-${Date.now()}`, existing, repoRoot, mode)
   }
   await writeText(fs, hookPath, HOOK_TEMPLATE, repoRoot, mode)
+  if (process.platform !== 'win32') {
+    const installed = resolve(repoRoot, hookPath)
+    chmodSync(installed, statSync(installed).mode | 0o111)
+  }
   await writeText(fs, packagePath, HOOK_PACKAGE_JSON, repoRoot, mode)
   await writeText(fs, rootsPath, JSON.stringify({ roots }, null, 2) + '\n', repoRoot, mode)
 }
@@ -729,8 +740,9 @@ function sonarPolicyFor(project: AdaptiveConfig): SonarPolicy | undefined {
   }
   if (reference_branch && !/^[A-Za-z0-9._/-]+$/u.test(reference_branch)) throw new Error('invalid SonarQube reference_branch')
   if (sonar.scan_command && !validLocalScanCommand(sonar.scan_command)) {
-    throw new Error('scan_command must be a single Maven or SonarScanner command without shell operators or Token arguments')
+    throw new Error('scan_command must be the pinned Maven Sonar goal or sonar-scanner, with no arbitrary goals or Token arguments')
   }
+  if (source === 'ide-local' && sonar.scan_command) throw new Error('ide-local review does not run scan_command')
   if (sonar.include_paths !== undefined && !validAuditIncludePaths(sonar.include_paths)) {
     throw new Error('sonar.include_paths must contain safe project-relative paths')
   }
@@ -1144,13 +1156,26 @@ async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise
     assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
     const root = state.root ?? cwd
     const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
-    let content: string | undefined
+    let content: Uint8Array | undefined
+    let executable: boolean | null = null
     try {
-      content = await (fs as unknown as { readText(target: unknown): Promise<string> }).readText(target)
+      const info = await fs.lstat(path, root === undefined ? undefined : { cwd: root })
+      if (info !== undefined) {
+        if (info.type !== undefined && info.type !== 'file') throw new Error(`task scope contains a non-regular file: ${path}`)
+        executable = false
+        if (process.platform !== 'win32') {
+          try { executable = (lstatSync(resolve(root ?? '', path)).mode & 0o111) !== 0 }
+          catch (error) { if ((error as { code?: string }).code !== 'ENOENT') throw error }
+        }
+        const reader = fs as unknown as { readBytes?: (target: unknown, signal: AbortSignal | undefined, maxBytes: number) => Promise<Uint8Array>;
+          readText: (target: unknown) => Promise<string> }
+        content = reader.readBytes ? await reader.readBytes(target, undefined, 100 * 1024 * 1024)
+          : Buffer.from(await reader.readText(target), 'utf8')
+      }
     } catch (error) {
       if (!['ENOENT', 'FS_NOT_FOUND'].includes((error as { code?: string }).code ?? '')) throw error
     }
-    entries.push([path, content === undefined ? null : hashText(content)])
+    entries.push([path, content === undefined ? null : hashBytes(content), executable])
   }
   return hashText(JSON.stringify(entries))
 }
@@ -1159,6 +1184,7 @@ async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string): Promise
 async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<string[]> {
   const blockers: string[] = []
   const current = await scopeFingerprint(fs, state, cwd)
+  blockers.push(...verificationEvidenceBlockers(state, workflow, current))
   // Staleness is judged on the RECORDED verification, not only on a passing one.
   // Gating this on `passed` meant a re-verification that FAILED removed its own
   // receipt from consideration, so the failure produced no blocker at all —
@@ -1166,7 +1192,7 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   // exists but no longer matches the current tree, or a verification that is not
   // passing while the flow requires it, both belong here.
   const receipt = state.verification.receipt
-  if (receipt !== undefined && receipt.scope_hash !== current) {
+  if (receipt !== undefined && !state.verification.passed && receipt.scope_hash !== current) {
     blockers.push('verification is stale after file/scope changes; rerun verify with a real command')
   } else if (verificationBlockers(state, workflow).length > 0) {
     // Only where the flow actually holds a verification requirement: a task that
@@ -1176,7 +1202,9 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
-      if (!needsSkillReceipt(name)) continue
+      const binding = (workflow.stage_bindings?.[stage]?.skills ?? []).find(entry =>
+        name === entry.skill.name || name === `${entry.skill.source}:${entry.skill.name}`)
+      if (!binding || !needsSkillReceipt(name, binding.evidence)) continue
       if (result.receipt?.scope_hash !== current) blockers.push(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
     }
   }
@@ -1190,24 +1218,9 @@ async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowC
 
 async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<string[]> {
   if (state.sonar_policy === undefined || !['代码审核', '完成'].includes(state.stage)) return []
-  if (state.sonar_audit === undefined) return ['SonarQube audit is enabled but has not been run; call sonar_check in code review']
   const current = await scopeFingerprint(fs, state, cwd)
-  const problems: string[] = []
-  if (state.sonar_audit.scope_hash !== current) problems.push('SonarQube audit is stale after file changes; rerun the scan and sonar_check')
   const commit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
-  if (state.sonar_policy.source !== 'ide-local' && (!commit || state.sonar_audit.commit_hash !== commit)) {
-    problems.push('SonarQube audit does not match the task\'s latest recorded commit')
-  }
-  if (state.sonar_policy.source === 'ide-local') {
-    if (localReviewGate(state.sonar_audit) !== 'OK') problems.push('本地规则审核尚有未解决问题或未覆盖文件')
-    const unresolved = unresolvedBlockingFindings(state.sonar_audit)
-    if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`)
-  } else {
-    if (state.sonar_audit.gate !== 'OK') problems.push(`SonarQube Quality Gate is ${state.sonar_audit.gate}`)
-    if (state.sonar_audit.blocking.length) problems.push(`${state.sonar_audit.blocking.length} medium/high SonarQube new-code findings remain`)
-  }
-  if (state.sonar_audit.uncovered_files?.length) problems.push(`本地规则审核未覆盖 ${state.sonar_audit.uncovered_files.length} 个新增代码文件`)
-  return problems
+  return sonarCommitBlockers(state.sonar_policy, state.sonar_audit, current, commit)
 }
 
 /** Explicit item headings in a task plan, for checking plan/ledger consistency. */
@@ -1505,6 +1518,9 @@ export function registerDevTask(ctx: Context): void {
         const roots = await readText(fs, join(hooksRel, 'dsh-task-roots.json'), repoRoot)
         if (hashText(installed) === hashText(HOOK_TEMPLATE)
           && (workspaceRel === '.' || (roots !== undefined && (JSON.parse(roots) as { roots?: string[] }).roots?.includes(workspaceRel)))) {
+          if (process.platform !== 'win32' && (statSync(resolve(repoRoot, hooksRel, 'commit-msg')).mode & 0o111) === 0) {
+            throw new Error('hook integrity FAILED — commit-msg 缺少执行权限；重新运行 install_hook')
+          }
           return 'hook integrity OK — installed commit-msg matches the bundled gate and this workspace is registered'
         }
         throw new Error('hook integrity FAILED — hook differs from the bundle or this workspace is not registered; run install_hook')
@@ -2276,9 +2292,14 @@ export function registerDevTask(ctx: Context): void {
           const verifyRoot = state.root ?? cwd
           const command = explicit ? a.command!.trim() : await resolveVerifyCommand(fs, verifyRoot)
           if (command !== undefined) {
+            const problem = validationCommandProblem(command)
+            if (problem) throw new Error(problem)
+            const scopeBefore = await scopeFingerprint(fs, state, cwd)
             approvedWriteMode = await resolveWriteMode(ctx, { ...a, command }, exec)
             const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
-            receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
+            receipt.scope_hash = scopeBefore
+            const scopeAfter = await scopeFingerprint(fs, state, cwd)
+            if (scopeBefore !== scopeAfter) receipt.scope_changed_during_run = true
             if (receipt.root !== undefined && receipt.root !== verifyRoot) {
               throw new Error(`verification receipt root mismatch: ${receipt.root} vs task root ${String(verifyRoot)}`)
             }
@@ -2286,7 +2307,7 @@ export function registerDevTask(ctx: Context): void {
             receipt.test_summary = testSummary
             state.verification = {
               passed: receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted && !receipt.sandbox?.denied
-                && !receipt.sandbox?.runnerFailed && (testSummary.count ?? 0) > 0,
+                && !receipt.sandbox?.runnerFailed && scopeBefore === scopeAfter && (testSummary.count ?? 0) > 0,
               evidence: a.evidence ?? [],
               receipt,
             }
@@ -2333,9 +2354,15 @@ export function registerDevTask(ctx: Context): void {
             throw new Error(`${entry.evidence} skill evidence is recorded by its node operation; skill_result is only for command or manual evidence`)
           }
           if (!a.command?.trim() || !a.evidence?.length || a.evidence.some(value => !value.trim())) throw new Error('skill_result requires a real validation command and non-empty evidence describing executed scenarios and results')
+          const commandProblem = validationCommandProblem(a.command)
+          if (commandProblem) throw new Error(commandProblem)
+          const scopeBefore = await scopeFingerprint(fs, state, cwd)
           approvedWriteMode = await resolveWriteMode(ctx, a, exec)
           const receipt = await runVerificationCommand(ctx, a.command, state.root ?? cwd, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
-          receipt.scope_hash = await scopeFingerprint(fs, state, cwd)
+          receipt.scope_hash = scopeBefore
+          if (await scopeFingerprint(fs, state, cwd) !== scopeBefore) {
+            throw new Error('task files changed while skill_result command ran; rerun validation on the current files')
+          }
           state.skill_results ??= {}
           state.skill_results[stage] ??= {}
           state.skill_results[stage]![a.skill_name!] = { session_id: session?.id ?? '', load_call_id: loadCall, evidence: a.evidence, receipt }

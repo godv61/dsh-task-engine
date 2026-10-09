@@ -19,6 +19,11 @@ export function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex')
 }
 
+/** Raw-byte digest for source evidence, including binary files. */
+export function hashBytes(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
 /**
  * SHA-256 of a workflow config's canonical JSON, the frozen-snapshot integrity
  * stamp. The same JSON object re-serializes byte-identically, so a task record

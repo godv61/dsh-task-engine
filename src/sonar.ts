@@ -76,9 +76,12 @@ type Json = Record<string, unknown>
 /** A project file must not turn a credential-bearing scanner invocation into an arbitrary shell command. */
 export function validLocalScanCommand(command: string): boolean {
   const value = command.trim()
-  if (!value || /[^A-Za-z0-9_ .:\\/='",-]/u.test(value) || /\r|\n|sonar\.(?:token|login|password)|SONAR_TOKEN/iu.test(value)) return false
-  const executable = value.split(/\s+/u)[0]!
-  return /(?:^|[\\/])(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd|sonar-scanner|sonar-scanner\.bat|sonar-scanner\.cmd)$/iu.test(executable)
+  if (!value || /[^A-Za-z0-9_ .:\\/=\-]/u.test(value) || /\r|\n/u.test(value)) return false
+  const [executable, ...args] = value.split(/\s+/u)
+  if (/(?:^|[\\/])sonar-scanner(?:\.bat|\.cmd)?$/iu.test(executable!)) return args.length === 0
+  if (!/(?:^|[\\/])(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)$/iu.test(executable!)) return false
+  return args[0] === 'org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar'
+    && args.slice(1).every(arg => arg === '-DskipTests' || arg === '-Dmaven.test.skip=true')
 }
 
 function object(value: unknown): Json {
@@ -129,6 +132,27 @@ export function unresolvedBlockingFindings(audit: SonarAudit): SonarFinding[] {
 
 export function localReviewGate(audit: SonarAudit): 'OK' | 'ERROR' {
   return unresolvedBlockingFindings(audit).length === 0 && !(audit.uncovered_files?.length) ? 'OK' : 'ERROR'
+}
+
+/** One review decision for both dev_task and the installed Git hook. */
+export function sonarCommitBlockers(policy: SonarPolicy, audit: SonarAudit | undefined,
+  currentScopeHash: string, latestCommitHash?: string): string[] {
+  if (!audit) return ['SonarQube audit is enabled but has not been run; call sonar_check in code review']
+  const problems: string[] = []
+  if (audit.scope_hash !== currentScopeHash) problems.push('SonarQube audit is stale after file changes; rerun the scan and sonar_check')
+  if (policy.source === 'ide-local') {
+    if (localReviewGate(audit) !== 'OK') problems.push('本地规则审核尚有未解决问题或未覆盖文件')
+    const unresolved = unresolvedBlockingFindings(audit)
+    if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`)
+  } else {
+    if (!latestCommitHash || audit.commit_hash !== latestCommitHash) {
+      problems.push('SonarQube audit does not match the task\'s latest recorded commit')
+    }
+    if (audit.gate !== 'OK') problems.push(`SonarQube Quality Gate is ${audit.gate}`)
+    if (audit.blocking.length) problems.push(`${audit.blocking.length} medium/high SonarQube new-code findings remain`)
+  }
+  if (audit.uncovered_files?.length) problems.push(`本地规则审核未覆盖 ${audit.uncovered_files.length} 个新增代码文件`)
+  return problems
 }
 
 /** Resolve an exact CI Compute Engine task to its analysis and Quality Gate. */
