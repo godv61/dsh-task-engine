@@ -15,7 +15,7 @@ import { cp, mkdir, readFile, writeFile, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { applyPersona, shippedStandard } from '../lib/seed-preset.js'
+import { applyPersona, PRESET_META, shippedStandard } from '../lib/seed-preset.js'
 
 const AGENT_ROW = "\n- id: task-engine-agent\n  name: '@godv61/dsh-task-engine/agent'\n"
 
@@ -60,12 +60,7 @@ async function main() {
   const compPath = join(target, 'agent.cordis.yml')
   await writeFile(compPath, comp, 'utf8')
 
-  await writeFile(
-    join(target, 'preset.yml'),
-    'name: 工程化开发引擎\n'
-    + 'description: 按需求复杂度选择任务级流程，使用元技能、项目规则与 dev_task 门禁推进开发。\n',
-    'utf8',
-  )
+  await writeFile(join(target, 'preset.yml'), PRESET_META, 'utf8')
 
   console.log('完成。已创建预设 "eng"：persona 已替换为工程人设，并追加了 @godv61/dsh-task-engine/agent 行。')
   console.log('新建会话时选择「工程化开发引擎」即可激活流程。')

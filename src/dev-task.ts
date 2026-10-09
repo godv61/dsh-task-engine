@@ -609,9 +609,8 @@ function readAbsRule(file: string): string | undefined {
 /**
  * A rule resolved to its body, with the layer it came from.
  *
- * The source matters because bundled rules deliberately win over project and user
- * files of the same name: without recording where a body came from, a reader
- * cannot tell which copy is in force.
+ * The source records the exact project, user, or bundled rule selected for this
+ * task. A same-named rule from another source does not replace that binding.
  */
 interface ResolvedRule {
   name: string

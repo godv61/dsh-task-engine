@@ -50,9 +50,9 @@ const AGENT_ROW_ID = 'task-engine-agent'
 /** The agent-plane row that activates `dev_task` and the shipped skills. */
 const AGENT_ROW = "\n- id: task-engine-agent\n  name: '@godv61/dsh-task-engine/agent'\n"
 /** Metadata written beside the composition. */
-const PRESET_META =
+export const PRESET_META =
   'name: 工程化开发引擎\n'
-  + 'description: 通过 dev_task 工具硬性持有需求评审→设计→开发→交付→代码审核的状态机，按项目 .dsh/eng.json 配置流转与提交门禁。\n'
+  + 'description: 按需求复杂度选择任务级流程，使用元技能、项目规则与 dev_task 门禁推进开发。\n'
 
 /** The harness home, honouring an explicit override first. */
 function dshHome(): string {
