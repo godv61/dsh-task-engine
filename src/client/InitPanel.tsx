@@ -14,7 +14,7 @@ import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { InitDraft, InitView, TaskEngineRemote } from './TaskEngineSection.tsx'
 import type { CodeGraphState, ProjectInitPreview, ProjectInitPromptView } from './TaskEngineSection.tsx'
-import { missingProjectMetaSkills, projectInitSteps, projectMetaSkillTargets, validateInitResources, type InitResource } from '../project-init.ts'
+import { projectInitSteps, projectMetaSkillTargets, validateInitResources, type InitResource } from '../project-init.ts'
 import { META_STAGES } from '../adaptive.ts'
 
 /** Stable localized chrome for the Markdown body. */
@@ -28,7 +28,7 @@ const card: CSSProperties = {
   border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '12px 14px',
 }
 
-interface InitProgress { fingerprint: string; index: number; resources: InitResource[] }
+interface InitProgress { fingerprint: string; index: number; resources: InitResource[]; schema_version?: 2 }
 
 function progressKey(workspace: string): string { return `dsh-task-engine:init-draft:${workspace}` }
 function progressFingerprint(plan: ProjectInitPromptView, system: string, user: string, step: string): string {
@@ -37,17 +37,28 @@ function progressFingerprint(plan: ProjectInitPromptView, system: string, user: 
   for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619)
   return `${text.length}:${hash >>> 0}`
 }
-function readProgress(workspace: string, fingerprint: string, stepCount: number): InitProgress | null {
+function readProgress(workspace: string, fingerprint: string,
+  steps: readonly { name: string; required: boolean }[]): InitProgress | null {
   try {
     const raw = window.localStorage.getItem(progressKey(workspace))
     if (!raw) return null
     const value = JSON.parse(raw) as InitProgress
-    if (value.fingerprint !== fingerprint || !Number.isInteger(value.index) || value.index < 0 || value.index > stepCount) return null
-    return { ...value, resources: validateInitResources(value.resources) }
+    if (!Number.isInteger(value.index) || value.index < 0 || value.index > steps.length) return null
+    const resources = validateInitResources(value.resources)
+    if (value.fingerprint === fingerprint) return { ...value, resources }
+    // Older browser drafts used one large repository prompt. Migrate only when
+    // every generated resource and required completed step still matches this plan.
+    if (value.schema_version !== undefined) return null
+    const completed = steps.slice(0, value.index)
+    if (resources.some(resource => !completed.some(step => step.name === resource.name))
+      || completed.some(step => step.required && !resources.some(resource => resource.name === step.name))) return null
+    const migrated = { fingerprint, index: value.index, resources, schema_version: 2 as const }
+    writeProgress(workspace, migrated)
+    return migrated
   } catch { return null }
 }
 function writeProgress(workspace: string, progress: InitProgress): void {
-  try { window.localStorage.setItem(progressKey(workspace), JSON.stringify(progress)) } catch { /* optional browser checkpoint */ }
+  try { window.localStorage.setItem(progressKey(workspace), JSON.stringify({ ...progress, schema_version: 2 })) } catch { /* optional browser checkpoint */ }
 }
 
 export function InitPanel({ workspace, remote }: {
@@ -73,6 +84,8 @@ export function InitPanel({ workspace, remote }: {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userPrompt, setUserPrompt] = useState('')
   const [stepPrompt, setStepPrompt] = useState('')
+  const [stepEvidence, setStepEvidence] = useState<{ target: string; prompt: string; paths: string[] } | null>(null)
+  const [stepEvidenceMessage, setStepEvidenceMessage] = useState('')
   const [promptDirty, setPromptDirty] = useState(false)
   const [graphState, setGraphState] = useState<CodeGraphState | null>(null)
   const [graphBusy, setGraphBusy] = useState(false)
@@ -108,6 +121,7 @@ export function InitPanel({ workspace, remote }: {
     setSystemPrompt('')
     setUserPrompt('')
     setStepPrompt('')
+    setStepEvidence(null)
     setPromptDirty(false)
     setPlanBusy(true)
     let active = true
@@ -119,8 +133,9 @@ export function InitPanel({ workspace, remote }: {
       setSystemPrompt(result.value.system_prompt)
       setUserPrompt(result.value.user_prompt)
       setStepPrompt(result.value.step_prompt)
+      setStepEvidence(null)
       const steps = projectInitSteps(result.value.inventory, new Set(result.value.existing.filter(item => item.exists).map(item => item.name)))
-      const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps.length)
+      const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps)
       if (saved) {
         setProjectResources(saved.resources)
         setProjectStepIndex(saved.index)
@@ -146,10 +161,11 @@ export function InitPanel({ workspace, remote }: {
       setSystemPrompt(result.value.system_prompt)
       setUserPrompt(result.value.user_prompt)
       setStepPrompt(result.value.step_prompt)
+      setStepEvidence(null)
       setPromptDirty(false)
       setProjectDraft(null)
       const steps = projectInitSteps(result.value.inventory, new Set(result.value.existing.filter(item => item.exists).map(item => item.name)))
-      const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps.length)
+      const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps)
       setProjectResources(saved?.resources ?? [])
       setProjectStepIndex(saved?.index ?? 0)
       setProjectInitMsg(saved ? `扫描完成，已恢复 ${saved.index}/${steps.length} 步。` : '')
@@ -169,11 +185,31 @@ export function InitPanel({ workspace, remote }: {
       const result = await remote.prepareCodeGraph({ path: workspace, install: installing })
       if (!result.ok) throw new Error(describeError(result.error))
       setGraphState(result.value)
-      setGraphMessage('项目索引已就绪。请点击“重新扫描仓库输入”，将图谱查询结果加入本次初始化证据。')
+      setStepEvidence(null)
+      setGraphMessage('项目索引已就绪。项目地图步骤将读取最新的 CodeGraph 证据；可重新扫描仓库输入以更新资源清单。')
     } catch (error) {
       setGraphMessage(`CodeGraph 准备失败：${error instanceof Error ? error.message : String(error)}`)
     } finally { setGraphBusy(false) }
   }
+
+  useEffect(() => {
+    if (projectBusy || projectPlan === null) return
+    const steps = projectInitSteps(projectPlan.inventory,
+      new Set(projectPlan.existing.filter(item => item.exists).map(item => item.name)))
+    const target = steps[projectStepIndex]?.name
+    if (!target || stepEvidence?.target === target) return
+    let active = true
+    setStepEvidence(null)
+    setStepEvidenceMessage('正在读取当前资源的专属证据…')
+    void remote.inspectProjectInitStep({ path: workspace, target }).then(result => {
+      if (!active) return
+      if (result.ok) {
+        setStepEvidence({ target, prompt: result.value.evidence_prompt, paths: result.value.evidence_paths })
+        setStepEvidenceMessage('')
+      } else setStepEvidenceMessage(`读取 ${target} 证据失败：${describeError(result.error)}`)
+    }, error => { if (active) setStepEvidenceMessage(`读取 ${target} 证据失败：${error instanceof Error ? error.message : String(error)}`) })
+    return () => { active = false }
+  }, [workspace, remote, projectPlan, projectStepIndex, projectBusy, stepEvidence?.target])
 
   const generateProject = async (oneStep: boolean): Promise<void> => {
     if (projectPlan === null) return
@@ -183,7 +219,7 @@ export function InitPanel({ workspace, remote }: {
     try {
       const steps = projectInitSteps(projectPlan.inventory, existingSkillNames)
       const fingerprint = progressFingerprint(projectPlan, systemPrompt, userPrompt, stepPrompt)
-      const saved = readProgress(workspace, fingerprint, steps.length)
+      const saved = readProgress(workspace, fingerprint, steps)
       let index = saved?.index ?? 0
       const stopAfter = oneStep ? index + 1 : steps.length
       let resources = saved?.resources ?? []
@@ -192,22 +228,37 @@ export function InitPanel({ workspace, remote }: {
       for (; index < steps.length && index < stopAfter; index++) {
         const step = steps[index]!
         setActiveStep(`${index + 1}/${steps.length} · ${step.name}`)
-        const result = await remote.generateProjectInitStep({ path: workspace, target: step.name,
-          prior_resources: resources, system_prompt: systemPrompt, user_prompt: userPrompt, step_prompt: stepPrompt })
-        if (!result.ok) throw new Error(describeError(result.error))
+        let evidence = stepEvidence?.target === step.name ? stepEvidence : null
+        if (evidence === null) {
+          const inspected = await remote.inspectProjectInitStep({ path: workspace, target: step.name })
+          if (!inspected.ok) throw new Error(`读取 ${step.name} 专属证据失败：${describeError(inspected.error)}`)
+          evidence = { target: step.name, prompt: inspected.value.evidence_prompt, paths: inspected.value.evidence_paths }
+        }
+        setStepEvidence(evidence)
+        let result: Awaited<ReturnType<TaskEngineRemote['generateProjectInitStep']>> | undefined
+        let failure = ''
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            result = await remote.generateProjectInitStep({ path: workspace, target: step.name,
+              prior_resources: resources, system_prompt: systemPrompt, user_prompt: userPrompt,
+              step_prompt: stepPrompt, evidence_prompt: evidence.prompt })
+            if (result.ok) break
+            failure = describeError(result.error)
+          } catch (error) { failure = error instanceof Error ? error.message : String(error) }
+          if (attempt < 2) {
+            setActiveStep(`${index + 1}/${steps.length} · ${step.name} · 自动重试`)
+            await new Promise(resolve => setTimeout(resolve, 800))
+          }
+        }
+        if (!result?.ok) throw new Error(`${step.name} 连续两次失败：${failure}`)
         if (result.value.resource) {
           const resource = result.value.resource
           resources = [...resources, resource]
-          if (resource.kind === 'rule') {
-            const skillName = resource.name.endsWith('-backend-conventions')
-              ? `${projectPlan.inventory.project_name}-code-backend` : `${projectPlan.inventory.project_name}-code-frontend`
-            resources = resources.map(item => item.kind === 'skill' && item.name === skillName
-              ? { ...item, rules: [...new Set([...(item.rules ?? []), resource.name])] } : item)
-          }
         }
         writeProgress(workspace, { fingerprint, index: index + 1, resources })
         setProjectResources(resources)
         setProjectStepIndex(index + 1)
+        setStepEvidence(null)
       }
       if (index < steps.length) {
         setProjectInitMsg(`已完成 ${index}/${steps.length} 步。可先审阅并编辑草案，再生成下一项。`)
@@ -219,7 +270,7 @@ export function InitPanel({ workspace, remote }: {
       setProjectDraft(preview.value)
       setProjectInitMsg('所有步骤已生成并校验。请逐项审阅内容与挂载关系，确认后再写入。')
     } catch (error) {
-      setProjectInitMsg(`当前步骤失败：${error instanceof Error ? error.message : String(error)}。已完成的草案已保留，可从此步继续。`)
+      setProjectInitMsg(`${oneStep ? '生成暂停' : '连续生成暂停'}：${error instanceof Error ? error.message : String(error)}。已完成的草案已保留；检查当前步骤证据后，可继续连续生成。`)
     } finally { setProjectBusy(false); setActiveStep('') }
   }
 
@@ -324,19 +375,17 @@ export function InitPanel({ workspace, remote }: {
   const proposedSkills = projectResources.filter(item => item.kind === 'skill')
   const proposedRules = projectResources.filter(item => item.kind === 'rule')
   const existingSkillNames = new Set(projectPlan?.existing.filter(item => item.exists).map(item => item.name) ?? [])
-  const missingStageSkills = projectPlan === null ? []
-    : missingProjectMetaSkills(projectPlan.inventory.project_name, projectResources, existingSkillNames)
   const initSteps = projectPlan === null ? [] : projectInitSteps(projectPlan.inventory, existingSkillNames)
 
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
-      createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill / Rule 初始化'),
+      createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill 初始化（可选）'),
       createElement('p', { style: styles.muted },
-        '先生成项目地图，再依次生成技术栈、六阶段项目 Skill 和有证据的 Rule。每步草案保存在当前浏览器，可从失败处继续；全部检查通过后才写入项目配置。已有同名资源不会覆盖。'),
+        '内置元技能已具备六阶段基础能力，不生成任何项目 Skill 或 Rule 也可运行。初始化只建议有证据且可跨需求复用的项目知识；项目地图、技术栈、业务能力和领域编码 Skill 都可跳过。Rule 应依据团队明确规范或真实审核案例单独建立。连续生成遇到失败会自动重试，草案可从失败处继续。'),
       createElement('p', { style: styles.muted },
         '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
       createElement('p', { style: styles.muted },
-        '初始化以目录、构建清单和有限源码为基础；CodeGraph 可选，用于补充索引目录与可信符号线索。具体调用关系仍须核对源码；OpenSpec 留给具体需求。'),
+        '初始化以目录、构建清单和有限源码为基础；CodeGraph 可选，用于补充索引目录与可信符号线索。具体调用关系仍须核对源码；不需要安装 OpenSpec。'),
       createElement('div', { style: card },
         createElement('strong', null, 'CodeGraph 项目索引（可选）'),
         createElement('p', { style: styles.muted }, graphState?.summary ?? '正在检查 CodeGraph 是否可用…'),
@@ -354,30 +403,44 @@ export function InitPanel({ workspace, remote }: {
         planMessage ? createElement('p', { role: 'status', style: styles.status }, planMessage) : null,
         projectPlan ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
-            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。六个元技能的项目 Skill 必须齐备；其它 Skill 是可选候选，已有文件会复用。Rule 只在找到可验证的团队约束时提出。`),
-          ...projectMetaSkillTargets(projectPlan.inventory.project_name).map(({ meta, name }) => createElement('div',
+            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。下列都是可选的项目 Skill 候选；没有可靠证据时可以不生成。已有阶段 Skill 会保留并挂载。`),
+          ...projectMetaSkillTargets(projectPlan.inventory.project_name).filter(({ name }) => existingSkillNames.has(name)).map(({ meta, name }) => createElement('div',
             { key: `stage-${meta}`, style: { ...styles.muted, marginBottom: 4 } },
-            `${META_STAGES[meta]}：${name} · ${existingSkillNames.has(name) ? '已有文件，确认时自动挂载' : '本次必须生成并挂载'}`)),
+            `${META_STAGES[meta]}：已有 ${name}，确认时继续挂载`)),
           ...[...plannedSkills, ...plannedRules].map(item => createElement('div', { key: `${item.kind}-${item.name}`, style: { ...styles.muted, marginBottom: 4 } },
             `${item.kind === 'skill' ? 'Skill' : 'Rule'} · ${item.name} · ${projectPlan.existing.find(existing => existing.name === item.name)?.exists ? '已存在' : '待生成候选'} · 关联阶段：${item.meta_skills.map(meta => META_STAGES[meta as keyof typeof META_STAGES] ?? meta).join('、') || '由生成结果决定'}。${item.why}`)),
-          plannedRules.length === 0 ? createElement('p', { style: styles.muted }, '规则候选不预设数量；模型必须依据已读取的源码、测试或团队规范提出 Rule。') : null,
-          createElement('details', { open: true },
-            createElement('summary', null, '本次交给模型的提示词（可编辑）'),
-            createElement('p', { style: styles.muted }, '系统提示词规定输出格式与证据边界；仓库提示词包含扫描到的清单和有限源码摘录。修改提示词后会从第一步重新生成；可每生成一项就审阅，也可连续生成剩余项。生成过程不会写入项目配置。'),
+          plannedRules.length === 0 ? createElement('p', { style: styles.muted }, '初始化不凭语言或依赖自动生成 Rule。请在“规则”页建立有明确来源的项目约束，再到“项目流程与审核”中挂载到相应 Skill。') : null,
+          createElement('details', null,
+            createElement('summary', null, '通用规则与单项生成模板（可编辑）'),
+            createElement('p', { style: styles.muted }, '这里仅保留适用于全部资源的约束和简短项目概况。每个 Skill / Rule 的源码证据在下方按步骤单独展示。修改通用提示词后会从第一步重新生成。'),
             createElement('label', null, '系统提示词', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: systemPrompt,
               onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setSystemPrompt(event.target.value); setPromptDirty(true) } })),
-            createElement('label', null, '仓库提示词与证据', createElement('textarea', { style: { ...styles.textarea, minHeight: 230 }, value: userPrompt,
+            createElement('label', null, '通用项目概况与要求', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: userPrompt,
               onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setUserPrompt(event.target.value); setPromptDirty(true) } })),
             createElement('label', null, '单项生成模板（可编辑；保留 {{target}}、{{previous}}、{{meta_skills}}、{{limit}} 占位符）',
               createElement('textarea', { style: { ...styles.textarea, minHeight: 145 }, value: stepPrompt,
                 onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setStepPrompt(event.target.value); setPromptDirty(true) } })),
           ),
         ) : null),
+      initSteps[projectStepIndex] ? createElement('div', { style: card },
+        createElement('strong', null, `当前步骤专属证据 · ${initSteps[projectStepIndex]!.name}`),
+        createElement('p', { style: styles.muted },
+          `本步读取的文件：${stepEvidence?.target === initSteps[projectStepIndex]!.name
+            ? (stepEvidence.paths.join('、') || '无代表性文件；请核对待确认项') : '加载中'}。项目地图步骤还会读取 CodeGraph 索引。`),
+        stepEvidence?.target === initSteps[projectStepIndex]!.name
+          ? createElement('details', null,
+            createElement('summary', null, '查看或修改本步完整提示词'),
+            createElement('p', { style: styles.muted }, '下方仅用于当前资源。修改后生成时会使用修改的内容；切换到下一项时自动读取下一项的证据。'),
+            createElement('textarea', { style: { ...styles.textarea, minHeight: 180 }, value: stepEvidence.prompt,
+              disabled: projectBusy,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setStepEvidence({ ...stepEvidence, prompt: event.target.value }) })) : null,
+        stepEvidenceMessage ? createElement('p', { role: 'status', style: styles.status }, stepEvidenceMessage) : null)
+        : null,
       createElement('div', { style: styles.row },
         createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || planBusy || projectPlan === null || projectStepIndex >= initSteps.length || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
           onClick: () => { void generateProject(true) } }, projectBusy ? `生成 ${activeStep}…` : '生成下一项'),
         createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy || projectPlan === null || projectStepIndex >= initSteps.length || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
-          onClick: () => { void generateProject(false) } }, '连续生成剩余项'),
+          onClick: () => { void generateProject(false) } }, projectStepIndex > 0 ? '继续连续生成' : '连续生成全部'),
         projectStepIndex > 0 ? createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy,
           onClick: () => {
             if (!window.confirm('清除当前浏览器保存的初始化草案并从第一步重来？')) return
@@ -392,16 +455,14 @@ export function InitPanel({ workspace, remote }: {
       projectDraft !== null || projectResources.length > 0
         ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
-            `项目：${workspace}。提案包含 ${proposedSkills.length} 个 Skill、${proposedRules.length} 个 Rule；项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。`),
+            `项目：${workspace}。提案包含 ${proposedSkills.length} 个 Skill、${proposedRules.length} 个 Rule。${proposedSkills.some(item => item.name === `${projectPlan?.inventory.project_name}-project-map`) ? `项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。` : '项目地图未生成；内置元技能仍可运行。'}`),
           createElement('p', { style: styles.muted },
             Object.entries(META_STAGES).map(([id, title]) => {
               const proposed = proposedSkills.filter(item => item.meta_skills?.includes(id as keyof typeof META_STAGES)).map(item => item.name)
               const existing = projectPlan === null ? [] : projectMetaSkillTargets(projectPlan.inventory.project_name)
                 .filter(item => item.meta === id && existingSkillNames.has(item.name)).map(item => item.name)
-              return `${title}：${[...existing, ...proposed].join('、') || '缺少专属项目 Skill'}`
+              return `${title}：${[...existing, ...proposed].join('、') || '使用内置元技能'}`
             }).join('；')),
-          missingStageSkills.length ? createElement('p', { role: 'status', style: styles.status },
-            `还缺少 ${missingStageSkills.length} 个元技能专属 Skill 或挂载：${missingStageSkills.map(item => META_STAGES[item.meta]).join('、')}。请修改提案后点击“检查修改”。`) : null,
           ...projectResources.map((resource, index) => createElement('div', { key: `${resource.kind}-${resource.name}`, style: card },
             createElement('div', { style: styles.row },
               createElement('strong', null, `${resource.kind === 'skill' ? 'Skill' : 'Rule'} · ${resource.name}`),

@@ -305,12 +305,17 @@ const projectInitPromptViewSchema = z.object({
   existing: z.array(z.object({ name: z.string(), exists: z.boolean() })),
   system_prompt: z.string(), user_prompt: z.string(), step_prompt: z.string(),
 })
+const projectInitStepPromptViewSchema = z.object({
+  target: z.string(), evidence_prompt: z.string(), evidence_paths: z.array(z.string()),
+})
 const projectInitGenerateRequestSchema = initGenerateRequestSchema.extend({
   system_prompt: z.string().optional(), user_prompt: z.string().optional(),
 })
 const projectInitStepRequestSchema = projectInitGenerateRequestSchema.extend({
   target: z.string(), prior_resources: z.array(projectInitResourceSchema), step_prompt: z.string().optional(),
+  evidence_prompt: z.string().optional(),
 })
+const projectInitStepInspectRequestSchema = initGenerateRequestSchema.extend({ target: z.string() })
 const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string() })
 const codeGraphStateSchema = z.object({ installed: z.boolean(), indexed: z.boolean(), summary: z.string() })
 const codeGraphPrepareRequestSchema = z.object({ path: z.string(), install: z.boolean() })
@@ -735,6 +740,15 @@ export const TYPERT_REMOTE = {
         codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPromptView`,
         create: () => projectInitPromptViewSchema, schema: projectInitPromptViewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/inspectProjectInitStep`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'inspectProjectInitStep', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitStepInspectRequest`,
+          create: () => projectInitStepInspectRequestSchema, schema: projectInitStepInspectRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitStepPromptView`,
+        create: () => projectInitStepPromptViewSchema, schema: projectInitStepPromptViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/readCodeGraphStatus`, service: 'taskEngineController', namespace: 'task-engine',

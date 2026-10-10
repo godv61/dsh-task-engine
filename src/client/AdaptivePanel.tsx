@@ -216,7 +216,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     createElement('p', { style: label },
       '在这里设置本项目各开发阶段使用的 Skill，以及可选的 SonarQube 审核。创建任务时，DSH 按需求选择低／中／高／超高流程；保存后的设置只用于新任务。'),
     createElement('div', { style: row },
-      createElement(Button, { variant: 'outline', size: 'sm', onClick: onOpenInit }, '初始化项目 Skill / Rule'),
+      createElement(Button, { variant: 'outline', size: 'sm', onClick: onOpenInit }, '生成可选项目 Skill'),
       createElement('span', { style: label }, '扫描项目后先预览，确认后写入。')),
     createElement('details', { style: card },
       createElement('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, '按需求选择流程 · 查看四档阶段'),

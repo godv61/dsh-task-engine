@@ -61,29 +61,17 @@ export function projectInitSteps(inventory: ProjectInventory, existing: Readonly
   const project = inventory.project_name
   const ordered = [
     `${project}-project-map`, `${project}-tech-stack`, `${project}-business-capabilities`,
-    ...projectMetaSkillTargets(project).map(item => item.name),
     `${project}-code-backend`, `${project}-code-frontend`,
-    `${project}-backend-conventions`, `${project}-frontend-conventions`,
   ]
   const order = new Map(ordered.map((name, index) => [name, index]))
   return inventory.suggestions.filter(item => !existing.has(item.name))
     .sort((a, b) => (order.get(a.name) ?? ordered.length) - (order.get(b.name) ?? ordered.length))
-    .map(item => ({ ...item, required: item.name === `${project}-project-map`
-      || projectMetaSkillTargets(project).some(stage => stage.name === item.name) }))
+    .map(item => ({ ...item, required: false }))
 }
 
-/** A dedicated project adapter for every meta-skill; shared project maps remain optional attachments. */
+/** Recognize older or user-created stage-specific Skills so initialization can keep their bindings. */
 export function projectMetaSkillTargets(projectName: string): { meta: MetaSkill; name: string }[] {
   return (Object.keys(META_STAGES) as MetaSkill[]).map(meta => ({ meta, name: `${projectName}-${meta}` }))
-}
-
-export function missingProjectMetaSkills(projectName: string, resources: InitResource[], existing: ReadonlySet<string>):
-  { meta: MetaSkill; name: string }[] {
-  return projectMetaSkillTargets(projectName).filter(({ meta, name }) => {
-    if (existing.has(name)) return false
-    const draft = resources.find(resource => resource.kind === 'skill' && resource.name === name)
-    return draft === undefined || !draft.meta_skills?.includes(meta)
-  })
 }
 
 /** Paths a repository-wide project map must account for before it is installed. */
@@ -172,19 +160,15 @@ export async function scanProject(probe: FileProbe, root: string): Promise<Proje
     manifests.push({ path, facts })
   }
   const suggestions: ProjectInventory['suggestions'] = [
-    ...projectMetaSkillTargets(project_name).map(({ meta, name }) => ({ name, kind: 'skill' as const,
-      meta_skills: [meta], why: `必需的${META_STAGES[meta]}项目 Skill；依据仓库证据描述本阶段在本项目的做法。证据不足时明确待确认项，不编造规范。` })),
-    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: '覆盖整个仓库的模块职责、依赖与通用入口；不能写成当前需求的总结。' },
-    { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development', 'test-validation'], why: '记录清单中可证实的技术版本和构建约束，供不同任务复用。' },
+    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'architecture-design', 'task-orchestration', 'code-development'], why: '可选的项目知识：覆盖整个仓库的模块职责、依赖与通用入口；不能写成当前需求的总结。' },
+    { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['architecture-design', 'code-development', 'test-validation'], why: '按构建清单记录可证实的技术版本、构建与测试约束；证据不足可不生成。' },
     { name: `${project_name}-business-capabilities`, kind: 'skill', meta_skills: ['requirements-analysis', 'architecture-design'], why: '可选业务能力图；仅在页面、接口、测试或文档足以证明业务功能时生成，并标注证据路径。' },
   ]
   if (hasJava) {
-    suggestions.push({ name: `${project_name}-code-backend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到 Java 构建清单；需再检查代表性后端代码。' })
-    suggestions.push({ name: `${project_name}-backend-conventions`, kind: 'rule', meta_skills: ['code-development'], why: '仅作为候选；源码、测试或既有团队规范能证明具体后端约束时才生成。' })
+    suggestions.push({ name: `${project_name}-code-backend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到 Java 构建清单；只有代表性源码证明项目特有的目录、接口或实现约定时才生成，不重复通用开发方法。' })
   }
   if (hasFrontend) {
-    suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到前端依赖；需再检查代表性组件和构建脚本。' })
-    suggestions.push({ name: `${project_name}-frontend-conventions`, kind: 'rule', meta_skills: ['code-development'], why: '仅作为候选；源码、测试或既有团队规范能证明具体前端约束时才生成。' })
+    suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到前端依赖；只有组件、路由或构建脚本证明项目特有实现方式时才生成，不重复通用开发方法。' })
   }
   return { project_name, root_entries, modules, manifests, suggestions,
     caution: 'This inventory identifies evidence, not coding rules. The project-map and optional business-capabilities Skill are reusable repository-wide context even when init_project is called during a feature task; keep that task\'s design and call-chain findings in task artifacts. Separate confirmed code facts, plausible inference and product questions. Review representative source, tests and existing governance files before proposing Rule content; legacy violations are not standards.' }
