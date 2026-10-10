@@ -134,12 +134,18 @@ export async function scanProject(probe: FileProbe, root: string): Promise<Proje
     manifests.push({ path, facts })
   }
   const suggestions: ProjectInventory['suggestions'] = [
-    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: 'Summarize the entire repository: top-level modules, responsibilities, dependencies, generic code entry points and navigation. Do not turn the map into a summary of the current feature request; keep feature-specific call chains in that task\'s artifacts or a separately named feature Skill.' },
-    { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development', 'test-validation'], why: 'Manifest versions and build constraints are reusable project facts.' },
-    { name: `${project_name}-business-capabilities`, kind: 'skill', meta_skills: ['requirements-analysis', 'architecture-design'], why: 'Optional reusable business capability map: group user-visible functions by business domain, link pages/APIs/services to each capability, cite source paths, and mark code facts, inferences and open product questions separately. Generate only when the repository offers sufficient business evidence; never infer a feature solely from a class or directory name.' },
+    { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: '覆盖整个仓库的模块职责、依赖与通用入口；不能写成当前需求的总结。' },
+    { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development', 'test-validation'], why: '记录清单中可证实的技术版本和构建约束，供不同任务复用。' },
+    { name: `${project_name}-business-capabilities`, kind: 'skill', meta_skills: ['requirements-analysis', 'architecture-design'], why: '可选业务能力图；仅在页面、接口、测试或文档足以证明业务功能时生成，并标注证据路径。' },
   ]
-  if (hasJava) suggestions.push({ name: `${project_name}-code-backend`, kind: 'skill', meta_skills: ['code-development'], why: 'Java build manifest found; inspect representative backend code before writing conventions.' })
-  if (hasFrontend) suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: 'Frontend dependency found; inspect components and build scripts before writing conventions.' })
+  if (hasJava) {
+    suggestions.push({ name: `${project_name}-code-backend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到 Java 构建清单；需再检查代表性后端代码。' })
+    suggestions.push({ name: `${project_name}-backend-conventions`, kind: 'rule', meta_skills: ['code-development'], why: '仅作为候选；源码、测试或既有团队规范能证明具体后端约束时才生成。' })
+  }
+  if (hasFrontend) {
+    suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到前端依赖；需再检查代表性组件和构建脚本。' })
+    suggestions.push({ name: `${project_name}-frontend-conventions`, kind: 'rule', meta_skills: ['code-development'], why: '仅作为候选；源码、测试或既有团队规范能证明具体前端约束时才生成。' })
+  }
   return { project_name, root_entries, modules, manifests, suggestions,
     caution: 'This inventory identifies evidence, not coding rules. The project-map and optional business-capabilities Skill are reusable repository-wide context even when init_project is called during a feature task; keep that task\'s design and call-chain findings in task artifacts. Separate confirmed code facts, plausible inference and product questions. Review representative source, tests and existing governance files before proposing Rule content; legacy violations are not standards.' }
 }

@@ -46,6 +46,25 @@ test('one review gets a credential-free Markdown report path and issue details',
   assert.equal(report.includes('token-secret'),false)
 })
 
+test('review report shows only profiles used by the analyzed files, including Vue style rules', () => {
+  const audit = { analysis_id: 'abc12345-0000', checked_at: '2026-10-03T10:11:12.000Z',
+    target: 'HEAD', gate: 'OK', findings: [], blocking: [],
+    scanned_files: ['src/Rule.java', 'src/mapper.xml', 'ui/Auth.vue'], uncovered_files: [],
+    profile_coverage: [
+      { language: 'JAVA', active_rules: 66, analyzer: 'SYNCED' },
+      { language: 'XML', active_rules: 25, analyzer: 'SYNCED' },
+      { language: 'JS', active_rules: 382, analyzer: 'SYNCED' },
+      { language: 'CSS', active_rules: 27, analyzer: 'SYNCED' },
+      { language: 'GO', active_rules: 22, analyzer: 'UNSUPPORTED' },
+    ] }
+  const report = renderSonarReport('QMS-1', { source: 'ide-local', project_key: 'project' }, audit)
+  assert.match(report, /本次涉及语言的项目规则与本地分析器/)
+  for (const language of ['JAVA', 'XML', 'JS', 'CSS']) assert.match(report, new RegExp(`- ${language}：`))
+  assert.doesNotMatch(report, /- GO：/)
+  assert.match(report, /规则来源为当前项目的 Quality Profile/)
+  assert.doesNotMatch(report, /不能据此宣称全部服务端规则已覆盖/)
+})
+
 test('unsupported files block only when the project has active rules for their language', () => {
   const paths = ['migration.sql', 'settings.json', 'script.py']
   const profiles = [

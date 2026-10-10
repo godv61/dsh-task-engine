@@ -82,7 +82,7 @@ const closeStyle: CSSProperties = {
 }
 const TABS = [
   { id: 'init', label: '项目初始化' },
-  { id: 'adaptive', label: '自适应流程' },
+  { id: 'adaptive', label: '项目流程与审核' },
   { id: 'tasks', label: '任务台账' },
   { id: 'skills', label: '技能' },
   { id: 'rules', label: '规则' },

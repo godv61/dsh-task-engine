@@ -13,8 +13,9 @@ import { Button, MarkdownText, StateDot } from '@deepseek-ai/dsh-client-ui-primi
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { InitDraft, InitView, TaskEngineRemote } from './TaskEngineSection.tsx'
-import type { ProjectInitPreview } from './TaskEngineSection.tsx'
+import type { ProjectInitPreview, ProjectInitPromptView } from './TaskEngineSection.tsx'
 import type { InitResource } from '../project-init.ts'
+import { META_STAGES } from '../adaptive.ts'
 
 /** Stable localized chrome for the Markdown body. */
 const MD_LABELS = { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' }
@@ -42,6 +43,12 @@ export function InitPanel({ workspace, remote }: {
   const [projectBusy, setProjectBusy] = useState(false)
   const [projectDraft, setProjectDraft] = useState<ProjectInitPreview | null>(null)
   const [projectResources, setProjectResources] = useState<InitResource[]>([])
+  const [projectPlan, setProjectPlan] = useState<ProjectInitPromptView | null>(null)
+  const [planBusy, setPlanBusy] = useState(false)
+  const [planMessage, setPlanMessage] = useState('')
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [userPrompt, setUserPrompt] = useState('')
+  const [promptDirty, setPromptDirty] = useState(false)
 
   useEffect(() => {
     if (!generating && !projectBusy) {
@@ -60,7 +67,43 @@ export function InitPanel({ workspace, remote }: {
     setProjectDraft(null)
     setProjectResources([])
     setProjectInitMsg('')
-  }, [workspace])
+    setProjectPlan(null)
+    setSystemPrompt('')
+    setUserPrompt('')
+    setPromptDirty(false)
+    setPlanBusy(true)
+    let active = true
+    void remote.inspectProjectInit({ path: workspace }).then(result => {
+      if (!active) return
+      setPlanBusy(false)
+      if (!result.ok) { setPlanMessage(`读取初始化计划失败：${describeError(result.error)}`); return }
+      setProjectPlan(result.value)
+      setSystemPrompt(result.value.system_prompt)
+      setUserPrompt(result.value.user_prompt)
+      setPlanMessage('')
+    }, error => {
+      if (!active) return
+      setPlanBusy(false)
+      setPlanMessage(`读取初始化计划失败：${error instanceof Error ? error.message : String(error)}`)
+    })
+    return () => { active = false }
+  }, [workspace, remote])
+
+  const reloadProjectPlan = async (): Promise<void> => {
+    if (promptDirty && !window.confirm('重新扫描将覆盖本页修改的初始化提示词，确定继续？')) return
+    setPlanBusy(true)
+    setPlanMessage('')
+    try {
+      const result = await remote.inspectProjectInit({ path: workspace })
+      if (!result.ok) throw new Error(describeError(result.error))
+      setProjectPlan(result.value)
+      setSystemPrompt(result.value.system_prompt)
+      setUserPrompt(result.value.user_prompt)
+      setPromptDirty(false)
+    } catch (error) {
+      setPlanMessage(`重新扫描失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { setPlanBusy(false) }
+  }
 
   const generateProject = async (): Promise<void> => {
     setProjectBusy(true)
@@ -68,7 +111,7 @@ export function InitPanel({ workspace, remote }: {
     setProjectResources([])
     setProjectInitMsg('')
     try {
-      const result = await remote.generateProjectInit({ path: workspace })
+      const result = await remote.generateProjectInit({ path: workspace, system_prompt: systemPrompt, user_prompt: userPrompt })
       if (!result.ok) throw new Error(describeError(result.error))
       if (!result.value.ok) throw new Error(result.value.error ?? '项目初始化提案无效')
       setProjectDraft(result.value)
@@ -170,6 +213,10 @@ export function InitPanel({ workspace, remote }: {
   }
 
   const exists = view?.exists === true
+  const plannedSkills = projectPlan?.inventory.suggestions.filter(item => item.kind === 'skill') ?? []
+  const plannedRules = projectPlan?.inventory.suggestions.filter(item => item.kind === 'rule') ?? []
+  const proposedSkills = projectResources.filter(item => item.kind === 'skill')
+  const proposedRules = projectResources.filter(item => item.kind === 'rule')
 
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
@@ -178,14 +225,39 @@ export function InitPanel({ workspace, remote }: {
         '在此扫描仓库并生成项目 Skill / Rule 提案。项目地图覆盖整个仓库，当前需求的专属信息应写入任务产物。逐项审阅后确认写入；已有同名资源不会被覆盖。'),
       createElement('p', { style: styles.muted },
         '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
+      createElement('p', { style: styles.muted },
+        '当前初始化使用目录、构建清单及有限源码证据，不会自动运行 OpenSpec 或 CodeGraph。可在编辑提示词时加入你已经核实的图谱或规格信息；请保留证据路径。'),
+      createElement('div', { style: card },
+        createElement('div', { style: styles.row },
+          createElement('strong', null, '初始化依据与预期资源'),
+          createElement(Button, { variant: 'outline', size: 'sm', disabled: planBusy || projectBusy,
+            onClick: () => { void reloadProjectPlan() } }, planBusy ? '扫描中…' : '重新扫描仓库输入')),
+        planMessage ? createElement('p', { role: 'status', style: styles.status }, planMessage) : null,
+        projectPlan ? createElement('div', { style: styles.section },
+          createElement('p', { style: styles.muted },
+            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。以下是候选资源，不保证每项都会生成；已有文件不会覆盖。Rule 只在找到可验证的团队约束时提出。`),
+          ...[...plannedSkills, ...plannedRules].map(item => createElement('div', { key: `${item.kind}-${item.name}`, style: { ...styles.muted, marginBottom: 4 } },
+            `${item.kind === 'skill' ? 'Skill' : 'Rule'} · ${item.name} · ${projectPlan.existing.find(existing => existing.name === item.name)?.exists ? '已存在' : '待生成候选'} · 关联阶段：${item.meta_skills.map(meta => META_STAGES[meta as keyof typeof META_STAGES] ?? meta).join('、') || '由生成结果决定'}。${item.why}`)),
+          plannedRules.length === 0 ? createElement('p', { style: styles.muted }, '规则候选不预设数量；模型必须依据已读取的源码、测试或团队规范提出 Rule。') : null,
+          createElement('details', { open: true },
+            createElement('summary', null, '本次交给模型的提示词（可编辑）'),
+            createElement('p', { style: styles.muted }, '系统提示词规定输出格式与证据边界；仓库提示词包含扫描到的清单和有限源码摘录。修改后直接点击“扫描并生成提案”，只影响本次生成，不会写入项目配置。'),
+            createElement('label', null, '系统提示词', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: systemPrompt,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setSystemPrompt(event.target.value); setPromptDirty(true) } })),
+            createElement('label', null, '仓库提示词与证据', createElement('textarea', { style: { ...styles.textarea, minHeight: 230 }, value: userPrompt,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setUserPrompt(event.target.value); setPromptDirty(true) } })),
+          ),
+        ) : null),
       createElement('div', { style: styles.row },
-        createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy,
+        createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || planBusy || projectPlan === null || !systemPrompt.trim() || !userPrompt.trim(),
           onClick: () => { void generateProject() } }, projectBusy ? '扫描与生成中…' : '扫描并生成提案'),
         projectBusy ? createElement('span', { style: styles.status }, `已耗时 ${elapsed} 秒`) : null),
       projectResources.length > 0
         ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
-            `项目：${workspace}。提案包含 ${projectResources.length} 个 Skill / Rule；项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。`),
+            `项目：${workspace}。提案包含 ${proposedSkills.length} 个 Skill、${proposedRules.length} 个 Rule；项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。`),
+          createElement('p', { style: styles.muted },
+            Object.entries(META_STAGES).map(([id, title]) => `${title}：${proposedSkills.filter(item => item.meta_skills?.includes(id as keyof typeof META_STAGES)).map(item => item.name).join('、') || '仅使用内置核心 Skill'}`).join('；')),
           ...projectResources.map((resource, index) => createElement('div', { key: `${resource.kind}-${resource.name}`, style: card },
             createElement('div', { style: styles.row },
               createElement('strong', null, `${resource.kind === 'skill' ? 'Skill' : 'Rule'} · ${resource.name}`),

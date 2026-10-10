@@ -56,7 +56,7 @@ import {
   flowSatisfies,
   resolveFlow,
 } from './workflows.ts'
-import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
+import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_EVIDENCE, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
   type Complexity, type MetaSkill } from './adaptive.ts'
 import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlockers, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
 import { inspectLocalRules } from './sonarlint-local.ts'
@@ -672,15 +672,6 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
 }
 
 const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
-const META_EVIDENCE: Record<MetaSkill, NonNullable<SkillProfile['evidence']>> = {
-  'requirements-analysis': 'artifact',
-  'architecture-design': 'artifact',
-  'task-orchestration': 'artifact',
-  'code-development': 'none',
-  'test-validation': 'none',
-  'code-review': 'review',
-}
-
 interface AdaptiveConfig {
   /** Additional logical Skill names per meta-skill. A same-named project Skill replaces the user/bundled Skill. */
   meta_bindings?: Partial<Record<MetaSkill, string[]>>
@@ -800,7 +791,8 @@ async function resolveAdaptiveWorkflow(grade: Complexity, fs: Fs, cwd?: string, 
         rules: [], evidence: name === meta ? META_EVIDENCE[meta] : 'none',
       }
       skill_profiles[formatResourceRef(ref)] = profile
-      skills.push({ skill: ref, rules: profile.rules, evidence: profile.evidence ?? 'none' })
+      skills.push({ skill: ref, rules: profile.rules,
+        evidence: profile.evidence ?? (name === meta ? META_EVIDENCE[meta] : 'none') })
     }
     stage_bindings[stage] = { skills }
   }

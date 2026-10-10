@@ -1,5 +1,5 @@
 /** Task-scoped engineering flows. The grade selects gates; risk remains separate. */
-import type { ArtifactDef, WorkflowConfig } from './engine.ts'
+import type { ArtifactDef, EvidenceKind, WorkflowConfig } from './engine.ts'
 
 export type Complexity = 'low' | 'medium' | 'high' | 'ultra'
 export type MetaSkill = 'requirements-analysis' | 'architecture-design' | 'task-orchestration'
@@ -19,6 +19,16 @@ export const META_STAGES: Readonly<Record<MetaSkill, string>> = {
   'code-development': '代码开发',
   'test-validation': '测试',
   'code-review': '代码审核',
+}
+
+/** Evidence required by each core meta-skill when its profile does not override it. */
+export const META_EVIDENCE: Readonly<Record<MetaSkill, EvidenceKind>> = {
+  'requirements-analysis': 'artifact',
+  'architecture-design': 'artifact',
+  'task-orchestration': 'artifact',
+  'code-development': 'none',
+  'test-validation': 'none',
+  'code-review': 'review',
 }
 
 export const ADAPTIVE_VERSION = 1

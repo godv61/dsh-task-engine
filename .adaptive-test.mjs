@@ -84,14 +84,26 @@ test('adaptive task freezes a project override and its own Rules, not the bundle
   await assert.rejects(f.call({ operation: 'load_skill', task_id: 'A-1', skill_name: 'bundled:requirements-analysis' }), /exact source:name/)
 })
 
+test('a copied core meta-skill without explicit evidence keeps its artifact requirement', async () => {
+  const f = fixture({
+    '.dsh/skills/architecture-design/SKILL.md': '# Project architecture method',
+    '.dsh/skills/architecture-design/profile.json': JSON.stringify({ rules: [] }),
+  })
+  await f.call({ operation: 'create', task_id: 'ARCH-1', title: 'New module', branch: 'feature',
+    complexity: 'ultra', complexity_reason: 'A new module changes interfaces and requires architecture boundaries' })
+  const binding = f.state('ARCH-1').flow.config.stage_bindings['架构设计'].skills[0]
+  assert.equal(binding.skill.source, 'project')
+  assert.equal(binding.evidence, 'artifact')
+})
+
 test('init_project proposes project-specific Skills and binds reviewed resources', async () => {
   const f = fixture()
   const inventory = JSON.parse(await f.call({ operation: 'init_project', phase: 'inspect' }))
   const projectMap = inventory.suggestions.find(entry => entry.name === 'adaptive-project-project-map')
   assert.ok(projectMap)
   assert.ok(inventory.suggestions.some(entry => entry.name === 'adaptive-project-business-capabilities'))
-  assert.match(projectMap.why, /entire repository/)
-  assert.match(projectMap.why, /current feature request/)
+  assert.match(projectMap.why, /整个仓库/)
+  assert.match(projectMap.why, /当前需求/)
   assert.match(inventory.caution, /repository-wide/)
   assert.ok(inventory.manifests.some(entry => entry.facts.includes('vue=^2.7.0')))
   const resources = [
@@ -418,16 +430,27 @@ test('workbench initializes reviewed project resources directly and preserves So
       content: 'Root package.json, backend/pom.xml and frontend/package.json define the backend and frontend modules.',
       meta_skills: ['requirements-analysis', 'code-development'], rules: ['backend-convention'] },
   ]
+  let generatedOptions
   const receiver = {
     authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
     projectInitRoot: Controller.prototype.projectInitRoot,
+    inspectProjectInit: Controller.prototype.inspectProjectInit,
     previewProjectInit: Controller.prototype.previewProjectInit,
     ctx: { get(name) {
-      if (name === 'llm') return { async *stream() { yield { type: 'text-delta', text: JSON.stringify({ resources }) } } }
+      if (name === 'llm') return { async *stream(options) {
+        generatedOptions = options
+        yield { type: 'text-delta', text: JSON.stringify({ resources }) }
+      } }
       if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test' }) }
     } },
   }
-  const draft = await Controller.prototype.generateProjectInit.call(receiver, { path: f.cwd })
+  const plan = await Controller.prototype.inspectProjectInit.call(receiver, { path: f.cwd })
+  assert.ok(plan.inventory.suggestions.some(item => item.name === 'adaptive-project-project-map'))
+  assert.match(plan.user_prompt, /frontend\/package.json/)
+  const draft = await Controller.prototype.generateProjectInit.call(receiver,
+    { path: f.cwd, system_prompt: plan.system_prompt + ' Review carefully.', user_prompt: plan.user_prompt + '\nUse reviewed conventions.' })
+  assert.match(generatedOptions.system, /Review carefully/)
+  assert.match(generatedOptions.messages[0].content[0].text, /Use reviewed conventions/)
   assert.deepEqual(draft.project_map_coverage, ['backend', 'frontend', 'package.json'])
   assert.equal(f.files.has(join(f.cwd, '.dsh/rules/backend-convention.md')), false)
   await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,

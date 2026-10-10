@@ -61,6 +61,13 @@ export const workbenchTheme = `
 .te-skill-config { display:flex; flex:1; flex-direction:column; gap:12px; min-width:0; min-height:0; }
 .te-skill-evidence { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; font-weight:600; }
 .te-skill-evidence .te-input { min-width:210px; }
+.te-evidence-help { margin:0; color:var(--dsw-alias-label-secondary); font-size:12px; line-height:1.55; }
+.te-evidence-advanced { flex:none; border-top:1px solid var(--dsw-alias-border-l2); padding-top:10px; }
+.te-evidence-advanced > summary { cursor:pointer; font-size:12px; color:var(--dsw-alias-label-secondary); }
+.te-evidence-advanced[open] { display:flex; flex-direction:column; gap:9px; }
+.te-evidence-guide { color:var(--dsw-alias-label-secondary); font-size:12px; }
+.te-evidence-guide summary { cursor:pointer; color:var(--dsw-alias-state-business-primary); }
+.te-evidence-guide ul { margin:8px 0 0; padding-left:20px; display:flex; flex-direction:column; gap:6px; line-height:1.5; }
 .te-skill-rule-list { display:flex; flex:1; flex-direction:column; gap:4px; min-height:0; overflow:auto; padding:4px; }
 .te-rule-filters { display:flex; gap:6px; flex-wrap:wrap; }
 .te-rule-filter { border:1px solid var(--dsw-alias-border-l2); border-radius:999px; padding:5px 10px; background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-secondary); cursor:pointer; font-size:12px; }

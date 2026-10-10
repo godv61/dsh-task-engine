@@ -222,6 +222,13 @@ export interface ProjectInitPreview {
   error?: string
 }
 
+export interface ProjectInitPromptView {
+  inventory: ProjectInventory
+  existing: { name: string; exists: boolean }[]
+  system_prompt: string
+  user_prompt: string
+}
+
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
   resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
@@ -257,7 +264,8 @@ export interface TaskEngineRemote {
   readInit(path: string): Promise<RemoteResult<InitView>>
   writeInit(request: { path: string; content: string; overwrite?: boolean }): Promise<RemoteResult<InitWriteResult>>
   generateInit(request: { path: string }): Promise<RemoteResult<InitDraft>>
-  generateProjectInit(request: { path: string }): Promise<RemoteResult<ProjectInitPreview>>
+  inspectProjectInit(request: { path: string }): Promise<RemoteResult<ProjectInitPromptView>>
+  generateProjectInit(request: { path: string; system_prompt?: string; user_prompt?: string }): Promise<RemoteResult<ProjectInitPreview>>
   previewProjectInit(request: { path: string; resources: InitResource[] }): Promise<RemoteResult<ProjectInitPreview>>
   applyProjectInit(request: { path: string; resources: InitResource[]; expected_hash: string; existing_hash: string }): Promise<RemoteResult<{ ok: boolean; created: string[]; error?: string }>>
 }

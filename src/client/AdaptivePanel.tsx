@@ -1,7 +1,7 @@
 /** Task-level four-grade flows and meta-skill bindings. */
 import { createElement, useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
-import { META_STAGES, type MetaSkill } from '../adaptive.ts'
+import { META_EVIDENCE, META_STAGES, type MetaSkill } from '../adaptive.ts'
 import type { ResourceRef, SkillProfile } from '../engine.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
@@ -73,6 +73,11 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     }, error => { setLoading(false); setMessage('读取失败：' + describeError(error)) })
   }, [remote, workspace])
   useEffect(() => { refresh() }, [refresh])
+
+  const reloadSaved = () => {
+    if (dirty && !window.confirm('重新读取将丢弃本页尚未保存的 Skill 挂载和 Sonar 设置，确定继续？')) return
+    refresh()
+  }
 
   const update = (config: AdaptiveProjectConfig) => { setDraft(config); setDirty(true); setMessage('') }
   const addSkill = (meta: MetaSkill, name: string) => {
@@ -171,7 +176,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     if (dirty) { setMessage('请先保存 SonarQube 审核配置，再检查本地分析器。'); return }
     setAnalyzerOperation('prepare')
     setAnalyzerProfiles(null)
-    setMessage('正在安装或检查本地分析器，并连接当前项目的 SonarQube。首次约需下载 93 MiB；网络较慢时请保持页面打开，失败会显示原因。')
+    setMessage('正在准备官方 SonarLint 本地检查组件和配套 Java，并连接当前项目的 SonarQube。首次约需下载 93 MiB；不会分析或上传项目代码。')
     void remote.prepareSonarAnalyzer(workspace).then(result => {
       setAnalyzerOperation('')
       if (!result.ok) { setMessage('本地分析器检查失败：' + describeError(result.error)); return }
@@ -208,6 +213,8 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     || skills.some(skill => skill.name === name && `${skill.description} ${skill.sourceLabel}`.toLowerCase().includes(candidateQuery))))
   const sonar = draft.sonar ?? {}
   return createElement('div', { style: { ...styles.section, display: 'flex', flexDirection: 'column', gap: 16 } },
+    createElement('p', { style: label },
+      '在这里设置本项目各开发阶段使用的 Skill，以及可选的 SonarQube 审核。创建任务时，DSH 按需求选择低／中／高／超高流程；保存后的设置只用于新任务。'),
     createElement('div', { style: row },
       createElement(Button, { variant: 'outline', size: 'sm', onClick: onOpenInit }, '初始化项目 Skill / Rule'),
       createElement('span', { style: label }, '扫描项目后先预览，确认后写入。')),
@@ -294,15 +301,16 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
                   include_paths: event.target.value.split(/\r?\n|,/u).map(path => path.trim()).filter(Boolean),
                 }) })))),
         createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
-          '无需安装 IDEA、Maven 或 SonarScanner。首次审核会下载官方本地分析后台；语言分析器由后台从 SonarQube 同步。部分服务端规则无法在本地执行，本地通过不等于服务端质量门禁通过。'),
+          'DSH 会在本机缓存中准备官方 SonarLint 后台及配套 Java，再从当前 SonarQube 项目同步可用的语言分析器和规则；无需安装 IDEA、Maven 或 SonarScanner。此处只准备检查环境，不执行代码审核。'),
         createElement('div', { style: { ...row, gridColumn: '1 / -1' } },
           createElement(Button, { variant: 'outline', size: 'sm', disabled: !!analyzerOperation || saving || dirty,
-            onClick: prepareAnalyzer }, analyzerOperation === 'prepare' ? '安装与检查中…' : '安装或检查本地分析器'),
+            onClick: prepareAnalyzer }, analyzerOperation === 'prepare' ? '准备与检查中…' : '准备本地 Sonar 检查'),
           createElement(Button, { variant: 'outline', size: 'sm', disabled: !!analyzerOperation || saving || dirty,
-            onClick: updateRules }, analyzerOperation === 'update' ? '规则更新中…' : '更新当前项目规则'),
+            onClick: updateRules }, analyzerOperation === 'update' ? '规则同步中…' : '重新同步本项目 Sonar 规则'),
           createElement(Button, { variant: 'outline', size: 'sm', disabled: saving || dirty,
-            onClick: () => setRuleViewerOpen(true) }, '查看当前项目规则'),
-          createElement('span', { style: label }, '先保存服务地址、项目 Key 和 Token；检查不会审核或上传项目代码。')),
+            onClick: () => setRuleViewerOpen(true) }, '查看本项目 Sonar 规则')),
+        createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
+          '“准备本地 Sonar 检查”首次约下载 93 MiB 到本机 DSH 缓存，已有组件则复用；检查服务连接与当前项目规则状态，不上传代码。即使不提前点击，首次代码审核也会自动准备。'),
         analyzerUpdatedAt && !dirty ? createElement('span', { style: { ...label, gridColumn: '1 / -1' } },
           `上次手动更新：${new Date(analyzerUpdatedAt).toLocaleString()}`) : null,
         analyzerProfiles ? createElement('div', { style: { ...label, gridColumn: '1 / -1' } },
@@ -311,7 +319,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
               `${profile.language}：服务端 ${profile.active_rules} 条规则；本地分析器 ${profile.analyzer}`))
             : '项目没有返回已启用规则的语言。',
           analyzerOtherCount ? createElement('div', null,
-            `其它 ${analyzerOtherCount} 个语言配置已收起；可在“查看当前项目规则”中显示。`) : null,
+            `其它 ${analyzerOtherCount} 个语言配置已收起；可在“查看本项目 Sonar 规则”中显示。`) : null,
           createElement('div', null, '已同步表示该语言分析器可用，不代表服务端全部规则都能在本地执行。')) : null,
         createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
           createElement('span', { style: label }, `当前项目 Token：${tokenInfo === null ? '状态不可用' : tokenInfo.configured ? '已配置' : '未配置'}`),
@@ -327,10 +335,12 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       ) : null,
     ),
     createElement('div', { className: 'te-adaptive-savebar' },
-      createElement(Button, { variant: 'outline', size: 'sm', disabled: loading || saving, onClick: refresh }, '刷新'),
+      createElement(Button, { variant: 'outline', size: 'sm', disabled: loading || saving, onClick: reloadSaved }, '重新读取已保存设置'),
       createElement(Button, { variant: 'primary', size: 'sm', disabled: loading || saving || !dirty, onClick: save },
-        saving ? '保存中…' : '保存自适应配置'),
-      createElement('span', { style: label }, dirty ? '有未保存的项目配置' : '项目配置已保存'),
+        saving ? '保存中…' : '保存项目流程与审核设置'),
+      createElement('span', { style: label }, dirty
+        ? '有未保存的项目设置；保存到 .dsh/meta.json 后才会用于新任务'
+        : '项目设置已保存；未修改时无需再次保存'),
       message ? createElement('span', { role: 'status', style: { ...label, flexBasis: '100%' } }, message) : null,
     ),
     view?.problems.length ? createElement('p', { role: 'alert', style: styles.status }, view.problems.join('；')) : null,
@@ -338,6 +348,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
       ? createElement(SonarRuleViewer, { workspace, host: sonar.host_url, remote, onClose: () => setRuleViewerOpen(false) }) : null,
     selected ? createElement(SkillRuleDialog, { key: `${selected.skill.source}:${selected.skill.name}`, skill: selected.skill,
       profile: selected.profile, rules,
+      defaultEvidence: META_EVIDENCE[selected.skill.name as MetaSkill] ?? 'none',
       description: selected.template
         ? `当前来自 ${selected.templateSource}。保存时会先复制为同名项目 Skill，再写入项目 Rule；新任务优先使用项目版本。`
         : '项目 Skill 的规则档案保存在其 profile.json，影响之后创建的自适应任务。',

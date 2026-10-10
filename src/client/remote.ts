@@ -300,6 +300,14 @@ const projectInitInventorySchema = z.object({
   suggestions: z.array(z.object({ name: z.string(), kind: z.enum(['skill', 'rule']), meta_skills: z.array(z.string()), why: z.string() })),
   caution: z.string(),
 })
+const projectInitPromptViewSchema = z.object({
+  inventory: projectInitInventorySchema,
+  existing: z.array(z.object({ name: z.string(), exists: z.boolean() })),
+  system_prompt: z.string(), user_prompt: z.string(),
+})
+const projectInitGenerateRequestSchema = initGenerateRequestSchema.extend({
+  system_prompt: z.string().optional(), user_prompt: z.string().optional(),
+})
 const projectInitPreviewRequestSchema = z.object({ path: z.string(), resources: z.array(projectInitResourceSchema) })
 const projectInitPreviewSchema = z.object({
   ok: z.boolean(), inventory: projectInitInventorySchema, resources: z.array(projectInitResourceSchema),
@@ -715,10 +723,18 @@ export const TYPERT_REMOTE = {
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitDraft`, create: () => initDraftSchema, schema: initDraftSchema },
     },
     {
+      id: `${PACKAGE}#task-engine/inspectProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'inspectProjectInit', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPromptView`,
+        create: () => projectInitPromptViewSchema, schema: projectInitPromptViewSchema },
+    },
+    {
       id: `${PACKAGE}#task-engine/generateProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
       method: 'generateProjectInit', invocation: { kind: 'direct' },
       parameters: [{ name: 'request', wire: 'request', source: 'json',
-        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema } }],
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitGenerateRequest`, create: () => projectInitGenerateRequestSchema, schema: projectInitGenerateRequestSchema } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreview`, create: () => projectInitPreviewSchema, schema: projectInitPreviewSchema },
     },
     {

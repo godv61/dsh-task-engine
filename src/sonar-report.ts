@@ -11,8 +11,29 @@ export function sonarReportPath(taskId: string, audit: SonarAudit): string {
   return `.dsh/reviews/${taskId}/${stamp}-${audit.analysis_id.slice(0, 8)}.md`
 }
 
+/** The server lists effective profiles for every language, including languages absent from this review. */
+export function reviewedProfileCoverage(audit: SonarAudit): NonNullable<SonarAudit['profile_coverage']> {
+  const languages = new Set<string>()
+  for (const file of audit.scanned_files ?? []) {
+    if (/\.java$/iu.test(file)) languages.add('JAVA')
+    else if (/\.(?:js|jsx)$/iu.test(file)) languages.add('JS')
+    else if (/\.(?:ts|tsx)$/iu.test(file)) languages.add('TS')
+    else if (/\.(?:css|scss)$/iu.test(file)) languages.add('CSS')
+    else if (/\.xml$/iu.test(file)) languages.add('XML')
+    else if (/\.vue$/iu.test(file)) { languages.add('JS'); languages.add('CSS') }
+    else if (/\.html?$/iu.test(file)) languages.add('WEB')
+  }
+  for (const finding of audit.findings) {
+    const prefix = finding.rule.split(':', 1)[0]?.toUpperCase()
+    const language = ({ JAVASCRIPT: 'JS', TYPESCRIPT: 'TS' } as Record<string, string>)[prefix ?? ''] ?? prefix
+    if (language) languages.add(language)
+  }
+  return (audit.profile_coverage ?? []).filter(profile => languages.has(profile.language.toUpperCase()))
+}
+
 export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: SonarAudit): string {
   const blocked = new Set(audit.blocking.map(finding => finding.key))
+  const reviewedProfiles = reviewedProfileCoverage(audit)
   const rows = [
     `# SonarQube 代码审核：${line(taskId)}`,
     '',
@@ -37,13 +58,13 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     ...(audit.uncovered_files?.length ? audit.uncovered_files.map(file => `- ${line(file)}`) : ['- 无']),
     '',
     ...(policy.source === 'ide-local' ? [
-      '## 项目规则配置与本地分析器',
+      '## 本次涉及语言的项目规则与本地分析器',
       '',
-      ...(audit.profile_coverage?.length ? audit.profile_coverage.map(profile =>
+      ...(reviewedProfiles.length ? reviewedProfiles.map(profile =>
         `- ${line(profile.language)}：服务端启用 ${profile.active_rules} 条规则；本地分析器 ${line(profile.analyzer)}`)
-        : ['- 服务端未返回有已启用规则的语言配置']),
+        : ['- 本次没有可展示的语言配置']),
       '',
-      '此处确认语言分析器是否同步；SonarQube 不提供每条规则的本地可执行性保证，不能据此宣称全部服务端规则已覆盖。',
+      '规则来源为当前项目的 Quality Profile；上方只列本次分析文件涉及的语言。启用规则数是服务端配置数量，本次实际检查以“本次分析的文件”和“新代码问题”为准。此报告记录提交前的本地审核结果；服务端 Quality Gate 以服务端扫描结果为准。',
       '',
     ] : []),
     '## 新代码问题',
