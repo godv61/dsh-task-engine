@@ -62,7 +62,7 @@ import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlocke
 import { inspectLocalRules } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
-import { projectMapCoverageGaps, projectMapCoveragePaths, scanProject, validateInitResources, type InitResource } from './project-init.ts'
+import { missingProjectMetaSkills, projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { verificationEvidenceBlockers } from './evidence-gate.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
@@ -1529,6 +1529,17 @@ export function registerDevTask(ctx: Context): void {
         if (phase === 'inspect') return JSON.stringify(inventory, null, 2)
         if (phase !== 'propose' && phase !== 'apply') throw new Error('init_project phase must be inspect, propose, or apply')
         const resources = validateInitResources(a.resources)
+        const existingMetaSkills = new Set<string>()
+        for (const { name } of projectMetaSkillTargets(inventory.project_name)) {
+          if (await readText(fs, `.dsh/skills/${name}/SKILL.md`, cwd) !== undefined) existingMetaSkills.add(name)
+        }
+        const missingMetaSkills = missingProjectMetaSkills(inventory.project_name, resources, existingMetaSkills)
+        if (missingMetaSkills.length) throw new Error(`init_project requires a project Skill for every meta-skill: ${missingMetaSkills.map(item => `${item.meta} (${item.name})`).join(', ')}`)
+        const mapName = `${inventory.project_name}-project-map`
+        if (await readText(fs, `.dsh/skills/${mapName}/SKILL.md`, cwd) === undefined
+          && !resources.some(resource => resource.kind === 'skill' && resource.name === mapName)) {
+          throw new Error(`init_project requires a repository-wide project map Skill: ${mapName}`)
+        }
         for (const resource of resources) {
           if (resource.kind !== 'skill' || resource.name !== `${inventory.project_name}-project-map`) continue
           const gaps = projectMapCoverageGaps(resource.content, inventory)
@@ -1581,6 +1592,9 @@ export function registerDevTask(ctx: Context): void {
             writeMode, { kind: 'createIfAbsent' })
         }
         const bindings: NonNullable<AdaptiveConfig['meta_bindings']> = { ...meta.meta_bindings }
+        for (const { meta: stage, name } of projectMetaSkillTargets(inventory.project_name)) {
+          if (existingMetaSkills.has(name)) bindings[stage] = [...new Set([...(bindings[stage] ?? []), name])]
+        }
         for (const resource of resources.filter(resource => resource.kind === 'skill')) {
           for (const skill of resource.meta_skills ?? []) {
             bindings[skill] = [...new Set([...(bindings[skill] ?? []), resource.name])]

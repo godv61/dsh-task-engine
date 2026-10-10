@@ -67,7 +67,8 @@ pnpm dsh web --no-open</code></pre>
           <tr><td>检查修改</td><td>预览并校验 Skill、Rule、挂载关系与项目地图覆盖。</td><td>技术栈是否来自实际清单；项目地图是否总结整个仓库，而非当前需求。</td></tr>
           <tr><td>确认写入项目</td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
         </tbody></table></div>
-        <p>候选 Skill 包括 <code>.dsh/skills/&lt;项目名&gt;-project-map/SKILL.md</code>、技术栈和按清单建议的后端/前端开发 Skill；候选不等于必须全部生成。Rule 没有固定数量，只有源码、测试或既有规范能证明一条约束时才建议生成。提案会汇总各元技能挂载了哪些项目 Skill；没有项目挂载的元技能仍使用内置核心 Skill。项目地图写模块职责、依赖、通用入口与版本证据；某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
+        <p>六个元技能各需一个 <code>&lt;项目名&gt;-&lt;元技能名&gt;</code> 项目专属 Skill。缺失的专属 Skill 必须进入提案；已有同名文件不会覆盖，确认写入时会自动挂载。检查修改会阻止缺少专属 Skill 或挂载的提案落盘。每份 Skill 说明该项目在对应阶段的查证入口、执行办法与交接；证据不足时明确待确认项和查证步骤，不编造项目事实。</p>
+        <p>共享候选 Skill 包括 <code>.dsh/skills/&lt;项目名&gt;-project-map/SKILL.md</code>、技术栈和按清单建议的后端/前端开发 Skill；除覆盖整个仓库的项目地图外，可按需生成并挂到多个阶段。不要在六份专属 Skill 中重复抄写地图。Rule 没有固定数量，只有源码、测试或既有规范能证明一条约束时才建议生成。项目地图写模块职责、依赖、通用入口与版本证据；某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
         <p>当前初始化不自动调用 OpenSpec 或 CodeGraph。项目已有 CodeGraph 时，其结构和调用关系可作为补充证据；OpenSpec 更适合具体需求的规格和任务编排。两者都不是生成项目 Skill/Rule 的前置条件。</p>
         <p>提案还会建议可选的 <code>&lt;项目名&gt;-business-capabilities</code> Skill。只有页面、路由、接口、测试或业务文档能支持业务能力描述时才保留；每项能力应给出证据路径，并分别标注代码事实、合理推导和待业务确认。它可挂载到需求分析和架构设计，供后续需求复用。</p>
         <p>团队共享时，审阅后将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code>、<code>.dsh/meta.json</code> 纳入 Git。Token 和本地审核报告不应随代码提交。</p>

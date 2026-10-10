@@ -15,8 +15,8 @@ const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 
 /** One validator for model-facing and workbench project initialization. */
 export function validateInitResources(resources: InitResource[] | undefined): InitResource[] {
-  if (!Array.isArray(resources) || resources.length === 0 || resources.length > 24) {
-    throw new Error('init_project requires 1–24 Skill/Rule resources')
+  if (!Array.isArray(resources) || resources.length > 24) {
+    throw new Error('init_project requires 0–24 Skill/Rule resources')
   }
   const names = new Set<string>()
   for (const resource of resources) {
@@ -46,6 +46,20 @@ export interface ProjectInventory {
   manifests: { path: string; facts: string[] }[]
   suggestions: { name: string; kind: 'skill' | 'rule'; meta_skills: string[]; why: string }[]
   caution: string
+}
+
+/** A dedicated project adapter for every meta-skill; shared project maps remain optional attachments. */
+export function projectMetaSkillTargets(projectName: string): { meta: MetaSkill; name: string }[] {
+  return (Object.keys(META_STAGES) as MetaSkill[]).map(meta => ({ meta, name: `${projectName}-${meta}` }))
+}
+
+export function missingProjectMetaSkills(projectName: string, resources: InitResource[], existing: ReadonlySet<string>):
+  { meta: MetaSkill; name: string }[] {
+  return projectMetaSkillTargets(projectName).filter(({ meta, name }) => {
+    if (existing.has(name)) return false
+    const draft = resources.find(resource => resource.kind === 'skill' && resource.name === name)
+    return draft === undefined || !draft.meta_skills?.includes(meta)
+  })
 }
 
 /** Paths a repository-wide project map must account for before it is installed. */
@@ -134,6 +148,8 @@ export async function scanProject(probe: FileProbe, root: string): Promise<Proje
     manifests.push({ path, facts })
   }
   const suggestions: ProjectInventory['suggestions'] = [
+    ...projectMetaSkillTargets(project_name).map(({ meta, name }) => ({ name, kind: 'skill' as const,
+      meta_skills: [meta], why: `必需的${META_STAGES[meta]}项目 Skill；依据仓库证据描述本阶段在本项目的做法。证据不足时明确待确认项，不编造规范。` })),
     { name: `${project_name}-project-map`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development'], why: '覆盖整个仓库的模块职责、依赖与通用入口；不能写成当前需求的总结。' },
     { name: `${project_name}-tech-stack`, kind: 'skill', meta_skills: ['requirements-analysis', 'code-development', 'test-validation'], why: '记录清单中可证实的技术版本和构建约束，供不同任务复用。' },
     { name: `${project_name}-business-capabilities`, kind: 'skill', meta_skills: ['requirements-analysis', 'architecture-design'], why: '可选业务能力图；仅在页面、接口、测试或文档足以证明业务功能时生成，并标注证据路径。' },

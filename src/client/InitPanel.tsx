@@ -14,7 +14,7 @@ import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { InitDraft, InitView, TaskEngineRemote } from './TaskEngineSection.tsx'
 import type { ProjectInitPreview, ProjectInitPromptView } from './TaskEngineSection.tsx'
-import type { InitResource } from '../project-init.ts'
+import { missingProjectMetaSkills, projectMetaSkillTargets, type InitResource } from '../project-init.ts'
 import { META_STAGES } from '../adaptive.ts'
 
 /** Stable localized chrome for the Markdown body. */
@@ -217,12 +217,15 @@ export function InitPanel({ workspace, remote }: {
   const plannedRules = projectPlan?.inventory.suggestions.filter(item => item.kind === 'rule') ?? []
   const proposedSkills = projectResources.filter(item => item.kind === 'skill')
   const proposedRules = projectResources.filter(item => item.kind === 'rule')
+  const existingSkillNames = new Set(projectPlan?.existing.filter(item => item.exists).map(item => item.name) ?? [])
+  const missingStageSkills = projectPlan === null ? []
+    : missingProjectMetaSkills(projectPlan.inventory.project_name, projectResources, existingSkillNames)
 
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
       createElement('h2', { style: { margin: 0, fontSize: 17 } }, '项目 Skill / Rule 初始化'),
       createElement('p', { style: styles.muted },
-        '在此扫描仓库并生成项目 Skill / Rule 提案。项目地图覆盖整个仓库，当前需求的专属信息应写入任务产物。逐项审阅后确认写入；已有同名资源不会被覆盖。'),
+        '在此扫描仓库并生成项目 Skill / Rule 提案。六个元技能各有一个项目专属 Skill，确认后自动挂载；项目地图覆盖整个仓库，Rule 按证据生成。逐项审阅后确认写入；已有同名资源会复用，不会被覆盖。'),
       createElement('p', { style: styles.muted },
         '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
       createElement('p', { style: styles.muted },
@@ -235,7 +238,10 @@ export function InitPanel({ workspace, remote }: {
         planMessage ? createElement('p', { role: 'status', style: styles.status }, planMessage) : null,
         projectPlan ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
-            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。以下是候选资源，不保证每项都会生成；已有文件不会覆盖。Rule 只在找到可验证的团队约束时提出。`),
+            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。六个元技能的项目 Skill 必须齐备；其它 Skill 是可选候选，已有文件会复用。Rule 只在找到可验证的团队约束时提出。`),
+          ...projectMetaSkillTargets(projectPlan.inventory.project_name).map(({ meta, name }) => createElement('div',
+            { key: `stage-${meta}`, style: { ...styles.muted, marginBottom: 4 } },
+            `${META_STAGES[meta]}：${name} · ${existingSkillNames.has(name) ? '已有文件，确认时自动挂载' : '本次必须生成并挂载'}`)),
           ...[...plannedSkills, ...plannedRules].map(item => createElement('div', { key: `${item.kind}-${item.name}`, style: { ...styles.muted, marginBottom: 4 } },
             `${item.kind === 'skill' ? 'Skill' : 'Rule'} · ${item.name} · ${projectPlan.existing.find(existing => existing.name === item.name)?.exists ? '已存在' : '待生成候选'} · 关联阶段：${item.meta_skills.map(meta => META_STAGES[meta as keyof typeof META_STAGES] ?? meta).join('、') || '由生成结果决定'}。${item.why}`)),
           plannedRules.length === 0 ? createElement('p', { style: styles.muted }, '规则候选不预设数量；模型必须依据已读取的源码、测试或团队规范提出 Rule。') : null,
@@ -252,12 +258,19 @@ export function InitPanel({ workspace, remote }: {
         createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || planBusy || projectPlan === null || !systemPrompt.trim() || !userPrompt.trim(),
           onClick: () => { void generateProject() } }, projectBusy ? '扫描与生成中…' : '扫描并生成提案'),
         projectBusy ? createElement('span', { style: styles.status }, `已耗时 ${elapsed} 秒`) : null),
-      projectResources.length > 0
+      projectDraft !== null || projectResources.length > 0
         ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
             `项目：${workspace}。提案包含 ${proposedSkills.length} 个 Skill、${proposedRules.length} 个 Rule；项目地图需覆盖：${projectDraft?.project_map_coverage.join('、') ?? '检查修改后显示'}。`),
           createElement('p', { style: styles.muted },
-            Object.entries(META_STAGES).map(([id, title]) => `${title}：${proposedSkills.filter(item => item.meta_skills?.includes(id as keyof typeof META_STAGES)).map(item => item.name).join('、') || '仅使用内置核心 Skill'}`).join('；')),
+            Object.entries(META_STAGES).map(([id, title]) => {
+              const proposed = proposedSkills.filter(item => item.meta_skills?.includes(id as keyof typeof META_STAGES)).map(item => item.name)
+              const existing = projectPlan === null ? [] : projectMetaSkillTargets(projectPlan.inventory.project_name)
+                .filter(item => item.meta === id && existingSkillNames.has(item.name)).map(item => item.name)
+              return `${title}：${[...existing, ...proposed].join('、') || '缺少专属项目 Skill'}`
+            }).join('；')),
+          missingStageSkills.length ? createElement('p', { role: 'status', style: styles.status },
+            `还缺少 ${missingStageSkills.length} 个元技能专属 Skill 或挂载：${missingStageSkills.map(item => META_STAGES[item.meta]).join('、')}。请修改提案后点击“检查修改”。`) : null,
           ...projectResources.map((resource, index) => createElement('div', { key: `${resource.kind}-${resource.name}`, style: card },
             createElement('div', { style: styles.row },
               createElement('strong', null, `${resource.kind === 'skill' ? 'Skill' : 'Rule'} · ${resource.name}`),
