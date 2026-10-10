@@ -1,6 +1,6 @@
 {
   "name": "@godv61/dsh-task-engine",
-  "version": "0.32.2",
+  "version": "0.33.0",
   "description": "Task-scoped engineering workflows for DeepSeek Harness: four complexity grades, project Skill/Rule initialization, verified tests, and optional review-time SonarQube checks.",
   "type": "module",
   "main": "lib/index.js",
@@ -57,7 +57,8 @@
     ".adaptive-test.mjs",
     ".sonar-credential-test.mjs",
     ".sonarlint-local-test.mjs",
-    ".sonar-rule-catalog-test.mjs"
+    ".sonar-rule-catalog-test.mjs",
+    ".codegraph-init-test.mjs"
   ],
   "license": "MIT",
   "publishConfig": {
@@ -78,7 +79,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node build-client.mjs && node build-hook.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
-    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .hook-install-test.mjs .verification-test.mjs .gradle-report-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs .enforce-test.mjs .evidence-test.mjs .roundtrip-test.mjs .filter-test.mjs .codex-project-test.mjs .adaptive-test.mjs .sonar-credential-test.mjs .sonarlint-local-test.mjs .sonar-rule-catalog-test.mjs",
+    "test": "node .p0-test.mjs && node .acceptance.mjs && node .hook-consistency.mjs && node --test .resource-test.mjs .workflow-test.mjs .hook-test.mjs .hook-install-test.mjs .verification-test.mjs .gradle-report-test.mjs .preset-test.mjs .assessment-batch1.mjs .e2e-presets.mjs .revision-test.mjs .freeze-test.mjs .enforce-test.mjs .evidence-test.mjs .roundtrip-test.mjs .filter-test.mjs .codex-project-test.mjs .adaptive-test.mjs .sonar-credential-test.mjs .sonarlint-local-test.mjs .sonar-rule-catalog-test.mjs .codegraph-init-test.mjs",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:dsh": "node scripts/verify-dsh-compat.mjs",
     "prepare": "npm run build"

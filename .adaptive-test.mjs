@@ -9,6 +9,7 @@ import { plannedItemIds, registerDevTask } from './lib/dev-task.js'
 import { assertLocalSonarReady, inspectSonar, validLocalScanCommand } from './lib/sonar.js'
 import Controller from './lib/controller.js'
 import { hashText } from './lib/snapshot.js'
+import { projectInitSteps } from './lib/project-init.js'
 
 function recordedVerification() {
   return { passed: true, evidence: ['verified'], receipt: {
@@ -519,6 +520,77 @@ test('workbench initializes reviewed project resources directly and preserves So
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
   await assert.rejects(Controller.prototype.previewProjectInit.call(receiver,
     { path: f.cwd, resources }), /不能覆盖/)
+})
+
+test('project initialization retries a token-truncated model draft with a compact request', async () => {
+  const f = fixture()
+  const resources = [...stageSkillDrafts(), {
+    kind: 'skill', name: 'adaptive-project-project-map', description: 'Repository map',
+    content: 'The project root package.json is the entry point; inspect manifests before attributing module responsibilities.',
+    meta_skills: ['requirements-analysis', 'code-development'], rules: [],
+  }]
+  let calls = 0
+  const receiver = {
+    authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
+    projectInitRoot: Controller.prototype.projectInitRoot,
+    inspectProjectInit: Controller.prototype.inspectProjectInit,
+    previewProjectInit: Controller.prototype.previewProjectInit,
+    ctx: { get(name) {
+      if (name === 'llm') return { async *stream(options) {
+        calls++
+        if (calls === 1) {
+          yield { type: 'text-delta', text: '{"resources":[{"kind":"skill","content":"unfinished' }
+          yield { type: 'finish', reason: { kind: 'max-tokens' } }
+        } else {
+          assert.match(options.messages[0].content[0].text, /压缩输出/)
+          yield { type: 'text-delta', text: JSON.stringify({ resources }) }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        }
+      } }
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test' }) }
+    } },
+  }
+  const draft = await Controller.prototype.generateProjectInit.call(receiver, { path: f.cwd })
+  assert.equal(calls, 2)
+  assert.equal(draft.ok, true)
+  assert.equal(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')), false)
+})
+
+test('project initialization generates one ordered resource at a time and can skip optional evidence', async () => {
+  const f = fixture()
+  const map = { kind: 'skill', name: 'adaptive-project-project-map', description: 'Repository map',
+    content: 'The root package.json is the verified build entry point.',
+    meta_skills: ['requirements-analysis', 'code-development'], rules: [] }
+  let calls = 0
+  const receiver = {
+    authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
+    projectInitRoot: Controller.prototype.projectInitRoot,
+    inspectProjectInit: Controller.prototype.inspectProjectInit,
+    ctx: { get(name) {
+      if (name === 'llm') return { async *stream(options) {
+        calls++
+        const prompt = options.messages[0].content[0].text
+        if (prompt.split('当前只生成这个资源：')[1]?.startsWith('{"name":"adaptive-project-project-map"')) {
+          if (calls === 1) yield { type: 'text-delta', text: '{"resources":[' }
+          else yield { type: 'text-delta', text: JSON.stringify({ resources: [map] }) }
+        } else yield { type: 'text-delta', text: JSON.stringify({ resources: [] }) }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } }
+      if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test' }) }
+    } },
+  }
+  const plan = await Controller.prototype.inspectProjectInit.call(receiver, { path: f.cwd, include_graph: false })
+  const steps = projectInitSteps(plan.inventory, new Set())
+  assert.equal(steps[0].name, map.name)
+  assert.equal(steps.find(item => item.name === 'adaptive-project-requirements-analysis').required, true)
+  const first = await Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.cwd, target: map.name, prior_resources: [], user_prompt: plan.user_prompt })
+  assert.equal(first.resource.name, map.name)
+  assert.equal(calls, 2)
+  const optional = await Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.cwd, target: 'adaptive-project-business-capabilities', prior_resources: [first.resource], user_prompt: plan.user_prompt })
+  assert.equal(optional.resource, null)
+  assert.equal(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')), false)
 })
 
 test('a local false positive needs human approval, keeps the raw gate, and expires after code changes', async () => {

@@ -48,6 +48,30 @@ export interface ProjectInventory {
   caution: string
 }
 
+export interface ProjectInitStep {
+  name: string
+  kind: 'skill' | 'rule'
+  meta_skills: string[]
+  why: string
+  required: boolean
+}
+
+/** A stable order keeps each model response small and makes failed steps resumable. */
+export function projectInitSteps(inventory: ProjectInventory, existing: ReadonlySet<string>): ProjectInitStep[] {
+  const project = inventory.project_name
+  const ordered = [
+    `${project}-project-map`, `${project}-tech-stack`, `${project}-business-capabilities`,
+    ...projectMetaSkillTargets(project).map(item => item.name),
+    `${project}-code-backend`, `${project}-code-frontend`,
+    `${project}-backend-conventions`, `${project}-frontend-conventions`,
+  ]
+  const order = new Map(ordered.map((name, index) => [name, index]))
+  return inventory.suggestions.filter(item => !existing.has(item.name))
+    .sort((a, b) => (order.get(a.name) ?? ordered.length) - (order.get(b.name) ?? ordered.length))
+    .map(item => ({ ...item, required: item.name === `${project}-project-map`
+      || projectMetaSkillTargets(project).some(stage => stage.name === item.name) }))
+}
+
 /** A dedicated project adapter for every meta-skill; shared project maps remain optional attachments. */
 export function projectMetaSkillTargets(projectName: string): { meta: MetaSkill; name: string }[] {
   return (Object.keys(META_STAGES) as MetaSkill[]).map(meta => ({ meta, name: `${projectName}-${meta}` }))

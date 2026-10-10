@@ -227,6 +227,18 @@ export interface ProjectInitPromptView {
   existing: { name: string; exists: boolean }[]
   system_prompt: string
   user_prompt: string
+  step_prompt: string
+}
+
+export interface ProjectInitStepResult {
+  resource: InitResource | null
+  reason: string
+}
+
+export interface CodeGraphState {
+  installed: boolean
+  indexed: boolean
+  summary: string
 }
 
 /** The mounted `task-engine` Remote namespace. */
@@ -265,7 +277,11 @@ export interface TaskEngineRemote {
   writeInit(request: { path: string; content: string; overwrite?: boolean }): Promise<RemoteResult<InitWriteResult>>
   generateInit(request: { path: string }): Promise<RemoteResult<InitDraft>>
   inspectProjectInit(request: { path: string }): Promise<RemoteResult<ProjectInitPromptView>>
+  readCodeGraphStatus(request: { path: string }): Promise<RemoteResult<CodeGraphState>>
+  prepareCodeGraph(request: { path: string; install: boolean }): Promise<RemoteResult<CodeGraphState>>
   generateProjectInit(request: { path: string; system_prompt?: string; user_prompt?: string }): Promise<RemoteResult<ProjectInitPreview>>
+  generateProjectInitStep(request: { path: string; target: string; prior_resources: InitResource[];
+    system_prompt?: string; user_prompt?: string; step_prompt?: string }): Promise<RemoteResult<ProjectInitStepResult>>
   previewProjectInit(request: { path: string; resources: InitResource[] }): Promise<RemoteResult<ProjectInitPreview>>
   applyProjectInit(request: { path: string; resources: InitResource[]; expected_hash: string; existing_hash: string }): Promise<RemoteResult<{ ok: boolean; created: string[]; error?: string }>>
 }

@@ -303,11 +303,17 @@ const projectInitInventorySchema = z.object({
 const projectInitPromptViewSchema = z.object({
   inventory: projectInitInventorySchema,
   existing: z.array(z.object({ name: z.string(), exists: z.boolean() })),
-  system_prompt: z.string(), user_prompt: z.string(),
+  system_prompt: z.string(), user_prompt: z.string(), step_prompt: z.string(),
 })
 const projectInitGenerateRequestSchema = initGenerateRequestSchema.extend({
   system_prompt: z.string().optional(), user_prompt: z.string().optional(),
 })
+const projectInitStepRequestSchema = projectInitGenerateRequestSchema.extend({
+  target: z.string(), prior_resources: z.array(projectInitResourceSchema), step_prompt: z.string().optional(),
+})
+const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string() })
+const codeGraphStateSchema = z.object({ installed: z.boolean(), indexed: z.boolean(), summary: z.string() })
+const codeGraphPrepareRequestSchema = z.object({ path: z.string(), install: z.boolean() })
 const projectInitPreviewRequestSchema = z.object({ path: z.string(), resources: z.array(projectInitResourceSchema) })
 const projectInitPreviewSchema = z.object({
   ok: z.boolean(), inventory: projectInitInventorySchema, resources: z.array(projectInitResourceSchema),
@@ -731,11 +737,32 @@ export const TYPERT_REMOTE = {
         create: () => projectInitPromptViewSchema, schema: projectInitPromptViewSchema },
     },
     {
+      id: `${PACKAGE}#task-engine/readCodeGraphStatus`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'readCodeGraphStatus', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitGenerateRequest`, create: () => initGenerateRequestSchema, schema: initGenerateRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#CodeGraphState`, create: () => codeGraphStateSchema, schema: codeGraphStateSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/prepareCodeGraph`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'prepareCodeGraph', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#CodeGraphPrepareRequest`, create: () => codeGraphPrepareRequestSchema, schema: codeGraphPrepareRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#CodeGraphState`, create: () => codeGraphStateSchema, schema: codeGraphStateSchema },
+    },
+    {
       id: `${PACKAGE}#task-engine/generateProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
       method: 'generateProjectInit', invocation: { kind: 'direct' },
       parameters: [{ name: 'request', wire: 'request', source: 'json',
         codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitGenerateRequest`, create: () => projectInitGenerateRequestSchema, schema: projectInitGenerateRequestSchema } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreview`, create: () => projectInitPreviewSchema, schema: projectInitPreviewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/generateProjectInitStep`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'generateProjectInitStep', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitStepRequest`, create: () => projectInitStepRequestSchema, schema: projectInitStepRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitStepResult`, create: () => projectInitStepResultSchema, schema: projectInitStepResultSchema },
     },
     {
       id: `${PACKAGE}#task-engine/previewProjectInit`, service: 'taskEngineController', namespace: 'task-engine',
