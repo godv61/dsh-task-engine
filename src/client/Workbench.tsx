@@ -24,7 +24,9 @@ import type { VisibilityState } from './visibility.ts'
 
 const overlay: CSSProperties = {
   position: 'absolute',
-  inset: 0,
+  // shell.overlay starts at the window edge; desktop chrome lives above the
+  // frame content. DSH publishes zero clearance in fullscreen and none on Web.
+  inset: 'var(--dsh-frame-chrome-top, var(--dsh-frame-top-clearance, 0px)) 0 0',
   display: 'flex',
   flexDirection: 'column',
   background: 'var(--dsw-alias-bg-base)',
@@ -54,6 +56,7 @@ const tabbar: CSSProperties = {
 
 const body: CSSProperties = {
   flex: 1,
+  minHeight: 0,
   overflowY: 'auto',
   padding: '16px clamp(12px, 2vw, 28px)',
 }

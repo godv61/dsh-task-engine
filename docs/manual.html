@@ -52,11 +52,11 @@
         <pre><code>pnpm dsh plugin --profile web add @godv61/dsh-task-engine
 pnpm dsh web --no-open</code></pre>
         <ol>
-          <li>关闭已有的 DSH Web 进程，再用相同 profile 启动，避免旧进程继续加载旧包。</li>
+          <li>关闭已有的 DSH Web 或桌面进程，再用相同 profile 启动，避免旧进程继续加载旧包。</li>
           <li>侧边栏找到<strong>工程任务</strong>；新建会话能选<strong>工程化开发引擎</strong>。</li>
           <li>在工作台顶部选择项目工作区。项目路径应是代码库根目录；先确认当前 Git 分支。</li>
         </ol>
-        <p>只在某个目录执行 <code>npm install</code> 不会把插件挂进 DSH profile。没有入口时先核对安装和启动的 profile，再查看 Web 启动日志。</p>
+        <p>只在某个目录执行 <code>npm install</code> 不会把插件挂进 DSH profile。没有入口时先核对安装和启动的 profile，再查看启动日志。Windows 桌面版的工作台会避开标题栏菜单与窗口按钮；浏览器版使用完整页面空间。升级后如仍出现顶部重叠，请重启正在运行的 DSH 进程。</p>
       </section>
 
       <section id="first-project">
