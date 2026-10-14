@@ -57,6 +57,20 @@ export interface SonarAudit {
   profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
 }
 
+export interface SonarHistoryRef {
+  checked_at: string
+  gate: string
+  target: string
+  scope_hash: string
+  report_path: string
+  detail_path: string
+  finding_count: number
+  blocking_count: number
+  /** Only blocking findings are retained for learn_rule. */
+  blocking: SonarFinding[]
+  dispositions?: SonarDisposition[]
+}
+
 /** Limit local analysis to the project-relative source roots used by the project's scanner. */
 export function validAuditIncludePaths(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 64 && value.every(path =>
@@ -124,7 +138,7 @@ export function isBlockingFinding(finding: SonarFinding): boolean {
   return ['MAJOR', 'CRITICAL', 'BLOCKER', 'MEDIUM', 'HIGH'].includes(finding.severity.toUpperCase())
 }
 
-export function unresolvedBlockingFindings(audit: SonarAudit): SonarFinding[] {
+export function unresolvedBlockingFindings(audit: Pick<SonarAudit, 'blocking' | 'dispositions'>): SonarFinding[] {
   const approved = new Set((audit.dispositions ?? []).filter(entry => entry.kind === 'false_positive')
     .map(entry => entry.issue_key))
   return audit.blocking.filter(finding => !approved.has(finding.key))

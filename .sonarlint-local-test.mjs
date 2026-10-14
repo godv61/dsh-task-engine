@@ -46,7 +46,7 @@ test('one review gets a credential-free Markdown report path and issue details',
   assert.equal(report.includes('token-secret'),false)
 })
 
-test('review report shows only profiles used by the analyzed files, including Vue style rules', () => {
+test('review report does not claim CSS coverage from a Vue file alone', () => {
   const audit = { analysis_id: 'abc12345-0000', checked_at: '2026-10-03T10:11:12.000Z',
     target: 'HEAD', gate: 'OK', findings: [], blocking: [],
     scanned_files: ['src/Rule.java', 'src/mapper.xml', 'ui/Auth.vue'], uncovered_files: [],
@@ -59,8 +59,12 @@ test('review report shows only profiles used by the analyzed files, including Vu
     ] }
   const report = renderSonarReport('QMS-1', { source: 'ide-local', project_key: 'project' }, audit)
   assert.match(report, /本次涉及语言的项目规则与本地分析器/)
-  for (const language of ['JAVA', 'XML', 'JS', 'CSS']) assert.match(report, new RegExp(`- ${language}：`))
+  for (const language of ['JAVA', 'XML', 'JS']) assert.match(report, new RegExp(`- ${language}：`))
+  assert.doesNotMatch(report, /- CSS：/)
   assert.doesNotMatch(report, /- GO：/)
+  const withCssFile = renderSonarReport('QMS-1', { source: 'ide-local', project_key: 'project' },
+    { ...audit, scanned_files: [...audit.scanned_files, 'ui/auth.css'] })
+  assert.match(withCssFile, /- CSS：/)
   assert.match(report, /规则来源为当前项目的 Quality Profile/)
   assert.doesNotMatch(report, /不能据此宣称全部服务端规则已覆盖/)
 })

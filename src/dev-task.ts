@@ -58,7 +58,7 @@ import {
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_EVIDENCE, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
   type Complexity, type MetaSkill } from './adaptive.ts'
-import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlockers, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarFinding, type SonarPolicy } from './sonar.ts'
+import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlockers, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand, type SonarAudit, type SonarHistoryRef, type SonarFinding, type SonarPolicy } from './sonar.ts'
 import { inspectLocalRules } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
@@ -1069,6 +1069,8 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
 interface OpArgs {
   operation: string
   task_id?: string
+  related_task_id?: string
+  relation_kind?: 'defect' | 'enhancement' | 'follow_up'
   branch?: string
   title?: string
   work_size?: 'tiny' | 'standard' | 'complex'
@@ -1237,7 +1239,7 @@ function taskPlanItemBlockers(state: TaskState): string[] {
 
 /** One optional, reviewable learning candidate per server rule, never an automatic Rule. */
 function ruleLearningCandidates(state: TaskState): { rule: string; count: number; example: SonarFinding }[] {
-  const audits = [...(state.sonar_history ?? []), state.sonar_audit].filter((audit): audit is SonarAudit => audit !== undefined)
+  const audits = [...(state.sonar_history ?? []), state.sonar_audit].filter((audit): audit is SonarAudit | SonarHistoryRef => audit !== undefined)
   const learnedKeys = new Set((state.learned_rules ?? []).map(entry => entry.issue_key))
   const eligible = audits.flatMap(audit => unresolvedBlockingFindings(audit))
   const learnedRules = new Set(eligible
@@ -1252,6 +1254,40 @@ function ruleLearningCandidates(state: TaskState): { rule: string; count: number
   return [...byRule.values()].map(({ rule, count, example }) => ({ rule, count, example }))
 }
 
+function sonarDetailPath(audit: SonarAudit): string {
+  if (!audit.report_path?.endsWith('.md')) throw new Error('Sonar report path is missing')
+  return audit.report_path.slice(0, -3) + '.json'
+}
+
+function fullSonarAudit(entry: SonarAudit | SonarHistoryRef): entry is SonarAudit {
+  return Array.isArray((entry as SonarAudit).findings)
+}
+
+async function storeSonarDetail(fs: Fs, audit: SonarAudit, cwd: string | undefined,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<string> {
+  const path = sonarDetailPath(audit)
+  const info = await (fs as unknown as WriteFs).lstat(path, cwd === undefined ? undefined : { cwd })
+  await writeText(fs, path, JSON.stringify(audit, null, 2) + '\n', cwd, mode,
+    info ? { kind: 'replaceIfVersion', version: info.version } : { kind: 'createIfAbsent' })
+  return path
+}
+
+async function compactSonarHistory(fs: Fs, state: TaskState, cwd: string | undefined,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
+  const entries = [...(state.sonar_history ?? []), ...(state.sonar_audit ? [state.sonar_audit] : [])].slice(-20)
+  const compact: (SonarAudit | SonarHistoryRef)[] = []
+  for (const entry of entries) {
+    if (!fullSonarAudit(entry)) { compact.push(entry); continue }
+    if (!entry.report_path) { compact.push(entry); continue }
+    const detail_path = await storeSonarDetail(fs, entry, cwd, mode)
+    compact.push({ checked_at: entry.checked_at, gate: entry.gate, target: entry.target,
+      scope_hash: entry.scope_hash, report_path: entry.report_path, detail_path,
+      finding_count: entry.findings.length, blocking_count: entry.blocking.length,
+      blocking: entry.blocking, ...(entry.dispositions ? { dispositions: entry.dispositions } : {}) })
+  }
+  state.sonar_history = compact
+}
+
 async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
   mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   if (!state.sonar_policy) throw new Error('SonarQube is not enabled for this task')
@@ -1259,6 +1295,7 @@ async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd
   await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
     { kind: 'createIfAbsent' })
   audit.report_path = path
+  await storeSonarDetail(fs, audit, cwd, mode)
 }
 
 async function updateSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
@@ -1268,6 +1305,7 @@ async function updateSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cw
   if (!info) throw new Error('the current Sonar report is missing; rerun sonar_check')
   await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
     { kind: 'replaceIfVersion', version: info.version })
+  await storeSonarDetail(fs, audit, cwd, mode)
 }
 
 async function inspectCompletedSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
@@ -1379,6 +1417,8 @@ export function registerDevTask(ctx: Context): void {
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
       task_id: { type: 'string', description: 'Task id. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
+      related_task_id: { type: 'string', description: 'Archived source task for a new defect, enhancement or follow-up. New work always gets a new task_id.' },
+      relation_kind: { type: 'string', enum: ['defect', 'enhancement', 'follow_up'], description: 'How a newly created task relates to related_task_id.' },
       skill_name: { type: 'string', description: 'Bound skill to load or record. For a codex-project skill, pass codex-project:name to load_skill and skill_result. Command evidence needs a real validation command; manual evidence needs human approval.' },
       branch: { type: 'string', description: 'Current git branch (recorded on create).' },
       title: { type: 'string', description: 'Task title (create).' },
@@ -1460,16 +1500,18 @@ export function registerDevTask(ctx: Context): void {
       const session = exec.agent?.session as unknown as SkillSession | undefined
 
       if (a.operation === 'status' && !a.task_id) {
-        const tasks: { id: string; title: string; branch: string; stage: string; complexity?: Complexity }[] = []
+        const tasks: { id: string; title: string; branch: string; stage: string; lifecycle: 'active' | 'ready_to_close' | 'archived'; completed_at?: string; complexity?: Complexity }[] = []
         const names = await projectProbe(fs).list?.(cwd ?? '', '.dsh') ?? []
         for (const name of names.filter(name => /^task-.+\.json$/.test(name))) {
           const raw = await readText(fs, `.dsh/${name}`, cwd)
           if (!raw) continue
           const task = JSON.parse(raw) as TaskState
           if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage,
+            lifecycle: task.completed ? 'archived' : task.stage === task.flow?.config.stages.at(-1) ? 'ready_to_close' : 'active',
+            ...(task.completed ? { completed_at: task.completed.at } : {}),
             ...(task.complexity !== undefined ? { complexity: task.complexity } : {}) })
         }
-        return JSON.stringify({ tasks, next_action: tasks.length ? 'Call status with the selected task_id; create a new task for a new requirement.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
+        return JSON.stringify({ tasks, next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
       }
 
       if (a.operation === 'config') {
@@ -1690,6 +1732,12 @@ export function registerDevTask(ctx: Context): void {
           throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
         }
         if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
+        if ((a.related_task_id === undefined) !== (a.relation_kind === undefined)) throw new Error('related_task_id and relation_kind must be provided together')
+        if (a.related_task_id === a.task_id) throw new Error('a follow-up task needs its own task_id')
+        if (a.related_task_id !== undefined) {
+          const related = await loadTask(fs, a.related_task_id, cwd)
+          if (related.completed === undefined) throw new Error('related source task must be archived before creating a post-delivery follow-up')
+        }
         if (a.complexity !== undefined && !a.complexity_reason?.trim()) {
           throw new Error('adaptive create requires complexity_reason explaining the requirement evidence for this grade')
         }
@@ -1739,6 +1787,7 @@ export function registerDevTask(ctx: Context): void {
           root,
           project_type: await detectType(projectProbe(fs), root),
         })
+        if (a.related_task_id !== undefined) state.related_task = { id: a.related_task_id, kind: a.relation_kind! }
         state.items = normalizeItems(a.items)
         state.execution_version = 1
         state.files = a.files ?? []
@@ -1753,8 +1802,8 @@ export function registerDevTask(ctx: Context): void {
       if (state.completed !== undefined && a.operation === 'complete') {
         return `task already completed at ${state.completed.at}`
       }
-      if (state.completed !== undefined && a.operation !== 'status' && a.operation !== 'revise' && a.operation !== 'learn_rule') {
-        throw new Error('task is completed; use revise to reopen it before changing task state')
+      if (state.completed !== undefined && a.operation !== 'status') {
+        throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
       }
 
       if (a.operation === 'load_skill') {
@@ -1804,6 +1853,8 @@ export function registerDevTask(ctx: Context): void {
           complexity: state.complexity ?? null,
           complexity_reason: state.complexity_reason ?? null,
           completed: state.completed ?? null,
+          lifecycle: state.completed ? 'archived' : state.stage === workflow.stages.at(-1) ? 'ready_to_close' : 'active',
+          related_task: state.related_task ?? null,
           completion_blockers: completionIssues,
           work_size: state.work_size,
           requirement_confirmed: state.requirement_confirmed,
@@ -1901,10 +1952,10 @@ export function registerDevTask(ctx: Context): void {
           if (await scopeFingerprint(fs, state, cwd) !== scopeBefore) {
             throw new Error('本地规则审核期间代码发生变化，请重新测试和审核')
           }
-          if (state.sonar_audit !== undefined) state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
+          const mode = await resolveWriteMode(ctx, a, exec)
+          await compactSonarHistory(fs, state, cwd, mode)
           state.sonar_audit = audit
           state.review.outcome = 'pending'
-          const mode = await resolveWriteMode(ctx, a, exec)
           await writeSonarReport(fs, state, audit, cwd, mode)
           await writeTask(fs, state, cwd, mode)
           return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
@@ -1942,10 +1993,10 @@ export function registerDevTask(ctx: Context): void {
         const audit = await inspectCompletedSonar(state.sonar_policy, token, ceTaskId, target,
           scopeBefore, exec.signal)
         audit.commit_hash = state.commits.findLast(entry => entry.hash !== undefined)!.hash!
-        if (state.sonar_audit !== undefined) state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
+        const mode = await resolveWriteMode(ctx, a, exec)
+        await compactSonarHistory(fs, state, cwd, mode)
         state.sonar_audit = audit
         state.review.outcome = 'pending'
-        const mode = await resolveWriteMode(ctx, a, exec)
         await writeSonarReport(fs, state, audit, cwd, mode)
         await writeTask(fs, state, cwd, mode)
         return JSON.stringify({ gate: audit.gate, ...(audit.server_gate ? { server_gate: audit.server_gate } : {}),
@@ -1998,7 +2049,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'learn_rule') {
-        const issue = [state.sonar_audit, ...(state.sonar_history ?? [])].filter((entry): entry is SonarAudit => entry !== undefined)
+        const issue = [state.sonar_audit, ...(state.sonar_history ?? [])].filter((entry): entry is SonarAudit | SonarHistoryRef => entry !== undefined)
           .flatMap(entry => unresolvedBlockingFindings(entry)).find(entry => entry.key === a.issue_key)
         if (!issue) throw new Error('learn_rule requires a blocking issue_key recorded by this task\'s SonarQube audit')
         if (!a.rule_name || !RESOURCE_NAME.test(a.rule_name) || !a.content?.trim() || a.content.trim().length < 40
@@ -2118,8 +2169,8 @@ export function registerDevTask(ctx: Context): void {
             : { at: new Date().toISOString(), commit_hash: hash }
           await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
           return hash === undefined
-            ? `task completed at "${state.stage}"; the record stays readable for audit`
-            : `task completed at "${state.stage}" (commit ${hash}); the record stays readable for audit`
+            ? `task archived at "${state.stage}"; the record is now read-only`
+            : `task archived at "${state.stage}" (commit ${hash}); the record is now read-only`
         }
           if (a.operation === 'revise') {
             // The graph has only forward edges, but the work does not: a requirement can
@@ -2145,11 +2196,10 @@ export function registerDevTask(ctx: Context): void {
               kind, reason: a.revision_reason.trim(), to: target, from: state.stage,
               at: new Date().toISOString(), invalidated: invalidatedBy(kind),
             })
-            if (state.sonar_audit !== undefined) {
-              state.sonar_history = [...(state.sonar_history ?? []), state.sonar_audit].slice(-20)
-            }
+            const mode = await resolveWriteMode(ctx, a, exec)
+            await compactSonarHistory(fs, state, cwd, mode)
             delete state.sonar_audit
-            await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+            await writeTask(fs, state, cwd, mode)
             return 'revised (' + kind + ') back to "' + outcome.stage + '"; invalidated: ' + outcome.invalidated.join(', ')
               + '. Re-establish these before advancing again; the history is kept in the task record.'
           }

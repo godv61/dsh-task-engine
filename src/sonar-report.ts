@@ -20,7 +20,9 @@ export function reviewedProfileCoverage(audit: SonarAudit): NonNullable<SonarAud
     else if (/\.(?:ts|tsx)$/iu.test(file)) languages.add('TS')
     else if (/\.(?:css|scss)$/iu.test(file)) languages.add('CSS')
     else if (/\.xml$/iu.test(file)) languages.add('XML')
-    else if (/\.vue$/iu.test(file)) { languages.add('JS'); languages.add('CSS') }
+    // A Vue file is submitted as JS. Its style block alone does not prove
+    // that a CSS rule ran; an actual CSS finding below can still add CSS.
+    else if (/\.vue$/iu.test(file)) languages.add('JS')
     else if (/\.html?$/iu.test(file)) languages.add('WEB')
   }
   for (const finding of audit.findings) {

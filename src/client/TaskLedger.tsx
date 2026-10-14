@@ -136,6 +136,7 @@ export function TaskLedger({ workspace, remote }: {
   const [query, setQuery] = useState('')
   const [risk, setRisk] = useState('all')
   const [stage, setStage] = useState('all')
+  const [lifecycle, setLifecycle] = useState('open')
 
   const refresh = useCallback(() => {
     if (workspace === '') return
@@ -157,15 +158,24 @@ export function TaskLedger({ workspace, remote }: {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const visible = tasks.filter(task => `${task.task_id} ${task.title} ${task.branch}`.toLowerCase().includes(query.toLowerCase()) && (risk === 'all' || task.risk_level === risk) && (stage === 'all' || task.stage === stage))
+  const visible = tasks.filter(task => `${task.task_id} ${task.title} ${task.branch}`.toLowerCase().includes(query.toLowerCase()) && (risk === 'all' || task.risk_level === risk) && (stage === 'all' || task.stage === stage) && (lifecycle === 'all' || (lifecycle === 'archived' ? task.lifecycle === 'archived' : task.lifecycle !== 'archived')))
+  const archivedCount = tasks.filter(task => task.lifecycle === 'archived').length
+  const activeCount = tasks.filter(task => task.lifecycle === 'active').length
+  const readyCount = tasks.filter(task => task.lifecycle === 'ready_to_close').length
+  visible.sort((left, right) => (right.updated_at ?? right.completed_at ?? '').localeCompare(left.updated_at ?? left.completed_at ?? ''))
   return createElement('div', { style: styles.section },
     createElement('div', { className: 'te-toolbar' },
       createElement('input', { className: 'te-input', placeholder: '搜索任务、标题或分支', value: query, onChange: (e: { target: HTMLInputElement }) => setQuery(e.target.value) }),
+      createElement('select', { className: 'te-input', 'aria-label': '任务状态筛选', value: lifecycle, onChange: (e: { target: HTMLSelectElement }) => setLifecycle(e.target.value) },
+        createElement('option', { value: 'open' }, '进行中 / 待归档'),
+        createElement('option', { value: 'archived' }, '已归档 (' + archivedCount + ')'),
+        createElement('option', { value: 'all' }, '全部任务')),
       createElement('select', { className: 'te-input', 'aria-label': '风险筛选', value: risk, onChange: (e: { target: HTMLSelectElement }) => setRisk(e.target.value) }, createElement('option', { value: 'all' }, '全部风险'), createElement('option', { value: 'standard' }, '标准'), createElement('option', { value: 'high_risk' }, '高风险')),
       createElement('select', { className: 'te-input', 'aria-label': '阶段筛选', value: stage, onChange: (e: { target: HTMLSelectElement }) => setStage(e.target.value) }, createElement('option', { value: 'all' }, '全部阶段'), ...Array.from(new Set(tasks.map(t => t.stage))).map(value => createElement('option', { key: value, value }, value))),
     ),
     createElement('div', { style: headerRow },
       createElement('span', { style: styles.bindingLabel }, '任务台账'),
+      createElement('span', { style: metaLine }, '进行中 ' + activeCount + ' · 待归档 ' + readyCount + ' · 已归档 ' + archivedCount),
       createElement('span', { style: styles.sourceBadge }, '只读 · 来自 .dsh/task-*.json'),
       createElement(Button, { variant: 'outline', size: 'sm', disabled: loading, onClick: refresh }, loading ? '读取中…' : '刷新'),
     ),
@@ -179,6 +189,7 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { style: { fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, task.task_id),
               createElement('span', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, task.title),
               createElement('span', { style: badge }, task.stage),
+              createElement('span', { style: { ...badge, fontWeight: 600 } }, task.lifecycle === 'archived' ? '已归档' : task.lifecycle === 'ready_to_close' ? '待归档' : '进行中'),
               task.complexity ? createElement('span', { style: badge }, `复杂度：${{ low: '低', medium: '中', high: '高', ultra: '超高' }[task.complexity] ?? task.complexity}`) : null,
               createElement('span', { style: badge }, task.branch),
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
@@ -186,8 +197,12 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { className: 'te-badge' }, `审核：${task.review_outcome ?? 'pending'}`),
               task.updated_at ? createElement('span', { style: metaLine }, '更新于 ' + timeText(task.updated_at)) : null,
             ),
+            createElement('div', { style: metaLine }, '实施项 ' + task.items_done + '/' + task.items.length + ' · 下一步：' + task.next_action,
+              task.completed_at ? ' · 归档于 ' + timeText(task.completed_at) : '',
+              task.related_task ? ' · 关联 ' + task.related_task.kind + '：' + task.related_task.id : ''),
             sonarAudit(task),
-            createElement('div', { style: { display: 'flex', flexDirection: 'column' } },
+            createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
+              createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } }, '实施项与审查记录（' + task.items.length + '）'),
               ...task.items.map(item => createElement('div', { key: item.id, style: itemRow },
                 createElement('div', { style: headerRow },
                   itemStatusDot(item.status),

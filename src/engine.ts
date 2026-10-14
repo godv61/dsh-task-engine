@@ -12,7 +12,7 @@
 
 import type { ProjectType } from './project.ts'
 import type { Complexity } from './adaptive.ts'
-import type { SonarAudit, SonarPolicy } from './sonar.ts'
+import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
@@ -399,7 +399,7 @@ export interface TaskState {
   sonar_policy?: SonarPolicy
   sonar_audit?: SonarAudit
   /** Prior scans, including failed findings that may become reviewed Rule examples. */
-  sonar_history?: SonarAudit[]
+  sonar_history?: (SonarAudit | SonarHistoryRef)[]
   learned_rules?: { issue_key: string; rule_name: string; skill_name: string; at: string }[]
   /** Frozen workflow captured at create time; gates re-read this, not the live config. Absent on pre-snapshot task records. */
   flow?: FlowSnapshot
@@ -430,6 +430,8 @@ export interface TaskState {
   skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt; approved?: boolean }>>
   /** Set by the `complete` operation once every configured condition holds. Absent while the task is still open. */
   completed?: TaskCompletion
+  /** Follow-up work has its own record while retaining a link to its source task. */
+  related_task?: { id: string; kind: 'defect' | 'enhancement' | 'follow_up' }
   /** Rework history, newest last. Absent when the task never went back. */
   revisions?: TaskRevision[]
 }
@@ -1050,6 +1052,7 @@ export interface RevisionOutcome {
  * @returns the stage reached and the conclusions cleared.
  */
 export function applyRevision(state: TaskState, revision: TaskRevision): RevisionOutcome {
+  if (state.completed !== undefined) throw new Error(`task "${state.id}" is archived; create a new related task`)
   const cleared = invalidatedBy(revision.kind)
   if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
   if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
@@ -1078,9 +1081,6 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
     }
   }
   if (cleared.includes('commits')) state.commits = []
-  // Going back means the task is open again; a completed task that reworks is a
-  // task whose completion no longer describes it.
-  delete state.completed
   state.stage = revision.to
   state.revisions = [...(state.revisions ?? []), { ...revision, invalidated: cleared }]
   return { stage: revision.to, invalidated: cleared }

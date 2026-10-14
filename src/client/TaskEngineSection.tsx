@@ -156,6 +156,11 @@ export interface TaskLedgerEntry {
   complexity?: string
   risk_level?: string
   updated_at?: string
+  lifecycle: "active" | "ready_to_close" | "archived"
+  completed_at?: string
+  related_task?: { id: string; kind: string }
+  items_done: number
+  next_action: string
   verification_passed?: boolean
   review_outcome?: string
   sonar?: {

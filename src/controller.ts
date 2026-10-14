@@ -312,6 +312,11 @@ export interface TaskLedgerItem {
 export interface TaskLedgerEntry {
   risk_level?: string
   updated_at?: string
+  lifecycle: "active" | "ready_to_close" | "archived"
+  completed_at?: string
+  related_task?: { id: string; kind: string }
+  items_done: number
+  next_action: string
   verification_passed?: boolean
   review_outcome?: string
   sonar?: {
@@ -1033,6 +1038,11 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.complexity ? { complexity: state.complexity } : {}),
           ...(state.risk_level ? { risk_level: state.risk_level } : {}),
           ...(state.updated_at ? { updated_at: state.updated_at } : {}),
+          lifecycle: state.completed ? "archived" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "ready_to_close" : "active",
+          ...(state.completed ? { completed_at: state.completed.at } : {}),
+          ...(state.related_task ? { related_task: state.related_task } : {}),
+          items_done: (state.items ?? []).filter(item => item.status === "done").length,
+          next_action: state.completed ? "已归档；后续改动请新建关联任务" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? "继续实施并完成任务项" : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接",
           verification_passed: state.verification?.passed ?? false,
           review_outcome: state.review?.outcome ?? 'pending',
           ...(state.sonar_policy ? { sonar: {

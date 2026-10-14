@@ -126,3 +126,12 @@ test('rework: skill results from revised stages are invalidated', () => {
   assert.equal(state.skill_results['开发'], undefined)
   assert.equal(state.skill_results['代码审核'], undefined)
 })
+
+
+test('an archived task cannot be revised or reopened', () => {
+  const state = loadedTask()
+  state.completed = { at: '2026-10-14T00:00:00.000Z' }
+  assert.throws(() => applyRevision(state, rework('defect', '开发')), /archived/)
+  assert.equal(state.stage, '代码审核')
+  assert.equal(state.items[0].status, 'done')
+})

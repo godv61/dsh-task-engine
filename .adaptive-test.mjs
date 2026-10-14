@@ -422,6 +422,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     assert.match(check.report_path, /^\.dsh\/reviews\/S-1\//)
     assert.match(f.files.get(join(f.cwd, check.report_path)), /SonarQube 代码审核/)
     assert.equal(f.state('S-1').sonar_audit.report_path, check.report_path)
+    assert.equal(JSON.parse(f.files.get(join(f.cwd, check.report_path.replace(/\.md$/u, '.json')))).analysis_id, 'AN-2')
     await f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' })
     assert.equal(f.state('S-1').review.outcome, 'pass')
   } finally {
@@ -666,4 +667,18 @@ test('a local false positive needs human approval, keeps the raw gate, and expir
   await assert.rejects(f.call({ operation: 'learn_rule', task_id: 'FP-1', issue_key: finding.key }), /blocking issue_key/)
   f.files.set(join(f.cwd, 'app.js'), 'new source')
   await assert.rejects(f.call({ operation: 'review', task_id: 'FP-1', outcome: 'pass' }), /stale/)
+})
+
+
+test('archived task is read-only and a follow-up gets a new linked record', async () => {
+  const f = fixture()
+  await f.call({ operation: 'create', task_id: 'DONE-1', title: 'delivered', branch: 'feature', complexity: 'low', complexity_reason: 'small change', files: ['app.js'] })
+  const state = f.state('DONE-1')
+  state.completed = { at: '2026-10-14T00:00:00.000Z' }
+  f.files.set(join(f.cwd, '.dsh/task-DONE-1.json'), JSON.stringify(state))
+  assert.match(await f.call({ operation: 'status', task_id: 'DONE-1' }), /archived/)
+  await assert.rejects(() => f.call({ operation: 'revise', task_id: 'DONE-1', target_stage: '代码开发', revision_kind: 'defect', revision_reason: 'later bug' }), /archived/)
+  await f.call({ operation: 'create', task_id: 'FIX-2', title: 'later bug', branch: 'feature', complexity: 'low', complexity_reason: 'localized', files: ['app.js'], related_task_id: 'DONE-1', relation_kind: 'defect' })
+  assert.deepEqual(f.state('FIX-2').related_task, { id: 'DONE-1', kind: 'defect' })
+  assert.deepEqual(f.state('DONE-1'), state)
 })
