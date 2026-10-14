@@ -1,10 +1,11 @@
 /** Optional CodeGraph CLI evidence for project initialization. */
-import { execFile } from 'node:child_process'
+import { exec as execShell, execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 const exec = promisify(execFile)
+const shell = promisify(execShell)
 
 export interface CodeGraphState {
   installed: boolean
@@ -14,11 +15,12 @@ export interface CodeGraphState {
 
 async function run(root: string, program: 'codegraph' | 'npm', args: string[], timeout = 30_000): Promise<string> {
   // Arguments below are fixed by the plugin; the project path is passed only as cwd.
-  const command = process.platform === 'win32' ? 'cmd.exe' : program
-  const parameters = process.platform === 'win32'
-    ? ['/d', '/s', '/c', [program, ...args.map(arg => /^[\w.-]+$/u.test(arg) ? arg : `"${arg}"`)].join(' ')]
-    : args
-  const { stdout } = await exec(command, parameters, { cwd: root, timeout, maxBuffer: 512_000, windowsHide: true })
+  // execFile escapes quotes again when forwarding a command string to cmd.exe.
+  // That makes npm receive a literal quoted package name on Windows.
+  const options = { cwd: root, timeout, maxBuffer: 512_000, windowsHide: true }
+  const { stdout } = process.platform === 'win32'
+    ? await shell([program, ...args.map(arg => /^[\w@./-]+$/u.test(arg) ? arg : `"${arg}"`)].join(' '), options)
+    : await exec(program, args, options)
   return stdout.trim().slice(0, 12_000)
 }
 

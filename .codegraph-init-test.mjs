@@ -13,7 +13,7 @@ test('optional CodeGraph indexing uses the selected project and supplies bounded
   mkdirSync(project)
   const executable = join(bin, process.platform === 'win32' ? 'codegraph.cmd' : 'codegraph')
   const script = process.platform === 'win32'
-    ? '@echo off\r\nif "%1"=="--version" (echo 1.6.0 & exit /b 0)\r\nif "%1"=="init" (mkdir .codegraph & exit /b 0)\r\nif "%1"=="status" (echo Files: 2 Nodes: 5 & exit /b 0)\r\nif "%1"=="sync" (echo updated>.codegraph\\synced & exit /b 0)\r\nif "%1"=="files" (echo backend/src/App.java & exit /b 0)\r\nif "%1"=="context" (echo - backend/src/App.java:1 entry point & echo - unrelated/public/js/chart.js:1 & exit /b 0)\r\nexit /b 1\r\n'
+    ? '@echo off\r\nif "%1"=="--version" (echo 1.6.0 & exit /b 0)\r\nif "%1"=="init" (mkdir .codegraph & exit /b 0)\r\nif "%1"=="status" (echo Files: 2 Nodes: 5 & exit /b 0)\r\nif "%1"=="sync" (echo updated>.codegraph\\synced & exit /b 0)\r\nif "%1"=="files" (echo backend/src/App.java & exit /b 0)\r\nif "%1"=="context" (if not "%~5"=="backend entry points controllers services components" exit /b 2\r\necho - backend/src/App.java:1 entry point & echo - unrelated/public/js/chart.js:1 & exit /b 0)\r\nexit /b 1\r\n'
     : '#!/bin/sh\ncase "$1" in --version) echo 1.6.0;; init) mkdir .codegraph;; status) echo "Files: 2 Nodes: 5";; sync) echo updated > .codegraph/synced;; files) echo backend/src/App.java;; context) printf "%s\\n" "- backend/src/App.java:1 entry point" "- unrelated/public/js/chart.js:1";; *) exit 1;; esac\n'
   writeFileSync(executable, script)
   if (process.platform !== 'win32') chmodSync(executable, 0o755)
@@ -36,3 +36,35 @@ test('optional CodeGraph indexing uses the selected project and supplies bounded
     rmSync(temp, { recursive: true, force: true })
   }
 })
+
+test('Windows CodeGraph setup passes the npm package name without literal quotes',
+  { skip: process.platform !== 'win32' }, async () => {
+    const temp = mkdtempSync(join(tmpdir(), 'dsh-codegraph-install-'))
+    const bin = join(temp, 'bin')
+    const project = join(temp, 'project')
+    mkdirSync(bin)
+    mkdirSync(project)
+    writeFileSync(join(bin, 'npm.cmd'),
+      '@echo off\r\nif not "%1"=="install" exit /b 1\r\n' +
+      'if not "%2"=="-g" exit /b 2\r\n' +
+      'if not "%3"=="@colbymchenry/codegraph@latest" exit /b 3\r\n' +
+      'echo installed>"%~dp0installed"\r\n')
+    writeFileSync(join(bin, 'codegraph.cmd'),
+      '@echo off\r\nif not exist "%~dp0installed" exit /b 1\r\n' +
+      'if "%1"=="--version" (echo 1.6.0 & exit /b 0)\r\n' +
+      'if "%1"=="init" (mkdir .codegraph & exit /b 0)\r\n' +
+      'if "%1"=="status" (echo Files: 2 Nodes: 5 & exit /b 0)\r\n' +
+      'exit /b 1\r\n')
+    const previous = process.env.PATH
+    process.env.PATH = `${bin}${delimiter}${previous ?? ''}`
+    try {
+      assert.equal((await codeGraphStatus(project)).installed, false)
+      const ready = await prepareCodeGraph(project, true)
+      assert.equal(ready.installed, true)
+      assert.equal(ready.indexed, true)
+      assert.equal(existsSync(join(bin, 'installed')), true)
+    } finally {
+      process.env.PATH = previous
+      rmSync(temp, { recursive: true, force: true })
+    }
+  })
