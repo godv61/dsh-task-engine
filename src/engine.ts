@@ -14,6 +14,8 @@ import type { ProjectType } from './project.ts'
 import type { Complexity } from './adaptive.ts'
 import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
+import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
+import { affectedItems, groupEvidenceBlockers, preserveVerification } from './verification-state.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -275,6 +277,14 @@ export interface ItemDispatch {
   description: string
   /** ISO-8601 timestamp when the subagent was dispatched. */
   at: string
+  provider?: 'spawn' | 'fork'
+  execution?: 'direct' | 'spawn' | 'fork'
+  run_id?: string
+  status?: 'starting' | 'running' | 'completed' | 'failed'
+  output?: string
+  error?: string
+  finished_at?: string
+  parent_session?: string
 }
 
 /**
@@ -326,6 +336,8 @@ export interface TaskRevision {
   at: string
   /** Conclusion names this rework invalidated, for audit. */
   invalidated: string[]
+  /** Explicit defect impact; absent means conservative task-wide invalidation. */
+  affected_items?: string[]
 }
 
 /** Verdict of one review stage over a completed item. */
@@ -337,6 +349,9 @@ export interface ItemReviewStage {
 
 /** Two-stage review of an item: specification conformance then code quality. */
 export interface ItemReview {
+  independent_run_id?: string
+  scope_hash?: string
+  verification_key?: string
   /** Stage one: the implementation did the right scope (specification conformance). */
   spec: ItemReviewStage
   /** Stage two: the code meets quality conventions (boundary, error, naming). */
@@ -347,8 +362,12 @@ export interface TaskItem {
   id: string
   title: string
   status: ItemStatus
+  execution_plan?: import('./execution-plan.ts').ExecutionPlan
+  independent_review?: import('./execution-plan.ts').IndependentReview
+  independent_review_history?: import('./execution-plan.ts').IndependentReview[]
   /** Agent-reported implementation start, whether performed directly or delegated. */
   dispatch?: ItemDispatch
+  dispatch_history?: ItemDispatch[]
   /** Audit trail: the two-stage review verdicts over the completed item. */
   review?: ItemReview
 }
@@ -397,6 +416,7 @@ export interface TaskState {
   complexity_reason?: string
   /** Optional review-only SonarQube policy frozen for this task. No token is stored. */
   sonar_policy?: SonarPolicy
+  sonar_baseline?: import('./sonar.ts').LocalAuditBaseline
   sonar_audit?: SonarAudit
   /** Prior scans, including failed findings that may become reviewed Rule examples. */
   sonar_history?: (SonarAudit | SonarHistoryRef)[]
@@ -407,8 +427,13 @@ export interface TaskState {
   requirement_confirmed: boolean
   solution_confirmed: boolean
   items: TaskItem[]
-  verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt }
-  review: { outcome: 'pending' | 'pass' | 'blocked' }
+  verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt; scope_hash?: string; problems?: string[] }
+  /** New tasks declare complete implementation/test units; older tasks opt in by planning a group. */
+  verification_version?: 1
+  verification_groups?: Record<string, import('./verification-state.ts').VerificationGroup>
+  verification_group_history?: import('./verification-state.ts').VerificationGroup[]
+  verification_runs?: import('./verification-state.ts').VerificationRun[]
+  review: { outcome: 'pending' | 'pass' | 'blocked'; scope_hash?: string; verification_at?: string; verification_key?: string; checked_at?: string }
   /** Recorded artifacts (artifact id -> field -> value). */
   artifacts: Record<string, Record<string, string>>
   /** Repo-relative paths this task may touch (checked by the file-scope commit gate). */
@@ -427,7 +452,10 @@ export interface TaskState {
   updated_at?: string
   /** New tasks enforce skill evidence and checkpoint completion; old snapshots remain readable. */
   execution_version?: 1
+  delegation_version?: 1
+  execution_policy?: 'auto' | 'main_only'
   skill_results?: Record<string, Record<string, { session_id: string; load_call_id: string; evidence: string[]; receipt?: VerificationReceipt; approved?: boolean }>>
+  skill_loads?: Record<string, Record<string, { input_hash: string; session_id: string; at: string }>>
   /** Set by the `complete` operation once every configured condition holds. Absent while the task is still open. */
   completed?: TaskCompletion
   /** Follow-up work has its own record while retaining a link to its source task. */
@@ -619,8 +647,9 @@ export function findTransition(from: string, to: string, config: WorkflowConfig)
 export function todosBlockers(state: TaskState, config?: WorkflowConfig): string[] {
   if (state.items.length === 0) return ['no implementation items']
   const depth = config?.review_depth ?? 'two-stage'
-  const blockers: string[] = []
+  const blockers: string[] = executionCoverageBlockers(state)
   for (const item of state.items) {
+    blockers.push(...executionItemBlockers(state, item))
     if (item.status !== 'done') {
       blockers.push(`item "${item.id}" is ${item.status}`)
       continue
@@ -653,6 +682,7 @@ function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConf
       return todosBlockers(state, config).length === 0
     case 'verified': {
       if (!state.verification.passed) return false
+      if (state.verification_version && groupEvidenceBlockers(state).length) return false
       if (state.verification.receipt && !receiptHasRequiredTests(state.verification.receipt)) return false
       if (config.high_risk_requires_verification && state.risk_level === 'high_risk') {
         // A high-risk task's `verified` gate demands a real command receipt, not
@@ -817,6 +847,7 @@ export function verificationHeldStages(config: WorkflowConfig): Set<string> {
 export function verificationBlockers(state: TaskState, config: WorkflowConfig): string[] {
   if (!verificationHeldStages(config).has(state.stage)) return []
   const blockers: string[] = []
+  if (state.verification_version) blockers.push(...groupEvidenceBlockers(state))
   if (state.verification.receipt?.scope_changed_during_run) {
     blockers.push('task files changed while verification ran; rerun tests on an unchanged source tree')
   }
@@ -1053,6 +1084,9 @@ export interface RevisionOutcome {
  */
 export function applyRevision(state: TaskState, revision: TaskRevision): RevisionOutcome {
   if (state.completed !== undefined) throw new Error(`task "${state.id}" is archived; create a new related task`)
+  const selective = revision.kind === 'defect' && state.verification_version && revision.affected_items?.length
+  const affected = selective ? affectedItems(state, revision.affected_items) : state.items.map(item => item.id)
+  preserveVerification(state)
   const cleared = invalidatedBy(revision.kind)
   if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
   if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
@@ -1063,11 +1097,14 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
     state.review = { outcome: 'pending' }
   }
   if (cleared.includes('item_reviews')) {
-    for (const item of state.items) {
+    for (const item of state.items.filter(item => affected.includes(item.id))) {
       delete item.review
+      if (item.independent_review) item.independent_review_history = [...(item.independent_review_history ?? []), item.independent_review].slice(-10)
+      delete item.independent_review
+      if (revision.kind !== 'defect') delete item.execution_plan
       // An item whose audit is gone is no longer proven done, so it returns to
       // the state where its work is still outstanding.
-      if (item.status === 'done') item.status = 'doing'
+      if (item.status === 'done' || item.status === 'doing') item.status = 'todo'
     }
   }
   if (cleared.includes('skill_results')) {
@@ -1079,6 +1116,12 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
         delete state.skill_results![stage]
       }
     }
+    // Reading instructions is reusable in this session while their content hash
+    // is unchanged. Command/artifact evidence above still becomes invalid.
+  }
+  for (const run of state.verification_runs ?? []) {
+    const group = run.group_id ? state.verification_groups?.[run.group_id] : undefined
+    if (!selective || !group || group.item_ids.some(id => affected.includes(id))) run.invalidated_reason = `${revision.kind} revision: ${revision.reason}`
   }
   if (cleared.includes('commits')) state.commits = []
   state.stage = revision.to

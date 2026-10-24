@@ -8,11 +8,12 @@
  * @module dsh-task-engine/TaskLedger
  */
 
-import { createElement, useCallback, useEffect, useState, type CSSProperties } from 'react'
+import { createElement, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Button, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { TaskEngineRemote, TaskLedgerEntry, TaskLedgerItem } from './TaskEngineSection.ts'
+import { formatEastEightTime } from '../time.ts'
 
 const card: CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 10,
@@ -49,16 +50,41 @@ function itemStatusDot(status: string): ReturnType<typeof createElement> {
 }
 
 function timeText(at: string): string {
-  return at.slice(0, 19).replace('T', ' ')
+  return formatEastEightTime(at)
 }
 
 /** Render one item's start record and two-stage review (when present). */
 function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
   const lines: Array<ReturnType<typeof createElement>> = []
+  const executionLabel = (mode: string): string => ({ direct: '主会话执行', spawn: '子代理执行（独立上下文）', fork: '子代理执行（继承会话历史）', unknown: '未记录（旧记录）' })[mode] ?? mode
+  const statusLabel = (status?: string): string => ({ starting: '启动中', running: '运行中', completed: '已结束', failed: '失败' })[status ?? ''] ?? '未启动'
+  if (item.execution_plan) {
+    const plan = item.execution_plan
+    lines.push(createElement('div', { key: 'plan', style: metaLine }, `计划方式：${executionLabel(plan.mode)} · ${plan.requested === 'auto' ? '自动选择' : '指定方式'}`),
+      createElement('div', { key: 'reason', style: metaLine }, `选择原因：${plan.reason}`),
+      createElement('div', { key: 'review-plan', style: metaLine }, `审核方式：${plan.review === 'independent' ? '独立审核子代理' : '主会话审核'} · ${plan.review_reason}`))
+    if (plan.depends_on.length) lines.push(createElement('div', { key: 'deps', style: metaLine }, `前置实施项：${plan.depends_on.join('、')}`))
+  }
+  if (item.independent_review) {
+    const review = item.independent_review
+    lines.push(createElement('details', { key: 'independent-review' },
+      createElement('summary', null, `独立审核 · ${statusLabel(review.status)}${review.spec ? ` · 规格${review.spec === 'pass' ? '通过' : '不通过'}` : ''}${review.quality ? ` · 质量${review.quality === 'pass' ? '通过' : '不通过'}` : ''} · ${review.run_id ?? '等待运行 ID'}`),
+      review.read_files?.length ? createElement('p', { style: metaLine }, `${review.read_coverage ? '全文行内容已核对' : '路径读取记录（未核对全文）'}：${review.read_files.join('、')}`) : null,
+      createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, review.output ?? ''),
+      review.error ? createElement('p', { role: 'alert' }, review.error) : null))
+  }
+  if (item.dispatch_history?.length) lines.push(createElement('details', { key: 'dispatch-history' },
+    createElement('summary', null, `历史委派（${item.dispatch_history.length}）`),
+    ...item.dispatch_history.map((entry, index) => createElement('p', { key: index }, `${entry.provider ?? 'direct'} · ${entry.run_id ?? ''} · ${entry.status ?? ''} · ${timeText(entry.at)}`))))
   if (item.dispatch !== undefined) {
+    if (item.dispatch.run_id) lines.push(createElement('details', { key: 'child' },
+      createElement('summary', null, `${executionLabel(item.dispatch.provider ?? 'spawn')} · ${statusLabel(item.dispatch.status)} · ${item.dispatch.run_id}`),
+      createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, item.dispatch.output ?? ''),
+      item.dispatch.error ? createElement('p', { role: 'alert' }, item.dispatch.error) : null))
     lines.push(createElement('div', { key: 'dispatch', style: metaLine },
-      createElement('span', { style: badge }, '已开始'),
-      createElement('span', null, item.dispatch.description === '' ? '（无描述）' : item.dispatch.description),
+      createElement('span', { style: badge }, `实际方式：${executionLabel(item.dispatch.execution ?? item.dispatch.provider ?? 'unknown')}`),
+      createElement('details', null, createElement('summary', { style: { cursor: 'pointer' } }, '实施说明'),
+        createElement('p', { style: { whiteSpace: 'pre-wrap' } }, item.dispatch.description === '' ? '（无描述）' : item.dispatch.description)),
       createElement('span', { style: badge }, timeText(item.dispatch.at)),
     ))
   }
@@ -97,7 +123,7 @@ function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createElement> | n
   const unresolved = audit.unresolved_count ?? audit.blocking_count
   return createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
     createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } },
-      `最近一次 SonarQube 审核：${outcome} · 未解决 ${unresolved} 条 · 原始命中 ${audit.blocking_count} 条 · ${timeText(audit.checked_at)}`),
+      `最近一次 SonarQube 审核：${outcome} · 问题总数 ${audit.findings.length} 条 · 原始阻断 ${audit.blocking_count} 条 · 未解决阻断 ${unresolved} 条 · ${timeText(audit.checked_at)}`),
     createElement('p', { style: metaLine },
       `来源：${source}；分析目标：${audit.target}；原始结果：${audit.gate}。这是该次审核记录；代码或规则变更后需重新测试并审核。`),
     audit.report_path ? createElement('p', { style: metaLine }, `审核文件：${audit.report_path}`) : null,
@@ -112,7 +138,7 @@ function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createElement> | n
     ...audit.uncovered_files.map(file => createElement('div', { key: `uncovered-${file}`, style: metaLine },
       `未覆盖：${file}`)),
     ...(audit.dispositions ?? []).map(entry => createElement('div', { key: `disposition-${entry.issue_key}`, style: metaLine },
-      `人工确认误报：${entry.issue_key} · ${entry.reason} · ${entry.approved_at}`)),
+      `人工确认误报：${entry.issue_key} · ${entry.reason} · ${timeText(entry.approved_at)}`)),
     audit.findings.length === 0
       ? createElement('p', { style: metaLine }, '没有新增代码问题。')
       : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
@@ -132,6 +158,11 @@ export function TaskLedger({ workspace, remote }: {
 }): ReturnType<typeof createElement> {
   const [tasks, setTasks] = useState<TaskLedgerEntry[]>([])
   const [error, setError] = useState('')
+  const [recordErrors, setRecordErrors] = useState<{ file: string; message: string }[]>([])
+  const [cursor, setCursor] = useState<string | undefined>()
+  const [total, setTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const epoch = useRef(0)
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
   const [risk, setRisk] = useState('all')
@@ -140,23 +171,44 @@ export function TaskLedger({ workspace, remote }: {
 
   const refresh = useCallback(() => {
     if (workspace === '') return
+    const requestEpoch = ++epoch.current
+    setLoadingMore(false)
     setError('')
     setLoading(true)
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('读取超时，请刷新页面或重新登录后重试')), 15_000)
     })
-    void Promise.race([remote.readTasks(workspace), timeout]).then((result) => {
+    // DSH validates positional arity before decoding optional values. An empty
+    // cursor explicitly requests the first page and survives JSON transport.
+    void Promise.race([remote.readTasks(workspace, ''), timeout]).then((result) => {
+      if (requestEpoch !== epoch.current) return
       setLoading(false)
-      if (result.ok) setTasks(result.value.tasks)
+      if (result.ok) { setTasks(result.value.tasks); setRecordErrors(result.value.errors ?? []); setCursor(result.value.next_cursor); setTotal(result.value.total_count ?? result.value.tasks.length) }
       else setError('读取台账失败：' + describeError(result.error))
     }, (reason: unknown) => {
+      if (requestEpoch !== epoch.current) return
       setLoading(false)
       setError('读取台账失败：' + describeError(reason))
     }).finally(() => { if (timer !== undefined) clearTimeout(timer) })
   }, [remote, workspace])
 
-  useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { refresh(); return () => { epoch.current++ } }, [refresh])
+  const loadMore = async (): Promise<void> => {
+    if (!cursor || loadingMore) return
+    const requestEpoch = epoch.current
+    setLoadingMore(true)
+    try {
+      const result = await remote.readTasks(workspace, cursor)
+      if (requestEpoch !== epoch.current) return
+      if (!result.ok) throw new Error(describeError(result.error))
+      setTasks(previous => [...new Map([...previous, ...result.value.tasks].map(task => [task.task_id, task])).values()])
+      setRecordErrors(previous => [...previous, ...(result.value.errors ?? [])])
+      setCursor(result.value.next_cursor)
+      setTotal(result.value.total_count ?? total)
+    } catch (error) { if (requestEpoch === epoch.current) setError(describeError(error)) }
+    finally { if (requestEpoch === epoch.current) setLoadingMore(false) }
+  }
 
   const visible = tasks.filter(task => `${task.task_id} ${task.title} ${task.branch}`.toLowerCase().includes(query.toLowerCase()) && (risk === 'all' || task.risk_level === risk) && (stage === 'all' || task.stage === stage) && (lifecycle === 'all' || (lifecycle === 'archived' ? task.lifecycle === 'archived' : task.lifecycle !== 'archived')))
   const archivedCount = tasks.filter(task => task.lifecycle === 'archived').length
@@ -175,10 +227,15 @@ export function TaskLedger({ workspace, remote }: {
     ),
     createElement('div', { style: headerRow },
       createElement('span', { style: styles.bindingLabel }, '任务台账'),
-      createElement('span', { style: metaLine }, '进行中 ' + activeCount + ' · 待归档 ' + readyCount + ' · 已归档 ' + archivedCount),
+      createElement('span', { style: metaLine }, '已载入任务：进行中 ' + activeCount + ' · 待归档 ' + readyCount + ' · 已归档 ' + archivedCount),
       createElement('span', { style: styles.sourceBadge }, '只读 · 来自 .dsh/task-*.json'),
       createElement(Button, { variant: 'outline', size: 'sm', disabled: loading, onClick: refresh }, loading ? '读取中…' : '刷新'),
     ),
+    cursor ? createElement('div', { style: headerRow },
+      createElement('span', null, `目录共 ${total} 条记录；筛选仅针对已载入任务。`),
+      createElement(Button, { variant: 'outline', size: 'sm', disabled: loading || loadingMore, onClick: () => { void loadMore() } }, loadingMore ? '读取中…' : '加载更多')) : null,
+    recordErrors.length ? createElement('div', { role: 'alert' }, ...recordErrors.map(entry =>
+      createElement('p', { key: entry.file }, `${entry.file}：${entry.message}`))) : null,
     loading ? createElement('p', { role: 'status' }, '正在读取任务…') : error !== ''
       ? createElement('p', { style: styles.status }, error)
       : tasks.length === 0
@@ -193,14 +250,24 @@ export function TaskLedger({ workspace, remote }: {
               task.complexity ? createElement('span', { style: badge }, `复杂度：${{ low: '低', medium: '中', high: '高', ultra: '超高' }[task.complexity] ?? task.complexity}`) : null,
               createElement('span', { style: badge }, task.branch),
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
-              createElement('span', { className: 'te-badge' }, task.verification_passed ? '验证通过' : '待验证'),
-              createElement('span', { className: 'te-badge' }, `审核：${task.review_outcome ?? 'pending'}`),
+              createElement('span', { className: 'te-badge' }, task.evidence_status
+                ? ({ valid: '验证通过 · 当前有效', stale: '验证已过期', failed: '验证失败', blocked: '验证受环境阻塞', missing: '待验证', historical: task.verification_passed ? '交付时验证通过' : '交付时未通过验证', unknown: '验证有效性待确认' })[task.evidence_status]
+                : task.verification_passed ? '历史验证通过' : '待验证'),
+              createElement('span', { className: 'te-badge' }, task.review_status
+                ? ({ valid: '审核通过 · 当前有效', stale: '审核已过期', missing: '待审核', blocked: '审核阻断', historical: `交付时审核：${task.review_outcome ?? 'pending'}` })[task.review_status]
+                : `审核：${task.review_outcome ?? 'pending'}`),
               task.updated_at ? createElement('span', { style: metaLine }, '更新于 ' + timeText(task.updated_at)) : null,
             ),
             createElement('div', { style: metaLine }, '实施项 ' + task.items_done + '/' + task.items.length + ' · 下一步：' + task.next_action,
               task.completed_at ? ' · 归档于 ' + timeText(task.completed_at) : '',
               task.related_task ? ' · 关联 ' + task.related_task.kind + '：' + task.related_task.id : ''),
             sonarAudit(task),
+            task.verification_groups?.length ? createElement('details', { style: metaLine },
+              createElement('summary', { style: { cursor: 'pointer' } }, `测试分组（${task.verification_groups.length}）`),
+              ...task.verification_groups.map(group => createElement('div', { key: group.id, style: itemRow },
+                createElement('span', null, `${group.id} · ${{ passed: '通过', failed: '失败', blocked: '环境阻塞', stale: '证据已过期', missing: '待运行' }[group.status]} · 测试数 ${group.test_count ?? '未识别'}${group.checked_at ? ' · ' + timeText(group.checked_at) : ''}`),
+                createElement('code', null, group.command),
+                ...group.problems.map(problem => createElement('span', { key: problem }, problem))))) : null,
             createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
               createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } }, '实施项与审查记录（' + task.items.length + '）'),
               ...task.items.map(item => createElement('div', { key: item.id, style: itemRow },

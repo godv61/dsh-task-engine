@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { codeGraphEvidence, codeGraphStatus, prepareCodeGraph } from './lib/codegraph-init.js'
+import { codeGraphEvidence, codeGraphInitHint, codeGraphStatus, prepareCodeGraph, queryInitCodeGraph } from './lib/codegraph-init.js'
 
 test('optional CodeGraph indexing uses the selected project and supplies bounded evidence', async () => {
   const temp = mkdtempSync(join(tmpdir(), 'dsh-codegraph-'))
@@ -23,9 +23,21 @@ test('optional CodeGraph indexing uses the selected project and supplies bounded
     const before = await codeGraphStatus(project)
     assert.equal(before.installed, true)
     assert.equal(before.indexed, false)
+    assert.match(codeGraphInitHint(project), /未检测到/)
+    await assert.rejects(queryInitCodeGraph(project, 'files'), /索引不存在/)
     const ready = await prepareCodeGraph(project, false)
     assert.equal(ready.indexed, true)
     assert.equal(existsSync(join(project, '.codegraph')), true)
+    writeFileSync(join(project, '.codegraph', 'codegraph.db'), '')
+    assert.match(codeGraphInitHint(project), /检测到/)
+    assert.equal((await queryInitCodeGraph(project, 'status')).indexed, true)
+    const graphFiles = await queryInitCodeGraph(project, 'files')
+    assert.match(graphFiles.output, /backend\/src\/App.java/)
+    assert.equal(graphFiles.truncated, false)
+    const graphContext = await queryInitCodeGraph(project, 'context', 'backend entry points controllers services components')
+    assert.match(graphContext.output, /entry point/)
+    for (const query of ['foo & whoami', 'foo"bar', '%PATH%', '$(command)', '--help']) await assert.rejects(queryInitCodeGraph(project, 'context', query), /仅接受/)
+    await assert.rejects(queryInitCodeGraph(project, 'sync'), /只允许/)
     const evidence = await codeGraphEvidence(project, ['backend'])
     assert.match(evidence, /backend\/src\/App.java:1/)
     assert.doesNotMatch(evidence, /unrelated\/public\/js\/chart/)

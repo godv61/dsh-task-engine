@@ -12,6 +12,7 @@ export interface SonarProjectRule {
   name: string
   language: string
   severity: string
+  params?: { key: string; value: string }[]
 }
 
 export interface SonarProjectRuleView {
@@ -97,9 +98,11 @@ export async function listSonarProjectRules(host: string, project: string, token
     total = Number(result.total)
     for (const rule of result.rules) {
       if (typeof rule.key !== 'string' || typeof rule.name !== 'string') continue
-      const active = result.actives?.[rule.key]?.[0]
+      const active = result.actives?.[rule.key]?.find((entry: any) => entry.qProfile === selected.key) ?? result.actives?.[rule.key]?.[0]
       rules.push({ key: rule.key, name: rule.name, language: selected.language,
-        severity: String(active?.severity ?? rule.severity ?? '—') })
+        severity: String(active?.severity ?? rule.severity ?? '—'),
+        ...(Array.isArray(active?.params) ? { params: active.params.filter((param: any) => typeof param.key === 'string' && typeof param.value === 'string')
+          .map((param: any) => ({ key: param.key as string, value: param.value as string })).sort((a: { key: string }, b: { key: string }) => a.key.localeCompare(b.key)) } : {}) })
     }
     if (rules.length >= total || result.rules.length === 0) break
   }

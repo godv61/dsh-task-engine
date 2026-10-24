@@ -14,7 +14,8 @@ import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { InitDraft, InitView, TaskEngineRemote } from './TaskEngineSection.tsx'
 import type { CodeGraphState, ProjectInitPreview, ProjectInitPromptView } from './TaskEngineSection.tsx'
-import { projectInitSteps, projectMetaSkillTargets, validateInitResources, type InitResource } from '../project-init.ts'
+import { projectInitSteps, projectMetaSkillTargets, type InitGraphQueryRecord, type InitReadRecord, type InitResource } from '../project-init.ts'
+import { firstPendingStep, initGenerationQueue, preserveInitGenerationId, restoreInitProgress, type InitProgress } from '../init-progress.ts'
 import { META_STAGES } from '../adaptive.ts'
 
 /** Stable localized chrome for the Markdown body. */
@@ -28,9 +29,12 @@ const card: CSSProperties = {
   border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '12px 14px',
 }
 
-interface InitProgress { fingerprint: string; index: number; resources: InitResource[]; schema_version?: 2 }
+interface InitPromptDraft { baseline: string; system: string; user: string; step: string }
+interface StepEvidence { target: string; prompt: string; paths: string[]; edited?: boolean; reads?: InitReadRecord[]; graph_queries?: InitGraphQueryRecord[]; refresh_prompt?: boolean }
 
 function progressKey(workspace: string): string { return `dsh-task-engine:init-draft:${workspace}` }
+function promptKey(workspace: string): string { return `dsh-task-engine:init-prompts:${workspace}` }
+function evidenceKey(workspace: string): string { return `dsh-task-engine:init-evidence:${workspace}` }
 function progressFingerprint(plan: ProjectInitPromptView, system: string, user: string, step: string): string {
   const text = JSON.stringify([plan.inventory, plan.existing, system, user, step])
   let hash = 2166136261
@@ -42,28 +46,62 @@ function readProgress(workspace: string, fingerprint: string,
   try {
     const raw = window.localStorage.getItem(progressKey(workspace))
     if (!raw) return null
-    const value = JSON.parse(raw) as InitProgress
-    if (!Number.isInteger(value.index) || value.index < 0 || value.index > steps.length) return null
-    const resources = validateInitResources(value.resources)
-    if (value.fingerprint === fingerprint) return { ...value, resources }
-    // Older browser drafts used one large repository prompt. Migrate only when
-    // every generated resource and required completed step still matches this plan.
-    if (value.schema_version !== undefined) return null
-    const completed = steps.slice(0, value.index)
-    if (resources.some(resource => !completed.some(step => step.name === resource.name))
-      || completed.some(step => step.required && !resources.some(resource => resource.name === step.name))) return null
-    const migrated = { fingerprint, index: value.index, resources, schema_version: 2 as const }
-    writeProgress(workspace, migrated)
-    return migrated
+    return restoreInitProgress(raw, fingerprint, steps)
   } catch { return null }
 }
 function writeProgress(workspace: string, progress: InitProgress): void {
-  try { window.localStorage.setItem(progressKey(workspace), JSON.stringify({ ...progress, schema_version: 2 })) } catch { /* optional browser checkpoint */ }
+  try {
+    // Edits and navigation must not discard the nonce used to resume a durable job.
+    window.localStorage.setItem(progressKey(workspace), JSON.stringify(
+      preserveInitGenerationId(window.localStorage.getItem(progressKey(workspace)), progress)))
+  } catch { /* optional browser checkpoint */ }
+}
+function readEvidenceDrafts(workspace: string, plan: ProjectInitPromptView): Record<string, StepEvidence> {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(evidenceKey(workspace)) ?? '{}') as {
+      baseline?: string; format_version?: number; entries?: Record<string, StepEvidence>
+    }
+    if (saved.baseline !== progressFingerprint(plan, plan.system_prompt, plan.user_prompt, plan.step_prompt)) return {}
+    const entries: Record<string, StepEvidence> = {}
+    for (const step of plan.inventory.suggestions) {
+      const entry = saved.entries?.[step.name]
+      // Refresh old automatic excerpts, preserving any deliberate user edits and all resource drafts.
+      if (saved.format_version !== 4 && !entry?.edited) {
+        if (entry?.reads?.length) entries[step.name] = { ...entry, refresh_prompt: true }
+        continue
+      }
+      if (entry?.target === step.name && typeof entry.prompt === 'string' && Array.isArray(entry.paths)
+        && entry.paths.every(path => typeof path === 'string')) entries[step.name] = entry
+    }
+    return entries
+  } catch { return {} }
+}
+function writeEvidenceDrafts(workspace: string, plan: ProjectInitPromptView, entries: Record<string, StepEvidence>): void {
+  try { window.localStorage.setItem(evidenceKey(workspace), JSON.stringify({
+    baseline: progressFingerprint(plan, plan.system_prompt, plan.user_prompt, plan.step_prompt), format_version: 4, entries,
+  })) } catch { /* optional browser checkpoint */ }
+}
+function readPromptDraft(workspace: string, plan: ProjectInitPromptView): InitPromptDraft | null {
+  try {
+    const raw = window.localStorage.getItem(promptKey(workspace))
+    if (!raw) return null
+    const draft = JSON.parse(raw) as InitPromptDraft
+    const baseline = progressFingerprint(plan, plan.system_prompt, plan.user_prompt, plan.step_prompt)
+    return draft.baseline === baseline && [draft.system, draft.user, draft.step].every(value => typeof value === 'string')
+      ? draft : null
+  } catch { return null }
+}
+function writePromptDraft(workspace: string, plan: ProjectInitPromptView,
+  system: string, user: string, step: string): void {
+  const baseline = progressFingerprint(plan, plan.system_prompt, plan.user_prompt, plan.step_prompt)
+  try { window.localStorage.setItem(promptKey(workspace), JSON.stringify({ baseline, system, user, step })) }
+  catch { /* optional browser checkpoint */ }
 }
 
-export function InitPanel({ workspace, remote }: {
+export function InitPanel({ workspace, remote, onBusyChange }: {
   workspace: string
   remote: TaskEngineRemote
+  onBusyChange: (busy: boolean) => void
 }): ReturnType<typeof createElement> {
   const [view, setView] = useState<InitView | null>(null)
   const [generating, setGenerating] = useState(false)
@@ -77,6 +115,8 @@ export function InitPanel({ workspace, remote }: {
   const [projectDraft, setProjectDraft] = useState<ProjectInitPreview | null>(null)
   const [projectResources, setProjectResources] = useState<InitResource[]>([])
   const [projectStepIndex, setProjectStepIndex] = useState(0)
+  const [completedSteps, setCompletedSteps] = useState<string[]>([])
+  const [stepErrors, setStepErrors] = useState<Record<string, string>>({})
   const [activeStep, setActiveStep] = useState('')
   const [projectPlan, setProjectPlan] = useState<ProjectInitPromptView | null>(null)
   const [planBusy, setPlanBusy] = useState(false)
@@ -84,12 +124,27 @@ export function InitPanel({ workspace, remote }: {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userPrompt, setUserPrompt] = useState('')
   const [stepPrompt, setStepPrompt] = useState('')
-  const [stepEvidence, setStepEvidence] = useState<{ target: string; prompt: string; paths: string[] } | null>(null)
+  const [evidenceDrafts, setEvidenceDrafts] = useState<Record<string, StepEvidence>>({})
   const [stepEvidenceMessage, setStepEvidenceMessage] = useState('')
   const [promptDirty, setPromptDirty] = useState(false)
   const [graphState, setGraphState] = useState<CodeGraphState | null>(null)
   const [graphBusy, setGraphBusy] = useState(false)
   const [graphMessage, setGraphMessage] = useState('')
+
+  const saveProgress = (resources = projectResources, completed = completedSteps, selectedIndex = projectStepIndex,
+    errors = stepErrors, generationId?: string, prompts = [systemPrompt, userPrompt, stepPrompt]): void => {
+    if (!projectPlan) return
+    const steps = projectInitSteps(projectPlan.inventory,
+      new Set(projectPlan.existing.filter(item => item.exists).map(item => item.name)))
+    writeProgress(workspace, { fingerprint: progressFingerprint(projectPlan, prompts[0]!, prompts[1]!, prompts[2]!),
+      schema_version: 3, index: firstPendingStep(steps, completed), completed,
+      selected: steps[selectedIndex]?.name ?? steps[0]?.name ?? '', resources, errors,
+      ...(generationId ? { generation_id: generationId } : {}) })
+  }
+
+  useEffect(() => { onBusyChange(generating || projectBusy || planBusy || graphBusy) },
+    [onBusyChange, generating, projectBusy, planBusy, graphBusy])
+  useEffect(() => () => { onBusyChange(false) }, [onBusyChange])
 
   useEffect(() => {
     if (!generating && !projectBusy) {
@@ -116,12 +171,14 @@ export function InitPanel({ workspace, remote }: {
     setProjectDraft(null)
     setProjectResources([])
     setProjectStepIndex(0)
+    setCompletedSteps([])
+    setStepErrors({})
     setProjectInitMsg('')
     setProjectPlan(null)
     setSystemPrompt('')
     setUserPrompt('')
     setStepPrompt('')
-    setStepEvidence(null)
+    setEvidenceDrafts({})
     setPromptDirty(false)
     setPlanBusy(true)
     let active = true
@@ -130,16 +187,23 @@ export function InitPanel({ workspace, remote }: {
       setPlanBusy(false)
       if (!result.ok) { setPlanMessage(`读取初始化计划失败：${describeError(result.error)}`); return }
       setProjectPlan(result.value)
-      setSystemPrompt(result.value.system_prompt)
-      setUserPrompt(result.value.user_prompt)
-      setStepPrompt(result.value.step_prompt)
-      setStepEvidence(null)
+      const prompts = readPromptDraft(workspace, result.value)
+      const system = prompts?.system ?? result.value.system_prompt
+      const user = prompts?.user ?? result.value.user_prompt
+      const step = prompts?.step ?? result.value.step_prompt
+      setSystemPrompt(system)
+      setUserPrompt(user)
+      setStepPrompt(step)
+      setEvidenceDrafts(readEvidenceDrafts(workspace, result.value))
+      setPromptDirty(prompts !== null)
       const steps = projectInitSteps(result.value.inventory, new Set(result.value.existing.filter(item => item.exists).map(item => item.name)))
-      const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps)
+      const saved = readProgress(workspace, progressFingerprint(result.value, system, user, step), steps)
       if (saved) {
         setProjectResources(saved.resources)
-        setProjectStepIndex(saved.index)
-        setProjectInitMsg(`已恢复初始化草案：完成 ${saved.index}/${steps.length} 步。可继续生成或检查修改。`)
+        setProjectStepIndex(Math.max(0, steps.findIndex(step => step.name === saved.selected)))
+        setCompletedSteps(saved.completed)
+        setStepErrors(saved.errors)
+        setProjectInitMsg(`已恢复初始化草案：已处理 ${saved.completed.length}/${steps.length} 步。可选择任一步骤查看、生成或重试。`)
       }
       setPlanMessage('')
     }, error => {
@@ -157,18 +221,21 @@ export function InitPanel({ workspace, remote }: {
     try {
       const result = await remote.inspectProjectInit({ path: workspace })
       if (!result.ok) throw new Error(describeError(result.error))
+      try { window.localStorage.removeItem(promptKey(workspace)) } catch { /* optional browser checkpoint */ }
       setProjectPlan(result.value)
       setSystemPrompt(result.value.system_prompt)
       setUserPrompt(result.value.user_prompt)
       setStepPrompt(result.value.step_prompt)
-      setStepEvidence(null)
+      setEvidenceDrafts(readEvidenceDrafts(workspace, result.value))
       setPromptDirty(false)
       setProjectDraft(null)
       const steps = projectInitSteps(result.value.inventory, new Set(result.value.existing.filter(item => item.exists).map(item => item.name)))
       const saved = readProgress(workspace, progressFingerprint(result.value, result.value.system_prompt, result.value.user_prompt, result.value.step_prompt), steps)
       setProjectResources(saved?.resources ?? [])
-      setProjectStepIndex(saved?.index ?? 0)
-      setProjectInitMsg(saved ? `扫描完成，已恢复 ${saved.index}/${steps.length} 步。` : '')
+      setProjectStepIndex(Math.max(0, steps.findIndex(step => step.name === saved?.selected)))
+      setCompletedSteps(saved?.completed ?? [])
+      setStepErrors(saved?.errors ?? {})
+      setProjectInitMsg(saved ? `扫描完成，已恢复 ${saved.completed.length}/${steps.length} 步。` : '')
     } catch (error) {
       setPlanMessage(`重新扫描失败：${error instanceof Error ? error.message : String(error)}`)
     } finally { setPlanBusy(false) }
@@ -185,8 +252,7 @@ export function InitPanel({ workspace, remote }: {
       const result = await remote.prepareCodeGraph({ path: workspace, install: installing })
       if (!result.ok) throw new Error(describeError(result.error))
       setGraphState(result.value)
-      setStepEvidence(null)
-      setGraphMessage('项目索引已就绪。项目地图步骤将读取最新的 CodeGraph 证据；可重新扫描仓库输入以更新资源清单。')
+      setGraphMessage('项目索引已就绪。各步骤可用 init_query_codegraph 按需查询；可重新读取本步证据更新提示词，手动编辑不会自动覆盖。')
     } catch (error) {
       setGraphMessage(`CodeGraph 准备失败：${error instanceof Error ? error.message : String(error)}`)
     } finally { setGraphBusy(false) }
@@ -197,88 +263,122 @@ export function InitPanel({ workspace, remote }: {
     const steps = projectInitSteps(projectPlan.inventory,
       new Set(projectPlan.existing.filter(item => item.exists).map(item => item.name)))
     const target = steps[projectStepIndex]?.name
-    if (!target || stepEvidence?.target === target) return
+    if (!target) return
+    if (evidenceDrafts[target] && !evidenceDrafts[target].refresh_prompt) { setStepEvidenceMessage(''); return }
     let active = true
-    setStepEvidence(null)
     setStepEvidenceMessage('正在读取当前资源的专属证据…')
     void remote.inspectProjectInitStep({ path: workspace, target }).then(result => {
       if (!active) return
       if (result.ok) {
-        setStepEvidence({ target, prompt: result.value.evidence_prompt, paths: result.value.evidence_paths })
+        setEvidenceDrafts(previous => ({ ...previous, [target]: {
+          target, prompt: result.value.evidence_prompt, paths: result.value.evidence_paths,
+          ...(previous[target]?.reads ? { reads: previous[target].reads } : {}),
+          ...(previous[target]?.graph_queries ? { graph_queries: previous[target].graph_queries } : {}),
+        } }))
         setStepEvidenceMessage('')
       } else setStepEvidenceMessage(`读取 ${target} 证据失败：${describeError(result.error)}`)
     }, error => { if (active) setStepEvidenceMessage(`读取 ${target} 证据失败：${error instanceof Error ? error.message : String(error)}`) })
     return () => { active = false }
-  }, [workspace, remote, projectPlan, projectStepIndex, projectBusy, stepEvidence?.target])
+  }, [workspace, remote, projectPlan, projectStepIndex, projectBusy, evidenceDrafts])
 
   const generateProject = async (oneStep: boolean): Promise<void> => {
-    if (projectPlan === null) return
+    if (projectPlan === null || projectBusy) return
+    const selected = initSteps[projectStepIndex]
+    if (oneStep && !selected) return
+    if (oneStep && projectResources.some(resource => resource.name === selected!.name)
+      && !window.confirm(`重新生成 ${selected!.name} 将在成功后替换该项草案（包括手动修改）；其他草案会保留。确认继续？`)) return
     setProjectBusy(true)
     setProjectDraft(null)
     setProjectInitMsg('')
+    let resources = [...projectResources]
+    let evidenceEntries = { ...evidenceDrafts }
+    let completed = [...completedSteps]
+    let errors = { ...stepErrors }
+    let failedTarget = ''
+    let currentIndex = projectStepIndex
     try {
-      const steps = projectInitSteps(projectPlan.inventory, existingSkillNames)
-      const fingerprint = progressFingerprint(projectPlan, systemPrompt, userPrompt, stepPrompt)
-      const saved = readProgress(workspace, fingerprint, steps)
-      let index = saved?.index ?? 0
-      const stopAfter = oneStep ? index + 1 : steps.length
-      let resources = saved?.resources ?? []
-      setProjectResources(resources)
-      setProjectStepIndex(index)
-      for (; index < steps.length && index < stopAfter; index++) {
+      const steps = initSteps
+      const saved = readProgress(workspace, progressFingerprint(projectPlan, systemPrompt, userPrompt, stepPrompt), steps)
+      // A successful explicit regeneration is a new attempt; pending jobs retain their nonce on resume.
+      const generationId = oneStep && completed.includes(selected!.name) ? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+        : saved?.generation_id ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      if (oneStep) completed = completed.filter(name => name !== selected!.name)
+      setCompletedSteps(completed)
+      saveProgress(resources, completed, currentIndex, errors, generationId)
+      for (const name of initGenerationQueue(steps, completed, selected?.name ?? '', oneStep)) {
+        const index = steps.findIndex(step => step.name === name)
         const step = steps[index]!
+        currentIndex = index
+        failedTarget = step.name
+        setProjectStepIndex(index)
         setActiveStep(`${index + 1}/${steps.length} · ${step.name}`)
-        let evidence = stepEvidence?.target === step.name ? stepEvidence : null
-        if (evidence === null) {
+        let evidence = evidenceEntries[step.name] ?? null
+        if (evidence === null || evidence.refresh_prompt) {
           const inspected = await remote.inspectProjectInitStep({ path: workspace, target: step.name })
           if (!inspected.ok) throw new Error(`读取 ${step.name} 专属证据失败：${describeError(inspected.error)}`)
-          evidence = { target: step.name, prompt: inspected.value.evidence_prompt, paths: inspected.value.evidence_paths }
+          evidence = { ...evidence, target: step.name, prompt: inspected.value.evidence_prompt, paths: inspected.value.evidence_paths, refresh_prompt: false }
         }
-        setStepEvidence(evidence)
+        evidenceEntries = { ...evidenceEntries, [step.name]: evidence }
+        setEvidenceDrafts(evidenceEntries)
         let result: Awaited<ReturnType<TaskEngineRemote['generateProjectInitStep']>> | undefined
         let failure = ''
-        for (let attempt = 1; attempt <= 2; attempt++) {
-          try {
-            result = await remote.generateProjectInitStep({ path: workspace, target: step.name,
-              prior_resources: resources, system_prompt: systemPrompt, user_prompt: userPrompt,
-              step_prompt: stepPrompt, evidence_prompt: evidence.prompt })
-            if (result.ok) break
-            failure = describeError(result.error)
-          } catch (error) { failure = error instanceof Error ? error.message : String(error) }
-          if (attempt < 2) {
-            setActiveStep(`${index + 1}/${steps.length} · ${step.name} · 自动重试`)
-            await new Promise(resolve => setTimeout(resolve, 800))
+        try {
+          let job = await remote.projectInitJob({ path: workspace, generation: { target: step.name,
+            prior_resources: resources.filter(resource => resource.name !== step.name), system_prompt: systemPrompt, user_prompt: userPrompt,
+            step_prompt: stepPrompt, evidence_prompt: evidence.prompt, generation_id: generationId } })
+          const deadline = Date.now() + 360_000
+          while (job.ok && job.value.status === 'running') {
+            setActiveStep(`${index + 1}/${steps.length} · ${step.name} · 作业 ${job.value.job_id.slice(0, 8)}`)
+            if (Date.now() > deadline) throw new Error('作业仍未结束；已保存服务器作业，可稍后从当前步骤继续查询')
+            await new Promise(resolve => setTimeout(resolve, 1500))
+            job = await remote.projectInitJob({ path: workspace, job_id: job.value.job_id })
           }
-        }
-        if (!result?.ok) throw new Error(`${step.name} 连续两次失败：${failure}`)
-        if (result.value.resource) {
-          const resource = result.value.resource
-          resources = [...resources, resource]
-        }
-        writeProgress(workspace, { fingerprint, index: index + 1, resources })
+          if (!job.ok) failure = describeError(job.error)
+          else if (job.value.status === 'failed') failure = job.value.error ?? '服务器生成作业失败，可重试当前步骤'
+          else if (job.value.result) result = { ok: true, value: job.value.result }
+          else failure = '服务器作业缺少生成结果'
+        } catch (error) { failure = error instanceof Error ? error.message : String(error) }
+        if (!result?.ok) throw new Error(`${step.name} 生成失败（服务端已负责重试）：${failure}`)
+        evidenceEntries = { ...evidenceEntries, [step.name]: { ...evidence, reads: result.value.reads ?? [], graph_queries: result.value.graph_queries ?? [] } }
+        setEvidenceDrafts(evidenceEntries)
+        writeEvidenceDrafts(workspace, projectPlan, evidenceEntries)
+        resources = resources.filter(resource => resource.name !== step.name)
+        if (result.value.resource) resources.push(result.value.resource)
+        completed = [...new Set([...completed, step.name])]
+        errors = { ...errors }
+        delete errors[step.name]
+        failedTarget = ''
+        saveProgress(resources, completed, index, errors, generationId)
         setProjectResources(resources)
-        setProjectStepIndex(index + 1)
-        setStepEvidence(null)
+        setCompletedSteps(completed)
+        setStepErrors(errors)
       }
-      if (index < steps.length) {
-        setProjectInitMsg(`已完成 ${index}/${steps.length} 步。可先审阅并编辑草案，再生成下一项。`)
+      if (firstPendingStep(steps, completed) < steps.length) {
+        setProjectInitMsg(`当前项已处理，进度 ${completed.length}/${steps.length}。其他步骤未自动跳过，可直接选择查看或生成。`)
+        return
+      }
+      if (!resources.length) {
+        setProjectInitMsg('全部候选已处理，未生成项目资源；内置元技能仍可直接使用。')
         return
       }
       const preview = await remote.previewProjectInit({ path: workspace, resources })
       if (!preview.ok) throw new Error(describeError(preview.error))
       if (!preview.value.ok) throw new Error(preview.value.error ?? '项目初始化提案无效')
       setProjectDraft(preview.value)
-      setProjectInitMsg('所有步骤已生成并校验。请逐项审阅内容与挂载关系，确认后再写入。')
+      setProjectInitMsg('所有步骤已处理，草案检查通过。请逐项审阅内容与挂载关系，确认后再写入。')
     } catch (error) {
-      setProjectInitMsg(`${oneStep ? '生成暂停' : '连续生成暂停'}：${error instanceof Error ? error.message : String(error)}。已完成的草案已保留；检查当前步骤证据后，可继续连续生成。`)
+      const message = error instanceof Error ? error.message : String(error)
+      if (failedTarget) errors = { ...errors, [failedTarget]: message }
+      setStepErrors(errors)
+      saveProgress(resources, completed, currentIndex, errors)
+      setProjectInitMsg(`${oneStep ? '生成暂停' : '连续生成暂停'}：${message}。其他草案已保留；可选择失败步骤重试。`)
     } finally { setProjectBusy(false); setActiveStep('') }
   }
 
   const updateProjectResource = (index: number, change: Partial<InitResource>): void => {
     const resources = projectResources.map((resource, at) => at === index ? { ...resource, ...change } : resource)
     setProjectResources(resources)
-    if (projectPlan) writeProgress(workspace, { fingerprint: progressFingerprint(projectPlan, systemPrompt, userPrompt, stepPrompt),
-      index: projectStepIndex, resources })
+    saveProgress(resources)
     setProjectDraft(null)
     setProjectInitMsg('提案已修改。请先点击“检查修改”，通过后才能写入。')
   }
@@ -311,7 +411,10 @@ export function InitPanel({ workspace, remote }: {
       setProjectDraft(null)
       setProjectResources([])
       setProjectStepIndex(0)
+      setCompletedSteps([])
+      setStepErrors({})
       try { window.localStorage.removeItem(progressKey(workspace)) } catch { /* optional browser checkpoint */ }
+      try { window.localStorage.removeItem(promptKey(workspace)) } catch { /* optional browser checkpoint */ }
     } catch (error) {
       setProjectInitMsg(`写入失败：${error instanceof Error ? error.message : String(error)}。若已有部分文件，请刷新并检查。`)
     } finally { setProjectBusy(false) }
@@ -376,6 +479,71 @@ export function InitPanel({ workspace, remote }: {
   const proposedRules = projectResources.filter(item => item.kind === 'rule')
   const existingSkillNames = new Set(projectPlan?.existing.filter(item => item.exists).map(item => item.name) ?? [])
   const initSteps = projectPlan === null ? [] : projectInitSteps(projectPlan.inventory, existingSkillNames)
+  const selectedStep = initSteps[projectStepIndex]
+  const stepEvidence = selectedStep ? evidenceDrafts[selectedStep.name] ?? null : null
+  const processedCount = initSteps.filter(step => completedSteps.includes(step.name)).length
+  const allProcessed = processedCount === initSteps.length
+  const stepStatus = (name: string): string => stepErrors[name] ? '生成失败'
+    : !completedSteps.includes(name) ? '待生成'
+      : projectResources.some(resource => resource.name === name) ? '已生成草案' : '已跳过'
+
+  const selectStep = (index: number): void => {
+    if (projectBusy || planBusy || index < 0 || index >= initSteps.length) return
+    setProjectStepIndex(index)
+    setStepEvidenceMessage('')
+    saveProgress(projectResources, completedSteps, index)
+  }
+
+  const editEvidence = (prompt: string): void => {
+    if (!stepEvidence || !projectPlan) return
+    const entries = { ...evidenceDrafts, [stepEvidence.target]: { ...stepEvidence, prompt, edited: true } }
+    setEvidenceDrafts(entries)
+    writeEvidenceDrafts(workspace, projectPlan, entries)
+    setProjectDraft(null)
+  }
+
+  const reloadEvidence = (): void => {
+    if (!selectedStep || projectBusy || planBusy || !projectPlan) return
+    if (stepEvidence?.edited && !window.confirm('重新读取将替换当前步骤已编辑的证据提示词，其他步骤的编辑会保留。确认继续？')) return
+    const entries = { ...evidenceDrafts }
+    delete entries[selectedStep.name]
+    setEvidenceDrafts(entries)
+    writeEvidenceDrafts(workspace, projectPlan, entries)
+  }
+
+  const skipCurrentStep = async (): Promise<void> => {
+    const step = initSteps[projectStepIndex]
+    if (!projectPlan || !step || step.required || projectBusy || completedSteps.includes(step.name)
+      || projectResources.some(resource => resource.name === step.name)) return
+    const completed = [...new Set([...completedSteps, step.name])]
+    const next = firstPendingStep(initSteps, completed)
+    const selectedIndex = next < initSteps.length ? next : projectStepIndex
+    const errors = { ...stepErrors }
+    delete errors[step.name]
+    saveProgress(projectResources, completed, selectedIndex, errors)
+    setCompletedSteps(completed)
+    setStepErrors(errors)
+    setProjectStepIndex(selectedIndex)
+    setProjectDraft(null)
+    if (completed.length < initSteps.length) {
+      setProjectInitMsg(`已跳过 ${step.name}；可继续生成下一项。`)
+      return
+    }
+    if (projectResources.length === 0) {
+      setProjectInitMsg('全部候选已跳过；内置元技能仍可直接使用，无需写入项目文件。')
+      return
+    }
+    setProjectBusy(true)
+    try {
+      const preview = await remote.previewProjectInit({ path: workspace, resources: projectResources })
+      if (!preview.ok) throw new Error(describeError(preview.error))
+      if (!preview.value.ok) throw new Error(preview.value.error ?? '项目初始化提案无效')
+      setProjectDraft(preview.value)
+      setProjectInitMsg(`已跳过 ${step.name}；其余草案已校验，请审阅后写入。`)
+    } catch (error) {
+      setProjectInitMsg(`已跳过 ${step.name}；提案检查失败：${error instanceof Error ? error.message : String(error)}。可点击“检查修改”重试。`)
+    } finally { setProjectBusy(false) }
+  }
 
   return createElement('div', { style: styles.section },
     createElement('div', { style: card },
@@ -385,10 +553,16 @@ export function InitPanel({ workspace, remote }: {
       createElement('p', { style: styles.muted },
         '团队共享时，请将生成的 .dsh/skills、.dsh/rules 和 .dsh/meta.json 纳入 Git；审核报告可保留在本地。'),
       createElement('p', { style: styles.muted },
-        '初始化以目录、构建清单和有限源码为基础；CodeGraph 可选，用于补充索引目录与可信符号线索。具体调用关系仍须核对源码；不需要安装 OpenSpec。'),
+        '初始化先提供仓库路径，由模型通过只读工具列目录、搜索并按需读取源码；生成后可核对实际读取的文件与行号。CodeGraph 可选，具体调用关系仍须核对源码。'),
       createElement('div', { style: card },
         createElement('strong', null, 'CodeGraph 项目索引（可选）'),
-        createElement('p', { style: styles.muted }, graphState?.summary ?? '正在检查 CodeGraph 是否可用…'),
+        createElement('p', { style: styles.muted }, graphState?.indexed
+          ? '项目索引已就绪，各步骤可通过 init_query_codegraph 查询目录与符号线索，并读取源码核对。'
+          : graphState?.summary ?? '正在检查 CodeGraph 是否可用…'),
+        graphState?.indexed ? createElement('details', null,
+          createElement('summary', null, '查看索引统计'),
+          createElement('pre', { style: { ...styles.muted, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 180, overflowY: 'auto' } },
+            graphState.summary)) : null,
         createElement('div', { style: styles.row },
           createElement(Button, { variant: 'outline', size: 'sm', disabled: graphBusy || projectBusy,
             onClick: () => { void prepareGraph() } }, graphBusy ? '准备索引中…'
@@ -412,46 +586,93 @@ export function InitPanel({ workspace, remote }: {
           plannedRules.length === 0 ? createElement('p', { style: styles.muted }, '初始化不凭语言或依赖自动生成 Rule。请在“规则”页建立有明确来源的项目约束，再到“项目流程与审核”中挂载到相应 Skill。') : null,
           createElement('details', null,
             createElement('summary', null, '通用规则与单项生成模板（可编辑）'),
-            createElement('p', { style: styles.muted }, '这里仅保留适用于全部资源的约束和简短项目概况。每个 Skill / Rule 的源码证据在下方按步骤单独展示。修改通用提示词后会从第一步重新生成。'),
-            createElement('label', null, '系统提示词', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: systemPrompt,
-              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setSystemPrompt(event.target.value); setPromptDirty(true) } })),
-            createElement('label', null, '通用项目概况与要求', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: userPrompt,
-              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setUserPrompt(event.target.value); setPromptDirty(true) } })),
+            createElement('p', { style: styles.muted }, '这里保留适用于全部资源的约束和简短项目概况。修改后会用于后续生成；已有草案会保留，需要时选择对应步骤重新生成。'),
+            createElement('label', null, '系统提示词', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: systemPrompt, disabled: projectBusy,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => {
+                const next = event.target.value
+                setSystemPrompt(next); setPromptDirty(true)
+                if (projectPlan) writePromptDraft(workspace, projectPlan, next, userPrompt, stepPrompt)
+                saveProgress(projectResources, completedSteps, projectStepIndex, stepErrors, undefined, [next, userPrompt, stepPrompt])
+                setProjectDraft(null)
+              } })),
+            createElement('label', null, '通用项目概况与要求', createElement('textarea', { style: { ...styles.textarea, minHeight: 130 }, value: userPrompt, disabled: projectBusy,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => {
+                const next = event.target.value
+                setUserPrompt(next); setPromptDirty(true)
+                if (projectPlan) writePromptDraft(workspace, projectPlan, systemPrompt, next, stepPrompt)
+                saveProgress(projectResources, completedSteps, projectStepIndex, stepErrors, undefined, [systemPrompt, next, stepPrompt])
+                setProjectDraft(null)
+              } })),
             createElement('label', null, '单项生成模板（可编辑；保留 {{target}}、{{previous}}、{{meta_skills}}、{{limit}} 占位符）',
-              createElement('textarea', { style: { ...styles.textarea, minHeight: 145 }, value: stepPrompt,
-                onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { setStepPrompt(event.target.value); setPromptDirty(true) } })),
+              createElement('textarea', { style: { ...styles.textarea, minHeight: 145 }, value: stepPrompt, disabled: projectBusy,
+                onChange: (event: ChangeEvent<HTMLTextAreaElement>) => {
+                  const next = event.target.value
+                  setStepPrompt(next); setPromptDirty(true)
+                  if (projectPlan) writePromptDraft(workspace, projectPlan, systemPrompt, userPrompt, next)
+                  saveProgress(projectResources, completedSteps, projectStepIndex, stepErrors, undefined, [systemPrompt, userPrompt, next])
+                  setProjectDraft(null)
+                } })),
           ),
         ) : null),
+      initSteps.length ? createElement('label', { style: styles.section }, '选择初始化步骤',
+        createElement('select', { style: styles.input, 'aria-label': '初始化步骤', value: selectedStep?.name ?? '',
+          disabled: projectBusy || planBusy,
+          onChange: (event: ChangeEvent<HTMLSelectElement>) => { selectStep(initSteps.findIndex(step => step.name === event.target.value)) } },
+          ...initSteps.map((step, index) => createElement('option', { key: step.name, value: step.name },
+            `${index + 1}. ${step.name} · ${stepStatus(step.name)}`))),
+        createElement('span', { style: styles.muted }, '选择只切换查看项，不会跳过步骤或改变完成进度。')) : null,
       initSteps[projectStepIndex] ? createElement('div', { style: card },
         createElement('strong', null, `当前步骤专属证据 · ${initSteps[projectStepIndex]!.name}`),
+        createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy,
+          onClick: reloadEvidence }, '重新读取本步证据'),
         createElement('p', { style: styles.muted },
-          `本步读取的文件：${stepEvidence?.target === initSteps[projectStepIndex]!.name
-            ? (stepEvidence.paths.join('、') || '无代表性文件；请核对待确认项') : '加载中'}。项目地图步骤还会读取 CodeGraph 索引。`),
+          `本步查阅入口（尚非读取记录）：${stepEvidence?.target === initSteps[projectStepIndex]!.name
+            ? (stepEvidence.paths.join('、') || '无预设入口，可从项目根目录查阅') : '加载中'}。`),
         stepEvidence?.target === initSteps[projectStepIndex]!.name
           ? createElement('details', null,
-            createElement('summary', null, '查看或修改本步完整提示词'),
-            createElement('p', { style: styles.muted }, '下方仅用于当前资源。修改后生成时会使用修改的内容；切换到下一项时自动读取下一项的证据。'),
-            createElement('textarea', { style: { ...styles.textarea, minHeight: 180 }, value: stepEvidence.prompt,
+            createElement('summary', null, '查看或修改本步证据提示词'),
+            createElement('p', { style: styles.muted }, '下方提供当前步骤的路径与查阅要求，不预先拼接源码。生成时模型使用只读工具按需读取。编辑按步骤保存；通用提示词与生成模板见上方。'),
+            createElement('textarea', { style: { ...styles.textarea, minHeight: 180 }, value: stepEvidence.prompt, 'aria-label': '本步证据提示词',
               disabled: projectBusy,
-              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setStepEvidence({ ...stepEvidence, prompt: event.target.value }) })) : null,
+              onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { editEvidence(event.target.value) } })) : null,
+        stepEvidence?.reads?.length ? createElement('details', null,
+          createElement('summary', null, `查看本步实际读取记录（${stepEvidence.reads.length} 段）`),
+          createElement('p', { style: styles.muted }, '记录对应上次生成时的文件版本，表示这些行已返回给模型；不代表整个文件或整个仓库已被审阅。'),
+          ...stepEvidence.reads.map((read, index) => createElement('div', { key: index, style: { ...styles.muted, overflowWrap: 'anywhere' } },
+            `${read.path}:${read.start_line}-${read.end_line} · SHA256 ${read.sha256}`))) : null,
+        stepEvidence?.graph_queries?.length ? createElement('details', null,
+          createElement('summary', null, `查看本步 CodeGraph 查询记录（${stepEvidence.graph_queries.length} 次）`),
+          ...stepEvidence.graph_queries.map((query, index) => createElement('div', { key: index, style: styles.muted },
+            `${query.mode}${query.query ? ` · ${query.query}` : ''} · ${query.ok ? '已返回结果（仍须核对源码）' : '查询失败，不能作为证据'}`))) : null,
+        selectedStep && stepErrors[selectedStep.name] ? createElement('p', { role: 'status', style: styles.status }, `上次生成失败：${stepErrors[selectedStep.name]}`) : null,
         stepEvidenceMessage ? createElement('p', { role: 'status', style: styles.status }, stepEvidenceMessage) : null)
         : null,
       createElement('div', { style: styles.row },
-        createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || planBusy || projectPlan === null || projectStepIndex >= initSteps.length || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
-          onClick: () => { void generateProject(true) } }, projectBusy ? `生成 ${activeStep}…` : '生成下一项'),
-        createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy || projectPlan === null || projectStepIndex >= initSteps.length || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
-          onClick: () => { void generateProject(false) } }, projectStepIndex > 0 ? '继续连续生成' : '连续生成全部'),
-        projectStepIndex > 0 ? createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy,
+        createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || planBusy || projectPlan === null || !selectedStep || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
+          onClick: () => { void generateProject(true) } }, projectBusy ? `生成 ${activeStep}…`
+            : selectedStep && projectResources.some(resource => resource.name === selectedStep.name) ? '重新生成当前项' : '生成当前项'),
+        createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy || projectPlan === null || allProcessed || !systemPrompt.trim() || !userPrompt.trim() || !stepPrompt.trim(),
+          onClick: () => { void generateProject(false) } }, '连续生成剩余项'),
+        selectedStep && !selectedStep.required && !completedSteps.includes(selectedStep.name)
+          && !projectResources.some(resource => resource.name === selectedStep.name)
+          ? createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy,
+            onClick: () => { void skipCurrentStep() } }, '跳过当前候选') : null,
+        processedCount > 0 || Object.keys(stepErrors).length ? createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy,
           onClick: () => {
-            if (!window.confirm('清除当前浏览器保存的初始化草案并从第一步重来？')) return
+            if (!window.confirm('清除当前浏览器保存的初始化草案、步骤进度和各步证据编辑并从第一步重来？')) return
             try { window.localStorage.removeItem(progressKey(workspace)) } catch { /* optional browser checkpoint */ }
-            setProjectStepIndex(0); setProjectResources([]); setProjectDraft(null); setProjectInitMsg('已清除草案，可从第一步生成。')
+            try { window.localStorage.removeItem(evidenceKey(workspace)) } catch { /* optional browser checkpoint */ }
+            setProjectStepIndex(0); setProjectResources([]); setCompletedSteps([]); setStepErrors({}); setEvidenceDrafts({})
+            setProjectDraft(null); setProjectInitMsg('已清除草案，可从第一步生成。')
           } }, '从头开始') : null,
-        createElement('span', { style: styles.muted }, `进度 ${projectStepIndex}/${initSteps.length}`),
+        createElement('span', { style: styles.muted }, `已处理 ${processedCount}/${initSteps.length} · 草案 ${projectResources.length} · 已跳过 ${completedSteps.filter(name => !projectResources.some(resource => resource.name === name)).length}`),
         projectBusy ? createElement('span', { style: styles.status }, `已耗时 ${elapsed} 秒`) : null),
       initSteps.length > 0 ? createElement('div', { style: { ...styles.section, gap: 4 } },
-        ...initSteps.map((step, index) => createElement('div', { key: `init-step-${step.name}`, style: styles.muted },
-          `${index < projectStepIndex ? '✓' : index === projectStepIndex ? '→' : '·'} ${index + 1}. ${step.name}${step.required ? '（必需）' : '（按证据）'}${index < projectStepIndex && !projectResources.some(item => item.name === step.name) ? ' · 证据不足，跳过' : ''}`))) : null,
+        ...initSteps.map((step, index) => createElement('button', { key: `init-step-${step.name}`, type: 'button',
+          disabled: projectBusy || planBusy, 'aria-pressed': index === projectStepIndex,
+          style: { ...styles.muted, textAlign: 'left', cursor: 'pointer', border: 'none', padding: '4px 0', background: 'transparent' },
+          onClick: () => { selectStep(index) } },
+          `${index === projectStepIndex ? '→' : '·'} ${index + 1}. ${step.name} · ${stepStatus(step.name)}`))) : null,
       projectDraft !== null || projectResources.length > 0
         ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
@@ -469,26 +690,28 @@ export function InitPanel({ workspace, remote }: {
               createElement(Button, { variant: 'ghost', size: 'sm', disabled: projectBusy,
                 onClick: () => {
                   const resources = projectResources.filter((_, at) => at !== index)
+                  const removed = projectResources[index]!.name
+                  const completed = completedSteps.filter(name => name !== removed)
                   setProjectResources(resources); setProjectDraft(null); setProjectInitMsg('已移除建议。请重新检查提案。')
-                  if (projectPlan) writeProgress(workspace, { fingerprint: progressFingerprint(projectPlan, systemPrompt, userPrompt, stepPrompt),
-                    index: projectStepIndex, resources })
+                  setCompletedSteps(completed)
+                  saveProgress(resources, completed)
                 } }, '移除建议')),
             resource.kind === 'skill'
               ? createElement('div', { style: styles.section },
-                createElement('label', null, '简介', createElement('input', { style: styles.input, value: resource.description ?? '',
+                createElement('label', null, '简介', createElement('input', { style: styles.input, value: resource.description ?? '', disabled: projectBusy,
                   onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { description: event.target.value }) } })),
-                createElement('label', null, '挂载元技能（逗号分隔）', createElement('input', { style: styles.input,
+                createElement('label', null, '挂载元技能（逗号分隔）', createElement('input', { style: styles.input, disabled: projectBusy,
                   value: (resource.meta_skills ?? []).join(', '),
                   onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { meta_skills: event.target.value.split(',').map(item => item.trim()).filter(Boolean) as InitResource['meta_skills'] }) } })),
-                createElement('label', null, '关联 Rule（逗号分隔）', createElement('input', { style: styles.input,
+                createElement('label', null, '关联 Rule（逗号分隔）', createElement('input', { style: styles.input, disabled: projectBusy,
                   value: (resource.rules ?? []).join(', '),
                   onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { rules: event.target.value.split(',').map(item => item.trim()).filter(Boolean) }) } })))
               : null,
-            createElement('label', null, '内容', createElement('textarea', { style: { ...styles.textarea, minHeight: 180 },
+            createElement('label', null, '内容', createElement('textarea', { style: { ...styles.textarea, minHeight: 180 }, disabled: projectBusy,
               value: resource.content,
               onChange: (event: ChangeEvent<HTMLTextAreaElement>) => { updateProjectResource(index, { content: event.target.value }) } })))),
           createElement('div', { style: styles.row },
-            createElement(Button, { variant: 'outline', size: 'md', disabled: projectBusy || projectStepIndex < initSteps.length,
+            createElement(Button, { variant: 'outline', size: 'md', disabled: projectBusy || !allProcessed,
               onClick: () => { void checkProject() } }, '检查修改'),
             createElement(Button, { variant: 'primary', size: 'md', disabled: projectBusy || projectDraft === null,
               onClick: () => { void applyProject() } }, '确认写入项目')),

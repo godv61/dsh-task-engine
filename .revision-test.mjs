@@ -97,7 +97,7 @@ test('rework: clearing evidence returns an item to unfinished, not to done-witho
   // would let todos_done pass on work whose audit had just been discarded.
   const state = loadedTask()
   applyRevision(state, rework('defect', '开发'))
-  assert.equal(state.items[0].status, 'doing')
+  assert.equal(state.items[0].status, 'todo')
   const config = adoptedFlow('standard')
   assert.ok(completionBlockers({ ...state, stage: '完成' }, config).length > 0,
     'a task with an unproven item must not be completable')

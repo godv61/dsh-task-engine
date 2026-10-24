@@ -56,6 +56,20 @@ export interface ProjectInitStep {
   required: boolean
 }
 
+/** Exact file ranges returned to the initialization model, without source bodies. */
+export interface InitReadRecord {
+  path: string
+  start_line: number
+  end_line: number
+  sha256: string
+}
+
+export interface InitGraphQueryRecord {
+  mode: 'status' | 'files' | 'context'
+  query?: string
+  ok: boolean
+}
+
 /** A stable order keeps each model response small and makes failed steps resumable. */
 export function projectInitSteps(inventory: ProjectInventory, existing: ReadonlySet<string>): ProjectInitStep[] {
   const project = inventory.project_name

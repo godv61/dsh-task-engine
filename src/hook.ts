@@ -29,7 +29,9 @@ import { resolveFlow, type ProjectConfig } from './workflows.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY, isSensitivePath } from './project.ts'
 import { sonarCommitBlockers } from './sonar.ts'
-import { verificationEvidenceBlockers } from './evidence-gate.ts'
+import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
+import { groupInputs } from './verification-state.ts'
+import { lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 
 const messageFile = process.argv[2]
 
@@ -75,6 +77,10 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     commits: Array.isArray(task.commits) ? (task.commits as TaskState['commits']) : [],
     ...(task.completed !== undefined ? { completed: task.completed as NonNullable<TaskState['completed']> } : {}),
     ...(task.execution_version === 1 ? { execution_version: 1 as const } : {}),
+    ...(task.delegation_version === 1 ? { delegation_version: 1 as const } : {}),
+    ...(task.verification_version === 1 ? { verification_version: 1 as const,
+      verification_groups: (task.verification_groups as TaskState['verification_groups']) ?? {},
+      verification_runs: (task.verification_runs as TaskState['verification_runs']) ?? [] } : {}),
     ...(typeof task.root === 'string' ? { root: task.root } : {}),
     ...(task.flow !== undefined ? { flow: task.flow as FlowSnapshot } : {}),
   }
@@ -220,8 +226,8 @@ function isEngineMeta(file: string): boolean {
   return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
 }
 
-function scopeHash(state: TaskState, root: string): string {
-  const entries = [...new Set(state.files)].filter(file => !isEngineMeta(file)).sort().map(file => {
+function scopeHash(state: TaskState, root: string, includeGovernance = false): string {
+  const entries = [...new Set(state.files)].filter(file => includeGovernance || !isEngineMeta(file)).sort().map(file => {
     const target = path.resolve(root, file)
     const inside = path.relative(root, target)
     if (inside.startsWith('..') || path.isAbsolute(inside)) refuse(`任务范围路径越界: ${file}`)
@@ -355,7 +361,10 @@ const checkpoint = commitCheckpoint(state, config)
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')
 }
-const evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd))
+const groupHashes = state.verification_version ? Object.fromEntries(Object.values(state.verification_groups ?? {}).map(group =>
+  [group.id, scopeHash({ ...state, files: groupInputs(state, group) }, state.root ?? cwd, true)])) : undefined
+const evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd), groupHashes)
+evidence.push(...reviewEvidenceBlockers(state, scopeHash(state, state.root ?? cwd)))
 if (evidence.length) refuse(evidence.join('; '))
 
 // Adaptive tasks commit at the Test checkpoint; a local Sonar scan does not
@@ -363,6 +372,12 @@ if (evidence.length) refuse(evidence.join('; '))
 if (state.sonar_policy?.enabled && ['代码审核', '完成'].includes(state.stage)) {
   const lastCommit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
   const blockers = sonarCommitBlockers(state.sonar_policy, state.sonar_audit, scopeHash(state, state.root ?? cwd), lastCommit)
+  if (state.sonar_policy.source === 'ide-local' && state.sonar_audit) {
+    const updated = lastLocalRuleUpdate(state.sonar_policy, state.root ?? cwd)
+    const rulesHash = localRulesFingerprint(state.sonar_policy, state.root ?? cwd)
+    if ((updated && updated !== state.sonar_audit.rules_updated_at) || (rulesHash && rulesHash !== state.sonar_audit.rules_hash))
+      blockers.push('project rule configuration changed; rerun sonar_check and review')
+  }
   if (blockers.length) refuse(blockers.join('; '))
 }
 

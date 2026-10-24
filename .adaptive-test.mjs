@@ -10,13 +10,21 @@ import { assertLocalSonarReady, inspectSonar, validLocalScanCommand } from './li
 import Controller from './lib/controller.js'
 import { hashText } from './lib/snapshot.js'
 import { projectInitSteps } from './lib/project-init.js'
+import { groupKey } from './lib/verification-state.js'
 
-function recordedVerification() {
-  return { passed: true, evidence: ['verified'], receipt: {
+function recordedVerification(state) {
+  const verification = { passed: true, evidence: ['verified'], receipt: {
     command: 'npm test', exit_code: 0, timed_out: false, aborted: false,
     started_at: '2026-10-01T00:00:00.000Z', finished_at: '2026-10-01T00:00:01.000Z',
     stdout: '# tests 1\n# pass 1', stderr: '', scope_hash: hashText(JSON.stringify([['app.js', null, null]])),
   } }
+  // Explicit command-provider evidence fixture; group behavior with real suites
+  // is exercised separately in .verification-groups-test.mjs.
+  const group = { id: 'fixture', command: 'npm test', files: [...state.files], item_ids: state.items.map(item => item.id), at: '2026-10-01T00:00:00.000Z' }
+  group.key = groupKey(group)
+  state.verification_groups = { fixture: group }
+  state.verification_runs = [{ id: 'fixture-pass', group_id: group.id, plan_key: group.key, files: group.files, passed: true, receipt: verification.receipt, evidence: ['verified'] }]
+  return verification
 }
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-adaptive-'))
@@ -295,6 +303,7 @@ test('local Sonar audit ignores failing old-code gate conditions', async () => {
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
       : { paging: { total: 0 }, issues: [] } })
   const audit = await inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope', fetcher, true)
   assert.equal(audit.gate, 'OK')
@@ -352,7 +361,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
   const state = f.state('LOCAL-1')
   state.stage = '代码审核'
-  state.verification = recordedVerification()
+  state.verification = recordedVerification(state)
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
   f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
@@ -370,6 +379,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
       : { paging: { total: 0 }, issues: [] } })
   try {
     const result = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'LOCAL-1' }))
@@ -399,7 +409,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     complexity_reason: 'One local change', files: ['app.js'], items: [{ id: 'one', title: 'change', status: 'done' }] })
   const state = f.state('S-1')
   state.stage = '代码审核'
-  state.verification = recordedVerification()
+  state.verification = recordedVerification(state)
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
   f.files.set(join(f.cwd, '.dsh/task-S-1.json'), JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)
@@ -412,6 +422,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = 'project'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-2', componentKey: 'project' } }
+    : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-2', revision: 'abcdef1234567890' }] }
     : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'ERROR',
       conditions: [{ metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
       : { paging: { total: 0 }, issues: [] } })
@@ -520,8 +531,8 @@ test('workbench initializes reviewed project resources directly and preserves So
     'adaptive-project-project-map')
   assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['test-validation'], undefined)
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
-  await assert.rejects(Controller.prototype.previewProjectInit.call(receiver,
-    { path: f.cwd, resources }), /不能覆盖/)
+  assert.equal((await Controller.prototype.previewProjectInit.call(receiver,
+    { path: f.cwd, resources })).ok, true, 'identical resources can be safely previewed again')
 })
 
 test('project initialization retries a token-truncated model draft with a compact request', async () => {
@@ -572,8 +583,14 @@ test('project initialization generates one ordered resource at a time and can sk
       if (name === 'llm') return { async *stream(options) {
         calls++
         const prompt = options.messages[0].content[0].text
+        if (options.messages.length === 1) {
+          yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `read-${calls}`,
+            name: 'init_read_file', arguments: JSON.stringify({ path: 'package.json' }) } }
+          yield { type: 'finish', reason: { kind: 'tool-calls' } }
+          return
+        }
         if (prompt.split('当前只生成这个资源：')[1]?.startsWith('{"name":"adaptive-project-project-map"')) {
-          if (calls === 1) yield { type: 'text-delta', text: '{"resources":[' }
+          if (calls === 2) yield { type: 'text-delta', text: '{"resources":[' }
           else yield { type: 'text-delta', text: JSON.stringify({ resources: [map] }) }
         } else yield { type: 'text-delta', text: JSON.stringify({ resources: [] }) }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -589,7 +606,8 @@ test('project initialization generates one ordered resource at a time and can sk
   const first = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: map.name, prior_resources: [], user_prompt: plan.user_prompt })
   assert.equal(first.resource.name, map.name)
-  assert.equal(calls, 2)
+  assert.equal(calls, 4)
+  assert.ok(first.reads.some(read => read.path === 'package.json' && read.start_line === 1))
   const optional = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-business-capabilities', prior_resources: [first.resource], user_prompt: plan.user_prompt })
   assert.equal(optional.resource, null)
@@ -610,20 +628,24 @@ test('each initialized Skill receives bounded evidence for its own purpose', asy
   assert.doesNotMatch(plan.user_prompt, /ROOT_OVERVIEW/)
   const map = await Controller.prototype.inspectProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-project-map' })
-  assert.match(map.evidence_prompt, /ROOT_OVERVIEW/)
+  assert.doesNotMatch(map.evidence_prompt, /ROOT_OVERVIEW/)
+  assert.match(map.evidence_prompt, /README\.md/)
   assert.match(map.evidence_prompt, /backend.*frontend/s)
   const backend = await Controller.prototype.inspectProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-code-backend' })
-  assert.match(backend.evidence_prompt, /OrderService/)
+  assert.match(backend.evidence_prompt, /backend/)
+  assert.doesNotMatch(backend.evidence_prompt, /class OrderService/)
   assert.doesNotMatch(backend.evidence_prompt, /OrderPage/)
   const frontend = await Controller.prototype.inspectProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-code-frontend' })
-  assert.match(frontend.evidence_prompt, /OrderPage/)
+  assert.match(frontend.evidence_prompt, /frontend/)
+  assert.doesNotMatch(frontend.evidence_prompt, /<template>/)
   assert.doesNotMatch(frontend.evidence_prompt, /OrderService/)
   const business = await Controller.prototype.inspectProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-business-capabilities' })
-  assert.match(business.evidence_prompt, /OrderService/)
-  assert.match(business.evidence_prompt, /OrderPage/)
+  assert.match(business.evidence_prompt, /backend/)
+  assert.match(business.evidence_prompt, /frontend/)
+  assert.match(business.evidence_prompt, /init_read_file/)
   assert.ok(backend.evidence_prompt.length < 20_000)
 })
 
@@ -631,7 +653,7 @@ test('a local false positive needs human approval, keeps the raw gate, and expir
   let allow = false
   const approvals = []
   const shell = { resolve: request => request, execute: async () => ({ result: async () => ({
-    exitCode: 0, timedOut: false, aborted: false, stdout: { text: 'checks passed' }, stderr: { text: '' },
+    exitCode: 0, timedOut: false, aborted: false, stdout: { text: '# tests 1\n# pass 1' }, stderr: { text: '' },
   }) }) }
   const f = fixture({ '.dsh/meta.json': JSON.stringify({ sonar: { enabled: true,
     host_url: 'https://sonar.example', project_key: 'project', mode: 'branch', source: 'ide-local',
@@ -639,7 +661,8 @@ test('a local false positive needs human approval, keeps the raw gate, and expir
     approval: { request: async request => { approvals.push(request); return allow ? 'allowed-once' : 'rejected' } } })
   await f.call({ operation: 'create', task_id: 'FP-1', title: 'one local finding', branch: 'feature',
     complexity: 'low', complexity_reason: 'Local correction', files: ['app.js'] })
-  await f.call({ operation: 'verify', task_id: 'FP-1', command: 'check' })
+  await f.call({ operation: 'plan_verification', task_id: 'FP-1', verification_group: 'fixture', command: 'npm test', files: ['app.js'], item_ids: [] })
+  await f.call({ operation: 'verify', task_id: 'FP-1', command: 'npm test' })
   const state = f.state('FP-1')
   state.stage = '代码审核'
   const finding = { key: 'local-fp-1', rule: 'mycompany-java:AvoidObjectCreationInLoop',

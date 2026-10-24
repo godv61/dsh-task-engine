@@ -1,7 +1,8 @@
 /**
  * The full-screen task-engine workbench, registered into `shell.overlay` so it
  * covers the whole app frame. It reads the shared visibility store: closed it
- * renders nothing (the overlay layer stays click-through), open it paints a
+ * keeps an invisible workbench mounted so an in-flight initialization survives,
+ * and open it paints a
  * header, a workspace selector, a tab bar, and the active tab — the flow
  * editor, the skill manager, or the rule manager.
  *
@@ -103,12 +104,14 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
   const workspaces = useWorkspaces((s) => s.items)
   const [tab, setTab] = useState<TabId>('adaptive')
   const [workspace, setWorkspace] = useState('')
-
-  if (!open) return null
+  const [initBusy, setInitBusy] = useState(false)
+  // Keep initialization alive while visiting another tab or closing the overlay.
+  // Its requests and draft state belong to this workbench, not to the visible tab.
+  const [initVisited, setInitVisited] = useState(false)
 
   const current = workspaces.some(w => w.path === workspace) ? workspace : (workspaces[0]?.path ?? '')
 
-  return createElement('div', { style: overlay, className: 'te-workbench' },
+  return createElement('div', { style: { ...overlay, display: open ? 'flex' : 'none' }, className: 'te-workbench' },
     createElement('style', null, workbenchTheme),
     createElement('div', { style: header },
       createElement('div', { style: headerBrand },
@@ -129,10 +132,15 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
         createElement(IconClose, { size: 16 })),
     ),
     createElement('div', { style: tabbar },
-      ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => { setTab(t.id) } }, t.label)),
+      ...TABS.map(t => createElement(Pill, { key: t.id, active: tab === t.id, onClick: () => {
+        if (t.id === 'init') setInitVisited(true)
+        setTab(t.id)
+      } }, t.label)),
       workspaces.length > 0
         ? createElement('select', {
           style: selectStyle, 'aria-label': '当前工作区',
+          disabled: initBusy,
+          title: initBusy ? '初始化任务运行期间不可切换工作区' : undefined,
           value: current,
           onChange: (ev: ChangeEvent<HTMLSelectElement>) => { setWorkspace(ev.target.value) },
         }, ...workspaces.map(w => createElement('option', { key: w.path, value: w.path }, w.title || w.path)))
@@ -143,15 +151,20 @@ export function Workbench({ useStore, actions, useWorkspaces, remote }: {
       createElement('p', { style: { ...styles.hint, marginBottom: 10 }, title: current }, '工作区 · ' + current),
       current === ''
         ? createElement('p', { style: styles.muted }, '当前没有工作区：请先在侧栏创建一个工作区。')
-        : tab === 'init'
-          ? createElement(InitPanel, { workspace: current, remote })
-          : tab === 'adaptive'
-            ? createElement(AdaptivePanel, { workspace: current, remote, onOpenInit: () => setTab('init') })
+        : createElement('div', { key: `init-${current}`, style: { display: tab === 'init' ? 'block' : 'none' } },
+          initVisited || tab === 'init' ? createElement(InitPanel, { workspace: current, remote, onBusyChange: setInitBusy }) : null),
+      current !== '' && tab !== 'init'
+        ? tab === 'adaptive'
+            ? createElement(AdaptivePanel, { workspace: current, remote, onOpenInit: () => {
+              setInitVisited(true)
+              setTab('init')
+            } })
           : tab === 'tasks'
               ? createElement(TaskLedger, { workspace: current, remote })
               : tab === 'skills'
                 ? createElement(SkillManager, { workspace: current, remote })
-                : createElement(RuleManager, { workspace: current, remote })),
+                : createElement(RuleManager, { workspace: current, remote })
+        : null),
     ),
   )
 }

@@ -1,5 +1,6 @@
 /** Human-readable, credential-free record of one SonarQube review run. */
 import { localReviewGate, unresolvedBlockingFindings, type SonarAudit, type SonarPolicy } from './sonar.ts'
+import { eastEightFileStamp, formatEastEightTime } from './time.ts'
 
 function line(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -7,7 +8,7 @@ function line(value: string): string {
 }
 
 export function sonarReportPath(taskId: string, audit: SonarAudit): string {
-  const stamp = audit.checked_at.replace(/[^A-Za-z0-9-]/gu, '-')
+  const stamp = eastEightFileStamp(audit.checked_at)
   return `.dsh/reviews/${taskId}/${stamp}-${audit.analysis_id.slice(0, 8)}.md`
 }
 
@@ -39,11 +40,13 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
   const rows = [
     `# SonarQube 代码审核：${line(taskId)}`,
     '',
-    `- 时间：${line(audit.checked_at)}`,
+    `- 时间：${line(formatEastEightTime(audit.checked_at))}`,
     `- 来源：${line(policy.source ?? 'ide-local')}`,
     `- 项目 Key：${line(policy.project_key)}`,
     `- 分析目标：${line(audit.target)}`,
     `- 本次结论：${line(audit.gate)}`,
+    ...(audit.scm_revision ? [`- 服务端分析提交：${line(audit.scm_revision)}`] : []),
+    ...(audit.rule_manifest_hash ? [`- 项目启用规则清单指纹：${line(audit.rule_manifest_hash)}`] : []),
     `- 问题：${audit.findings.length} 条；阻断：${audit.blocking.length} 条`,
     ...(policy.source === 'ide-local' ? [
       `- 人工复核后的任务门禁：${localReviewGate(audit)}；未解决阻断：${unresolvedBlockingFindings(audit).length} 条`,
@@ -59,6 +62,11 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     '',
     ...(audit.uncovered_files?.length ? audit.uncovered_files.map(file => `- ${line(file)}`) : ['- 无']),
     '',
+    ...(audit.excluded_preexisting_files?.length ? [
+      '## 未纳入本任务的既有改动', '',
+      '以下文件在任务创建前已经修改，当前内容仍与创建基线一致，且不在本任务交付范围；本次不分析这些文件。', '',
+      ...audit.excluded_preexisting_files.map(file => `- ${line(file)}`), '',
+    ] : []),
     ...(policy.source === 'ide-local' ? [
       '## 本次涉及语言的项目规则与本地分析器',
       '',
@@ -78,7 +86,7 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     '## 逐项误报复核',
     '',
     ...(audit.dispositions?.length ? audit.dispositions.flatMap(entry => [
-      `- ${line(entry.issue_key)} · ${line(entry.kind)} · 批准于 ${line(entry.approved_at)}`,
+      `- ${line(entry.issue_key)} · ${line(entry.kind)} · 批准于 ${line(formatEastEightTime(entry.approved_at))}`,
       `  - 原因：${line(entry.reason)}`,
       ...entry.evidence.map(value => `  - 证据：${line(value)}`),
     ]) : ['- 无']),

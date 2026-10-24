@@ -65,6 +65,9 @@ async function stampReceipt(root, taskFile) {
     started_at: '2026-10-01T00:00:00.000Z', finished_at: '2026-10-01T00:00:01.000Z',
     stdout: '# tests 1\n# pass 1', stderr: '', scope_hash: hashText(JSON.stringify(entries)),
   }
+  if (task.review?.outcome === 'pass') task.review = { ...task.review,
+    scope_hash: task.verification.receipt.scope_hash, verification_at: task.verification.receipt.finished_at,
+    checked_at: task.verification.receipt.finished_at }
   writeFileSync(taskFile, JSON.stringify(task, null, 2))
 }
 

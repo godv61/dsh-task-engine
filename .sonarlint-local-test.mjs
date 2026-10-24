@@ -4,9 +4,10 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { changedLines, currentBinding, missingLocalAuditScope, saveBinding, uncoveredLocalFiles } from './lib/sonarlint-local.js'
+import { captureLocalAuditBaseline, changedLines, currentBinding, filterPreexistingAuditChanges, missingLocalAuditScope, saveBinding, uncoveredLocalFiles } from './lib/sonarlint-local.js'
 import { isIncludedAuditPath, validAuditIncludePaths } from './lib/sonar.js'
 import { renderSonarReport, sonarReportPath } from './lib/sonar-report.js'
+import { formatEastEightTime } from './lib/time.js'
 
 test('manual rule update persists the active project binding without leaving a staging file', () => {
   const directory = mkdtempSync(join(tmpdir(), 'dsh-sonar-binding-'))
@@ -38,12 +39,38 @@ test('one review gets a credential-free Markdown report path and issue details',
     profile_coverage:[{language:'JAVA',active_rules:66,analyzer:'SYNCED'}] }
   const path = sonarReportPath('QMS-1', audit)
   assert.match(path, /^\.dsh\/reviews\/QMS-1\/2026-/)
+  assert.match(path, /2026-10-03T18-11-12-000\+0800-abc12345\.md$/)
   const report = renderSonarReport('QMS-1', {source:'ide-local',project_key:'project',include_paths:['fp-bussiness']}, audit)
   assert.match(report, /java:S103/)
+  assert.match(report, /时间：2026-10-03 18:11:12\.000（UTC\+08:00）/)
+  assert.equal(audit.checked_at, '2026-10-03T10:11:12.000Z')
   assert.match(report, /A.java:12/)
   assert.match(report, /JAVA：服务端启用 66 条规则；本地分析器 SYNCED/)
   assert.match(report, /不等同 SonarQube 服务端完整扫描或 Quality Gate/)
   assert.equal(report.includes('token-secret'),false)
+})
+
+test('report and approval timestamps use UTC+08:00 across midnight and preserve audit instants', () => {
+  const audit = { analysis_id: 'timezone-1', checked_at: '2026-12-31T20:00:00.123Z', target: 'HEAD', gate: 'OK',
+    findings: [], blocking: [], dispositions: [{ issue_key: 'one', kind: 'false_positive',
+      reason: 'reviewed', evidence: ['source'], approved_at: '2027-01-01T04:10:00+09:00' }] }
+  const original = JSON.stringify(audit)
+  const report = renderSonarReport('TZ-1', { source: 'ide-local', project_key: 'fixture' }, audit)
+  assert.match(report, /时间：2027-01-01 04:00:00\.123（UTC\+08:00）/)
+  assert.match(report, /批准于 2027-01-01 03:10:00\.000（UTC\+08:00）/)
+  assert.match(sonarReportPath('TZ-1', audit), /2027-01-01T04-00-00-123\+0800/)
+  assert.equal(JSON.stringify(audit), original)
+  for (const at of ['invalid', '2026-10-23 08:42:18']) assert.match(formatEastEightTime(at), /无效或缺少时区/)
+})
+
+test('report time is independent of operating-system and browser-default timezone', () => {
+  const moduleUrl = new URL('./lib/time.js', import.meta.url).href
+  const script = `import { formatEastEightTime } from ${JSON.stringify(moduleUrl)}; process.stdout.write(formatEastEightTime('2026-10-23T08:42:18.227Z'))`
+  for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
+    const text = execFileSync(process.execPath, ['--input-type=module', '-e', script],
+      { encoding: 'utf8', env: { ...process.env, TZ: tz } })
+    assert.equal(text, '2026-10-23 16:42:18.227（UTC+08:00）')
+  }
 })
 
 test('review report does not claim CSS coverage from a Vue file alone', () => {
@@ -107,4 +134,42 @@ test('local Sonar audit considers Git new code but excludes generated DSH record
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('task creation baseline excludes only unchanged pre-existing code outside its declared scope', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-sonar-baseline-test-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
+  git('init', '--quiet')
+  for (const path of ['Existing.java', 'Staged.java', 'Delivery.java']) writeFileSync(join(root, path), 'class Initial {}\n')
+  git('add', '.')
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'core.hooksPath=NUL', 'commit', '--quiet', '-m', 'baseline')
+  writeFileSync(join(root, 'Existing.java'), 'class Existing {}\n')
+  writeFileSync(join(root, 'Staged.java'), 'class Staged {}\n')
+  git('add', 'Staged.java')
+  writeFileSync(join(root, 'Untracked.java'), 'class Untracked {}\n')
+  const baseline = await captureLocalAuditBaseline(root, 'HEAD')
+  assert.equal(baseline.files.length, 3)
+  const select = async (paths = ['Delivery.java'], snapshot = baseline) => filterPreexistingAuditChanges(root, 'HEAD',
+    await changedLines(root, 'HEAD'), paths, snapshot)
+  writeFileSync(join(root, 'Delivery.java'), 'class Delivery {}\n')
+  let selected = await select()
+  assert.deepEqual(selected.excluded.sort(), ['Existing.java', 'Staged.java', 'Untracked.java'])
+  assert.deepEqual(selected.changes.map(file => file.path), ['Delivery.java'])
+  assert.deepEqual(missingLocalAuditScope(selected.changes.map(file => file.path), ['Delivery.java']), [])
+  // Existing files explicitly adopted into this task are still analyzed.
+  selected = await select(['Delivery.java', 'Existing.java'])
+  assert.ok(selected.changes.some(file => file.path === 'Existing.java'))
+  writeFileSync(join(root, 'Existing.java'), 'class ChangedAfterStart {}\n')
+  writeFileSync(join(root, 'Late.java'), 'class Late {}\n')
+  selected = await select()
+  assert.deepEqual(missingLocalAuditScope(selected.changes.map(file => file.path), ['Delivery.java']).sort(), ['Existing.java', 'Late.java'])
+  const legacy = await filterPreexistingAuditChanges(root, 'HEAD', await changedLines(root, 'HEAD'), ['Delivery.java'])
+  assert.equal(legacy.excluded.length, 0)
+  const movedReference = await select(['Delivery.java'], { ...baseline, commit: '0'.repeat(40) })
+  assert.equal(movedReference.excluded.length, 0)
+  const report = renderSonarReport('BASELINE', { source: 'ide-local', project_key: 'fixture' }, {
+    analysis_id: 'baseline', checked_at: '2026-10-23T00:00:00Z', target: 'HEAD', gate: 'OK',
+    findings: [], blocking: [], excluded_preexisting_files: selected.excluded })
+  assert.match(report, /未纳入本任务的既有改动/)
+  console.log('preserved local audit baseline fixture:', root)
 })

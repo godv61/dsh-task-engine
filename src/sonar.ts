@@ -14,6 +14,13 @@ export interface SonarPolicy {
   include_paths?: string[]
 }
 
+/** Dirty source files captured before this task starts; no source content is stored. */
+export interface LocalAuditBaseline {
+  reference: string
+  commit: string
+  files: { path: string; hash: string }[]
+}
+
 export interface SonarFinding {
   key: string
   rule: string
@@ -33,6 +40,8 @@ export interface SonarDisposition {
 }
 
 export interface SonarAudit {
+  /** Unchanged dirty files outside this task, proven against its creation baseline. */
+  excluded_preexisting_files?: string[]
   ce_task_id: string
   analysis_id: string
   gate: string
@@ -41,6 +50,11 @@ export interface SonarAudit {
   checked_at: string
   scope_hash: string
   commit_hash?: string
+  /** Exact server analysis SCM revision, never inferred from the task ledger. */
+  scm_revision?: string
+  rules_updated_at?: string
+  rules_hash?: string
+  rule_manifest_hash?: string
   findings: SonarFinding[]
   blocking: SonarFinding[]
   /** Local-only decisions; never rewrite the analyzer's original gate or server Quality Gate. */
@@ -171,7 +185,7 @@ export function sonarCommitBlockers(policy: SonarPolicy, audit: SonarAudit | und
 
 /** Resolve an exact CI Compute Engine task to its analysis and Quality Gate. */
 export async function inspectSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
-  scopeHash: string, fetcher: typeof fetch = fetch, newCodeOnly = false): Promise<SonarAudit> {
+  scopeHash: string, fetcher: typeof fetch = fetch, newCodeOnly = false, expectedCommit?: string): Promise<SonarAudit> {
   if (!token) throw new Error(`SonarQube token environment variable ${policy.token_env} is not set`)
   if (!/^[\w-]{8,120}$/u.test(ceTaskId)) throw new Error('invalid SonarQube ce_task_id')
   if (!target.trim()) throw new Error('SonarQube audit needs a branch or pull request')
@@ -186,6 +200,21 @@ export async function inspectSonar(policy: SonarPolicy, token: string, ceTaskId:
   const taskTarget = policy.mode === 'branch' ? ce.branch : ce.pullRequest
   if (typeof taskTarget === 'string' && taskTarget !== target) {
     throw new Error(`SonarQube analysis belongs to ${taskTarget}, expected ${target}`)
+  }
+  let revision: string | undefined
+  if (expectedCommit) {
+    for (let page = 1; page <= 20 && !revision; page++) {
+      const result = await api(policy, token, 'project_analyses/search', { project: policy.project_key,
+        ...(policy.mode === 'branch' ? { branch: target } : { pullRequest: target }), p: String(page), ps: '100' }, fetcher)
+      if (!Array.isArray(result.analyses)) throw new Error('SonarQube cannot prove the analysis SCM revision')
+      if (page === 1 && object(result.analyses[0] ?? {}).key !== analysisId)
+        throw new Error('SonarQube analysis SCM revision is unavailable for the latest target analysis')
+      const exact = result.analyses.map(object).find(entry => entry.key === analysisId)
+      if (exact) { revision = string(exact.revision, 'analysis.revision'); break }
+      if (result.analyses.length < 100) break
+    }
+    if (!revision || !/^[0-9a-f]{7,40}$/iu.test(expectedCommit) || !revision.startsWith(expectedCommit))
+      throw new Error('SonarQube analysis SCM revision does not match the recorded commit; run a fresh scan')
   }
   const gateStatus = object((await api(policy, token, 'qualitygates/project_status', { analysisId }, fetcher)).projectStatus)
   const serverGate = string(gateStatus.status, 'projectStatus.status')
@@ -232,7 +261,14 @@ export async function inspectSonar(policy: SonarPolicy, token: string, ceTaskId:
     if (findings.length >= total || issues.length < 500) break
     if (page === 20) throw new Error('SonarQube new-code findings exceed 10,000; audit cannot claim completeness')
   }
+  if (expectedCommit) {
+    const latest = await api(policy, token, 'project_analyses/search', { project: policy.project_key,
+      ...(policy.mode === 'branch' ? { branch: target } : { pullRequest: target }), p: '1', ps: '1' }, fetcher)
+    if (!Array.isArray(latest.analyses) || object(latest.analyses[0] ?? {}).key !== analysisId)
+      throw new Error('SonarQube analysis changed while findings were read; retry the audit')
+  }
   return { ce_task_id: ceTaskId, analysis_id: analysisId, gate,
     ...(newCodeOnly ? { server_gate: serverGate } : {}), checked_at: new Date().toISOString(),
-    scope_hash: scopeHash, findings, blocking: findings.filter(isBlockingFinding), target }
+    scope_hash: scopeHash, findings, blocking: findings.filter(isBlockingFinding), target,
+    ...(revision ? { scm_revision: revision, commit_hash: revision } : {}) }
 }

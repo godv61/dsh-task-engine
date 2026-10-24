@@ -73,7 +73,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     if (name === 'sandboxPolicy') return { resolve(request) { assert.equal(request.session, session); return policy } }
     if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async execute(request) {
       const fail = request.command === 'fail'
-      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : '# tests 1\n# pass 1' }, stderr: { text: '' } }
+      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : request.command.includes('status --porcelain') ? '' : request.command === 'git rev-parse HEAD' ? 'abcdef1234567890' : request.command.includes('ls-tree') ? '100644 blob ffffffffffffffffffffffffffffffffffffffff\tapp.js\0' : request.command.startsWith('git hash-object') ? 'ffffffffffffffffffffffffffffffffffffffff' : '# tests 1\n# pass 1' }, stderr: { text: '' } }
       return { result: async () => outcome }
     } }
     return undefined
@@ -434,6 +434,7 @@ test('绑定技能失败阻止完成；成功后仍须提交真实 Git 回执', 
   f.load('code-review'); f.load('code-commit'); f.load('software-testing')
   await f.call({ operation: 'verify', command: 'npm test', evidence: ['real checks'] })
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'fail', evidence: ['scenario failed'] })
+  await f.call({ operation: 'review', outcome: 'pass' })
   await assert.rejects(f.call({ operation: 'advance', target_stage: '完成' }), /skill_result/)
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['scenario passed'] })
   await assert.rejects(f.call({ operation: 'advance', target_stage: '完成' }), /commit required/)
@@ -462,21 +463,23 @@ test('status 提交提示与真实门禁一致，分别披露过期验证和附�
   assert.equal(JSON.parse(await f.call({ operation: 'status' })).commit.allowed, false)
   f.load('code-review'); f.load('code-commit'); f.load('software-testing')
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['tested'] })
+  await f.call({ operation: 'review', outcome: 'pass' })
   assert.equal(JSON.parse(await f.call({ operation: 'status' })).commit.allowed, true)
   f.records.set(join(f.cwd, 'app.js'), 'changed after testing')
   const before = JSON.stringify(f.state())
   const stale = JSON.parse(await f.call({ operation: 'status' }))
   assert.equal(stale.commit.allowed, false)
   assert.match(stale.commit.reason, /stale/)
-  assert.equal(stale.evidence_blockers.length, 2)
+  assert.equal(stale.evidence_blockers.length, 3)
   assert.equal(JSON.stringify(f.state()), before)
   await assert.rejects(f.call({ operation: 'commit', files: ['app.js'], message: '【LIVE-1】【TASK】done' }), /stale/)
   await f.call({ operation: 'verify', command: 'npm test' })
   const partial = JSON.parse(await f.call({ operation: 'status' }))
   assert.equal(partial.commit.allowed, false)
-  assert.equal(partial.evidence_blockers.length, 1)
-  assert.match(partial.evidence_blockers[0], /software-testing/)
+  assert.equal(partial.evidence_blockers.length, 2)
+  assert.ok(partial.evidence_blockers.some(problem => /software-testing/.test(problem)))
   await f.call({ operation: 'skill_result', target_stage: '完成', skill_name: 'software-testing', command: 'check', evidence: ['retested'] })
+  await f.call({ operation: 'review', outcome: 'pass' })
   const current = JSON.parse(await f.call({ operation: 'status' }))
   assert.equal(current.commit.allowed, true)
   assert.deepEqual(current.evidence_blockers, [])

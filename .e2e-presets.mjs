@@ -88,7 +88,7 @@ async function runPreset(preset) {
           return {
             exitCode: 0, timedOut: false, aborted: false,
             sandbox: { mode: 'workspace-write', denied: false },
-            stdout: { text: isLog ? `${HASH}\n${lastMessage}\n\nsrc/a.js\n` : '# tests 1\n# pass 1' },
+            stdout: { text: isLog ? `${HASH}\n${lastMessage}\n\nsrc/a.js\n` : request.command.includes('status --porcelain') ? '' : request.command === 'git rev-parse HEAD' ? HASH : request.command.includes('ls-tree') ? '100644 blob ffffffffffffffffffffffffffffffffffffffff\tsrc/a.js\0' : request.command.startsWith('git hash-object') ? 'ffffffffffffffffffffffffffffffffffffffff' : '# tests 1\n# pass 1' },
             stderr: { text: '' },
           }
         },

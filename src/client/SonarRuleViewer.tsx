@@ -74,7 +74,7 @@ export function SonarRuleViewer({ workspace, host, remote, onClose }: { workspac
     busy && !view ? createElement('div', { style: muted }, '正在读取当前项目的质量配置和规则…') : null,
     view ? createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, minHeight: 0, flex: 1 } },
       createElement('div', { style: muted }, hasAnalyzedProfiles
-        ? `最近一次服务端分析涉及：${view.analyzed_languages.join('、')}。默认只显示这些语言。`
+        ? `最近一次服务端分析涉及：${view.analyzed_languages.join('、')}。默认只显示这些语言；隐藏不代表禁用，也不限制本地审核。`
         : '服务器尚未返回可匹配的已分析语言，显示所有生效的语言配置。'),
       hasAnalyzedProfiles && view.profiles.some(item => !item.analyzed)
         ? createElement('label', { style: muted }, createElement('input', { type: 'checkbox', checked: showOther,

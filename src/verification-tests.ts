@@ -1,7 +1,7 @@
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
 export function mavenTestEvidence(command: string, output: string): { count: number | null } | null {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command)
-  const testGoal = /(?:^|\s)(?:test|verify|package|install)(?=\s|$)/iu.test(command)
+  const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command)
   if (!maven || !testGoal) return null
   const summaries = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:\s*(\d+)\s*,\s*Errors:\s*(\d+)\s*,\s*Skipped:\s*(\d+)/giu)]
   if (!summaries.length) return { count: null }

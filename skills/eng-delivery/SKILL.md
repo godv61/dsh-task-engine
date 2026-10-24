@@ -12,12 +12,16 @@ whenToUse: 在启用工程化交付会话预设后，开始或继续开发任务
 
 自适应任务的当前元技能及附加技能都以 `status.bindings` 为准，用 `dev_task load_skill` 和准确的 `source:name` 加载；项目同名 Skill 覆盖用户与内置 Skill，Rule 由生效 Skill 自身的 `profile.json` 持有。当前任务的流程在创建时冻结，其他会话的任务可选择不同档次。
 
+项目配置优先通过 `dev_task assess/status` 读取实际生效结果。自适应任务的 `.dsh/eng.json` 是可选兼容配置，缺失不代表初始化失败；确需直接读取可选文件时先检查存在性，不用忽略错误参数代替存在性检查。
+
 `dev_task` 是任务状态、阶段流转与门禁的唯一事实来源。流程预设决定阶段图与守卫；项目配置决定阶段使用哪些技能、每个技能遵守哪些规则，以及产物字段和提交文本。没有绑定时仅执行状态机，不自行补充技能或规则。
 
 1. 每次收到需求先调用 `dev_task`（operation=status）查看任务归属。已归档任务只读；交付后的缺陷、优化或新需求即使在同一会话、同一分支也用新 `task_id` 调用 `create`，可用 `related_task_id` 和 `relation_kind` 关联原任务。仅当原任务仍进行中且本次要求属于同一轮验收时继续；归属不清时询问使用者是继续当前任务还是新建。没有任务时评估复杂度，调用 `assess` 后 `create`。
 2. 读取 `status.bindings`、`skill_obligations`、`artifact_requirements`、`legal_next` 和 `commit`。只加载当前及即将进入的终态实际绑定的技能，遵守本次交互读取的最新规则正文；没有绑定时不自行补上技能或规则。
 3. 技能要求的证据以其配置和 `status.skill_obligations` 为准：仅对 `command_receipts_required` 列出的技能通过带真实命令的 `skill_result` 记录；`manual` 通过人工审批记录；`artifact`、`review` 与 `none` 按对应阶段操作或无需额外回执处理。不要把所有技能都当成命令型技能。技能加载成功不等于要求的证据已经完成。
 4. 需要记录产物时，只使用 `artifact_requirements` 给出的 id 与字段。按当前流程要求完成确认、实施项、验证和审核，再调用 `advance`；被拒绝时按返回的阻塞原因修正，不改任务文件绕过门禁。
+   新自适应任务必须为每项调用 `plan_execution` 记录边界、范围、验收、依赖和选择理由，默认交由引擎自动选择执行方式，无需用户提醒。高/超高档在任务编排时做，低/中档在代码开发开始时做。按计划调用 `dispatch`；需要独立审核时执行 `review_dispatch`，主代理核对后再 `review_item` 和标 done。不要调用原生 subagent 工具制造无法关联台账的委派。
+   每项包含实现和必要测试；通过 plan_verification 声明全部必要测试组的 command、files 和 item_ids。verify 按 verification_group 执行，分别保存回执。只有全部组有效，任务整体才验证通过。返工范围明确时用 revise(defect) 的 affected_items；影响未知时完整返工。技能读取记录按当前会话与内容版本复用，执行证据按实际输入重新核对。
    `items` 默认按 ID 增量合并；只有明确重排或删除尚未实施的项目时才传 `items_mode=replace` 和完整目标列表。审核前对照 Git 变更补齐任务文件范围；插件会拒绝漏登的新增审核文件。
 5. 只在 `status.commit` 允许的检查点申请提交，并按任务创建时的流程配置校验文件范围与消息。提交后按工具要求回写真实 Git HEAD。到达终态并满足完成条件后立即调用 `complete` 归档，不等待部署；归档后所有写操作均被拒绝。仅未归档的同一轮需求返工使用 `revise`。
 

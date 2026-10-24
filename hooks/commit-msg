@@ -25,14 +25,14 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hook.ts
-var import_node_child_process = require("node:child_process");
-var import_node_fs = __toESM(require("node:fs"), 1);
-var import_node_path = __toESM(require("node:path"), 1);
+var import_node_child_process3 = require("node:child_process");
+var import_node_fs2 = __toESM(require("node:fs"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
 
 // src/verification-tests.ts
 function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
-  const testGoal = /(?:^|\s)(?:test|verify|package|install)(?=\s|$)/iu.test(command);
+  const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command);
   if (!maven || !testGoal) return null;
   const summaries = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:\s*(\d+)\s*,\s*Errors:\s*(\d+)\s*,\s*Skipped:\s*(\d+)/giu)];
   if (!summaries.length) return { count: null };
@@ -88,6 +88,108 @@ function receiptHasRequiredTests(receipt) {
 ${receipt.stderr}`).count ?? 0) > 0;
 }
 
+// src/execution-plan.ts
+function executionCoverageBlockers(state2) {
+  if (!state2.delegation_version) return [];
+  const owned = new Set(state2.items.flatMap((item) => item.execution_plan?.files ?? []));
+  const missing = state2.files.filter((file) => !owned.has(file));
+  return missing.length ? [`task files have no implementation-plan owner: ${missing.join(", ")}; plan all items before dispatch`] : [];
+}
+function hasFullReadCoverage(review, files) {
+  return files.every((file) => review?.read_coverage?.some((entry) => entry.file === file && Number.isSafeInteger(entry.lines) && entry.lines >= 0));
+}
+function executionPlanKey(plan) {
+  return JSON.stringify(plan);
+}
+function executionItemBlockers(state2, item) {
+  if (!state2.delegation_version) return [];
+  const plan = item.execution_plan;
+  if (!plan) return [`item ${item.id}: call plan_execution before dispatch (record boundary, files, acceptance and reason)`];
+  const blockers = [];
+  if (!item.dispatch) blockers.push(`item ${item.id}: implementation has not been dispatched`);
+  if (item.dispatch?.status && item.dispatch.status !== "completed") blockers.push(`item ${item.id}: implementation child is not completed`);
+  if (item.review?.spec.outcome !== "pass" || state2.flow?.config.review_depth !== "single" && item.review.quality?.outcome !== "pass")
+    blockers.push(`item ${item.id}: item review is missing or failed before done`);
+  if (plan.review === "independent") {
+    const review = item.independent_review;
+    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, plan.files))
+      blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`);
+  }
+  return blockers;
+}
+
+// src/verification-state.ts
+function receiptProblems(receipt) {
+  const problems = [];
+  if (receipt.sandbox?.runnerFailed) problems.push("ENVIRONMENT_BLOCKED: sandbox runner could not start; inspect the executor diagnostic");
+  else if (receipt.sandbox?.denied) problems.push("ENVIRONMENT_BLOCKED: sandbox denied this command; inspect the denied path and request only the exact necessary command if needed");
+  else if (receipt.exit_code !== 0 && /Cannot create resource output directory|spawn EPERM|access (?:is )?denied|拒绝访问/iu.test(`${receipt.stdout}
+${receipt.stderr}`))
+    problems.push("ENVIRONMENT_BLOCKED: filesystem or child-process access failed; do not repair permissions or widen the session automatically");
+  if (receipt.timed_out) problems.push("TEST_TIMEOUT: command exceeded its execution limit");
+  if (receipt.aborted) problems.push("TEST_CANCELLED: command did not finish");
+  if (receipt.exit_code !== 0) problems.push(`TEST_COMMAND_FAILED: exit code ${receipt.exit_code}; inspect stdout/stderr before retrying`);
+  if (receipt.scope_changed_during_run) problems.push("INPUTS_CHANGED: test inputs changed during execution; rerun on stable inputs");
+  if (!receiptHasRequiredTests(receipt)) problems.push(receipt.test_summary?.count === 0 ? "NO_PASSING_TESTS: tests failed, were all skipped, or no tests ran" : "NO_TEST_SUMMARY: no supported nonzero test summary; use a real runner such as node --test --test-reporter=tap, Maven test, or pytest. Do not print a synthetic count. On Windows, if Node child-process capture is denied, check whether --experimental-test-isolation=none is supported and suitable for this suite.");
+  return problems;
+}
+function itemDependencies(state2, ids) {
+  const found = new Set(ids);
+  for (const id of found) for (const dependency of state2.items.find((item) => item.id === id)?.execution_plan?.depends_on ?? []) found.add(dependency);
+  return [...found];
+}
+function groupInputs(state2, group) {
+  const dependencies = itemDependencies(state2, group.item_ids).filter((id) => !group.item_ids.includes(id));
+  return [.../* @__PURE__ */ new Set([
+    ...group.files,
+    ...state2.items.filter((item) => dependencies.includes(item.id)).flatMap((item) => item.execution_plan?.files ?? state2.files),
+    ...Object.values(state2.verification_groups ?? {}).filter((other) => other.item_ids.some((id) => dependencies.includes(id))).flatMap((other) => other.files)
+  ])].sort();
+}
+function groupPlanningBlockers(state2) {
+  if (!state2.verification_version) return [];
+  const groups = Object.values(state2.verification_groups ?? {});
+  if (!groups.length) return ["plan_verification is required: declare command, files (implementation + tests + relevant configuration), and item_ids before dispatch or verify"];
+  const blockers = state2.files.filter((file) => !groups.some((group) => group.files.includes(file))).map((file) => `test coverage is undeclared for ${file}; include it in a verification group`);
+  for (const item of state2.items) {
+    const owned = groups.filter((group) => group.item_ids.includes(item.id));
+    if (!owned.length) blockers.push(`item ${item.id}: plan a verification group for the complete implementation + test unit; do not make its own tests depend on this item being done`);
+    else for (const file of item.execution_plan?.files ?? []) if (!owned.some((group) => group.files.includes(file))) blockers.push(`item ${item.id}: its required verification groups do not cover ${file}`);
+    for (const group of owned) for (const file of group.files) {
+      if (item.execution_plan?.files.includes(file)) continue;
+      const owners = state2.items.filter((candidate) => candidate.execution_plan?.files.includes(file));
+      if (owners.length && owners.every((owner) => owner.id !== item.id && itemDependencies(state2, [owner.id]).includes(item.id)))
+        blockers.push(`item ${item.id}: required check ${group.id} waits for downstream delivery ${file}; merge implementation and its necessary tests into a complete unit, or keep integration checks task-level with item_ids=[]`);
+    }
+  }
+  return blockers;
+}
+function latestGroupRun(state2, id) {
+  const runs = state2.verification_runs ?? [];
+  for (let index = runs.length - 1; index >= 0; index--) if (runs[index].group_id === id) return runs[index];
+  return void 0;
+}
+function requiredGroups(state2, itemId) {
+  const ids = itemId === void 0 ? void 0 : itemDependencies(state2, [itemId]);
+  return Object.values(state2.verification_groups ?? {}).filter((group) => !ids || group.item_ids.some((id) => ids.includes(id)));
+}
+function groupEvidenceBlockers(state2, hashes, itemId) {
+  const problems = groupPlanningBlockers(state2);
+  for (const group of requiredGroups(state2, itemId)) {
+    const run3 = latestGroupRun(state2, group.id);
+    if (!run3) problems.push(`verification group ${group.id}: run verify verification_group=${group.id}`);
+    else if (run3.invalidated_reason) problems.push(`verification group ${group.id}: ${run3.invalidated_reason}; rerun verify`);
+    else if (run3.plan_key !== group.key) problems.push(`verification group ${group.id}: plan changed; rerun verify`);
+    else if (!run3.passed || receiptProblems(run3.receipt).length) problems.push(`verification group ${group.id}: latest run did not pass; ${receiptProblems(run3.receipt).join("; ")}`);
+    else if (hashes && run3.receipt.scope_hash !== hashes[group.id]) problems.push(`verification group ${group.id}: stale (inputs changed); rerun verify verification_group=${group.id}`);
+  }
+  return problems;
+}
+function verificationKey(state2, itemId) {
+  if (!state2.verification_version) return state2.verification.receipt?.finished_at;
+  return JSON.stringify(requiredGroups(state2, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((group) => [group.id, group.key, latestGroupRun(state2, group.id)?.id]));
+}
+
 // src/engine.ts
 function formatResourceRef(ref) {
   return `${ref.source}:${ref.name}`;
@@ -98,8 +200,9 @@ function artifactsForStage(stage, config2) {
 function todosBlockers(state2, config2) {
   if (state2.items.length === 0) return ["no implementation items"];
   const depth = config2?.review_depth ?? "two-stage";
-  const blockers = [];
+  const blockers = executionCoverageBlockers(state2);
   for (const item of state2.items) {
+    blockers.push(...executionItemBlockers(state2, item));
     if (item.status !== "done") {
       blockers.push(`item "${item.id}" is ${item.status}`);
       continue;
@@ -125,6 +228,7 @@ function guardSatisfied(guard, state2, config2) {
       return todosBlockers(state2, config2).length === 0;
     case "verified": {
       if (!state2.verification.passed) return false;
+      if (state2.verification_version && groupEvidenceBlockers(state2).length) return false;
       if (state2.verification.receipt && !receiptHasRequiredTests(state2.verification.receipt)) return false;
       if (config2.high_risk_requires_verification && state2.risk_level === "high_risk") {
         const receipt = state2.verification.receipt;
@@ -174,6 +278,7 @@ function verificationHeldStages(config2) {
 function verificationBlockers(state2, config2) {
   if (!verificationHeldStages(config2).has(state2.stage)) return [];
   const blockers = [];
+  if (state2.verification_version) blockers.push(...groupEvidenceBlockers(state2));
   if (state2.verification.receipt?.scope_changed_during_run) {
     blockers.push("task files changed while verification ran; rerun tests on an unchanged source tree");
   }
@@ -502,9 +607,11 @@ function sonarCommitBlockers(policy, audit, currentScopeHash, latestCommitHash) 
 }
 
 // src/evidence-gate.ts
-function verificationEvidenceBlockers(state2, workflow, currentScopeHash) {
+function verificationEvidenceBlockers(state2, workflow, currentScopeHash, groupHashes2) {
   const needsVerification = verificationHeldStages(workflow).has(state2.stage) || workflow.transitions.some((edge) => edge.from === state2.stage && (edge.requires ?? []).includes("verified"));
-  if (!needsVerification || !state2.verification.passed) return [];
+  if (!needsVerification) return [];
+  if (state2.verification_version) return groupEvidenceBlockers(state2, groupHashes2);
+  if (!state2.verification.passed) return [];
   const receipt = state2.verification.receipt;
   if (!receipt) return ["verification has no command receipt; rerun verify on the current files"];
   if (receipt.scope_changed_during_run) return ["task files changed while verification ran; rerun tests"];
@@ -512,6 +619,80 @@ function verificationEvidenceBlockers(state2, workflow, currentScopeHash) {
     return ["verification is stale after file/scope changes; rerun verify on the current files"];
   }
   return [];
+}
+function reviewEvidenceBlockers(state2, currentScopeHash) {
+  if (state2.review.outcome !== "pass") return [];
+  if (state2.review.scope_hash !== currentScopeHash || (state2.verification_version ? state2.review.verification_key !== verificationKey(state2) : state2.review.verification_at !== state2.verification.receipt?.finished_at)) {
+    return ["review is stale or has no content receipt; rerun review on the current verified files"];
+  }
+  return [];
+}
+
+// src/sonarlint-local.ts
+var import_node_child_process2 = require("node:child_process");
+var import_node_crypto2 = require("node:crypto");
+var import_node_fs = require("node:fs");
+var import_node_os = require("node:os");
+var import_node_path = require("node:path");
+var import_node_util2 = require("node:util");
+
+// src/sonarlint-install.ts
+var import_node_child_process = require("node:child_process");
+var import_node_util = require("node:util");
+var run = (0, import_node_util.promisify)(import_node_child_process.execFile);
+var VERSION = "11.9.0.86162";
+var BASE = `https://repo.maven.apache.org/maven2/org/sonarsource/sonarlint/core/sonarlint-backend-cli/${VERSION}`;
+
+// src/sonarlint-local.ts
+var run2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
+function localStateDir(policy, root) {
+  const cacheKey = `${(0, import_node_path.resolve)(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`;
+  return (0, import_node_path.join)(
+    process.env.DSH_HOME ?? (0, import_node_path.join)((0, import_node_os.homedir)(), ".dsh"),
+    "sonarlint-cache",
+    (0, import_node_crypto2.createHash)("sha256").update(cacheKey).digest("hex").slice(0, 24)
+  );
+}
+function lastLocalRuleUpdate(policy, root) {
+  return currentBinding(localStateDir(policy, root))?.updated_at;
+}
+function currentBinding(stateDir) {
+  try {
+    const binding = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(stateDir, "dsh-binding.json"), "utf8"));
+    if (/^project-[0-9a-f-]{36}$/u.test(binding.connection_id) && !Number.isNaN(Date.parse(binding.updated_at))) {
+      return binding;
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw new Error("\u672C\u5730 SonarQube \u89C4\u5219\u7ED1\u5B9A\u8BB0\u5F55\u635F\u574F\uFF0C\u8BF7\u68C0\u67E5\u672C\u673A DSH \u7F13\u5B58");
+  }
+  return void 0;
+}
+function connectionCachePath(stateDir, connectionId) {
+  if (connectionId !== "project" && !/^project-[0-9a-f-]{36}$/u.test(connectionId)) {
+    throw new Error("\u65E0\u6548\u7684\u672C\u5730 SonarQube \u8FDE\u63A5\u6807\u8BC6");
+  }
+  const path2 = (0, import_node_path.resolve)(stateDir, Buffer.from(connectionId).toString("hex"));
+  const relativePath = (0, import_node_path.relative)((0, import_node_path.resolve)(stateDir), path2);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${import_node_path.sep}`) || relativePath.startsWith(import_node_path.sep)) {
+    throw new Error("\u672C\u5730 SonarQube \u7F13\u5B58\u8DEF\u5F84\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
+  }
+  return path2;
+}
+function localRulesFingerprint(policy, root, connectionId) {
+  const stateDir = localStateDir(policy, root);
+  const id = connectionId ?? currentBinding(stateDir)?.connection_id ?? "project";
+  try {
+    const config2 = (0, import_node_fs.readFileSync)((0, import_node_path.join)(
+      connectionCachePath(stateDir, id),
+      "projects",
+      Buffer.from(policy.project_key).toString("hex"),
+      "analyzer_config.pb"
+    ));
+    return (0, import_node_crypto2.createHash)("sha256").update(id).update(config2).digest("hex");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return void 0;
+  }
 }
 
 // src/hook.ts
@@ -525,7 +706,7 @@ function refuse(reason) {
 }
 function readJson(abs) {
   try {
-    return JSON.parse(import_node_fs.default.readFileSync(abs, "utf8"));
+    return JSON.parse(import_node_fs2.default.readFileSync(abs, "utf8"));
   } catch {
     return void 0;
   }
@@ -552,21 +733,27 @@ function normalizeTask(task) {
     commits: Array.isArray(task.commits) ? task.commits : [],
     ...task.completed !== void 0 ? { completed: task.completed } : {},
     ...task.execution_version === 1 ? { execution_version: 1 } : {},
+    ...task.delegation_version === 1 ? { delegation_version: 1 } : {},
+    ...task.verification_version === 1 ? {
+      verification_version: 1,
+      verification_groups: task.verification_groups ?? {},
+      verification_runs: task.verification_runs ?? []
+    } : {},
     ...typeof task.root === "string" ? { root: task.root } : {},
     ...task.flow !== void 0 ? { flow: task.flow } : {}
   };
 }
 function taskRoots(repoRoot) {
   const roots = /* @__PURE__ */ new Set([repoRoot]);
-  const configPath = import_node_path.default.join(__dirname, "dsh-task-roots.json");
+  const configPath = import_node_path2.default.join(__dirname, "dsh-task-roots.json");
   const config2 = readJson(configPath);
-  if (import_node_fs.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
+  if (import_node_fs2.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
   if (config2?.roots !== void 0 && !Array.isArray(config2.roots)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6548");
   for (const value of config2?.roots ?? []) {
-    if (typeof value !== "string" || import_node_path.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
-    const root = import_node_path.default.resolve(repoRoot, value);
-    const inside = import_node_path.default.relative(repoRoot, root);
-    if (inside.startsWith("..") || import_node_path.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
+    if (typeof value !== "string" || import_node_path2.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
+    const root = import_node_path2.default.resolve(repoRoot, value);
+    const inside = import_node_path2.default.relative(repoRoot, root);
+    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
     roots.add(root);
   }
   return [...roots];
@@ -574,34 +761,34 @@ function taskRoots(repoRoot) {
 function loadTasks() {
   const out = [];
   for (const root of taskRoots(process.cwd())) {
-    const dir = import_node_path.default.join(root, ".dsh");
-    if (!import_node_fs.default.existsSync(dir)) continue;
-    const names = import_node_fs.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
+    const dir = import_node_path2.default.join(root, ".dsh");
+    if (!import_node_fs2.default.existsSync(dir)) continue;
+    const names = import_node_fs2.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
     for (const name of names) {
-      const json = readJson(import_node_path.default.join(dir, name));
+      const json = readJson(import_node_path2.default.join(dir, name));
       if (json === void 0 || json.id === void 0) continue;
       const task = normalizeTask(json);
-      const projectRoot = task.root === void 0 ? root : import_node_path.default.resolve(task.root);
-      const insideRepo = import_node_path.default.relative(process.cwd(), projectRoot);
-      const workspaceInsideProject = import_node_path.default.relative(projectRoot, root);
-      if (insideRepo.startsWith("..") || import_node_path.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path.default.isAbsolute(workspaceInsideProject)) {
+      const projectRoot = task.root === void 0 ? root : import_node_path2.default.resolve(task.root);
+      const insideRepo = import_node_path2.default.relative(process.cwd(), projectRoot);
+      const workspaceInsideProject = import_node_path2.default.relative(projectRoot, root);
+      if (insideRepo.startsWith("..") || import_node_path2.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path2.default.isAbsolute(workspaceInsideProject)) {
         refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
       }
-      out.push({ file: import_node_path.default.join(dir, name), task: { ...task, root: projectRoot } });
+      out.push({ file: import_node_path2.default.join(dir, name), task: { ...task, root: projectRoot } });
     }
   }
   return out;
 }
 function currentBranch() {
   try {
-    return (0, import_node_child_process.execSync)("git symbolic-ref --quiet --short HEAD", { encoding: "utf8" }).trim();
+    return (0, import_node_child_process3.execSync)("git symbolic-ref --quiet --short HEAD", { encoding: "utf8" }).trim();
   } catch {
     return "";
   }
 }
 function stagedEntries() {
   try {
-    const raw = (0, import_node_child_process.execSync)("git -c core.quotePath=false diff --cached --name-status -z --diff-filter=ACMRDT", { encoding: "utf8" });
+    const raw = (0, import_node_child_process3.execSync)("git -c core.quotePath=false diff --cached --name-status -z --diff-filter=ACMRDT", { encoding: "utf8" });
     const parts = raw.split("\0");
     const entries2 = [];
     let i = 0;
@@ -629,11 +816,11 @@ function stagedEntries() {
   }
 }
 function assertIndexMatchesWorktree(repoRoot, file) {
-  const staged = (0, import_node_child_process.execFileSync)("git", ["ls-files", "--stage", "-z", "--", file], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
+  const staged = (0, import_node_child_process3.execFileSync)("git", ["ls-files", "--stage", "-z", "--", file], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
   const exact = staged.filter((line) => line.endsWith(`	${file}`));
-  const target = import_node_path.default.resolve(repoRoot, file);
+  const target = import_node_path2.default.resolve(repoRoot, file);
   if (exact.length === 0) {
-    if (import_node_fs.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
+    if (import_node_fs2.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
     return;
   }
   if (exact.length !== 1) refuse(`\u6682\u5B58\u533A\u5B58\u5728\u672A\u89E3\u51B3\u51B2\u7A81\uFF1A${file}`);
@@ -641,7 +828,7 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (!match) refuse(`\u6682\u5B58\u6587\u4EF6\u7C7B\u578B\u4E0D\u53D7\u652F\u6301\uFF1A${file}`);
   let info;
   try {
-    info = import_node_fs.default.lstatSync(target);
+    info = import_node_fs2.default.lstatSync(target);
   } catch {
     refuse(`\u6682\u5B58\u533A\u4E0E\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
   }
@@ -649,7 +836,7 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (process.platform !== "win32" && match[1] === "100755" !== ((info.mode & 73) !== 0)) {
     refuse(`\u6682\u5B58\u533A\u6587\u4EF6\u6743\u9650\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}`);
   }
-  const worktreeOid = (0, import_node_child_process.execFileSync)("git", ["hash-object", `--path=${file}`, "--", file], { cwd: repoRoot, encoding: "utf8" }).trim();
+  const worktreeOid = (0, import_node_child_process3.execFileSync)("git", ["hash-object", `--path=${file}`, "--", file], { cwd: repoRoot, encoding: "utf8" }).trim();
   if (worktreeOid !== match[2]) refuse(`\u6682\u5B58\u533A\u5185\u5BB9\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
 }
 function pickTask(tasks2, branch2) {
@@ -660,7 +847,7 @@ function pickTask(tasks2, branch2) {
   return candidates[0]?.task;
 }
 function readCommitMessage(file) {
-  return import_node_fs.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
+  return import_node_fs2.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
 }
 function extractTaskId(message2) {
   const match = /^【([^【】\s]+)】/.exec(message2);
@@ -669,16 +856,16 @@ function extractTaskId(message2) {
 function isEngineMeta2(file) {
   return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
 }
-function scopeHash(state2, root) {
-  const entries2 = [...new Set(state2.files)].filter((file) => !isEngineMeta2(file)).sort().map((file) => {
-    const target = import_node_path.default.resolve(root, file);
-    const inside = import_node_path.default.relative(root, target);
-    if (inside.startsWith("..") || import_node_path.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
+function scopeHash(state2, root, includeGovernance = false) {
+  const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta2(file)).sort().map((file) => {
+    const target = import_node_path2.default.resolve(root, file);
+    const inside = import_node_path2.default.relative(root, target);
+    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
     try {
-      const info = import_node_fs.default.lstatSync(target);
+      const info = import_node_fs2.default.lstatSync(target);
       if (!info.isFile()) refuse(`\u4EFB\u52A1\u8303\u56F4\u542B\u975E\u666E\u901A\u6587\u4EF6: ${file}`);
       const executable = process.platform === "win32" ? false : (info.mode & 73) !== 0;
-      return [file, hashBytes(import_node_fs.default.readFileSync(target)), executable];
+      return [file, hashBytes(import_node_fs2.default.readFileSync(target)), executable];
     } catch (error) {
       if (error.code === "ENOENT") return [file, null, null];
       refuse(`\u65E0\u6CD5\u8BFB\u53D6\u4EFB\u52A1\u6587\u4EF6 ${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -751,11 +938,11 @@ var config;
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
 } else {
-  const configPath = import_node_path.default.join(state.root ?? cwd, ".dsh", "eng.json");
-  if (import_node_fs.default.existsSync(configPath)) {
+  const configPath = import_node_path2.default.join(state.root ?? cwd, ".dsh", "eng.json");
+  if (import_node_fs2.default.existsSync(configPath)) {
     let parsed;
     try {
-      parsed = JSON.parse(import_node_fs.default.readFileSync(configPath, "utf8"));
+      parsed = JSON.parse(import_node_fs2.default.readFileSync(configPath, "utf8"));
     } catch (error) {
       refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
     }
@@ -770,17 +957,25 @@ var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? "commit checkpoint rejected") + "\uFF08\u5F53\u524D\u9636\u6BB5: " + state.stage + "\uFF09");
 }
-var evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd));
+var groupHashes = state.verification_version ? Object.fromEntries(Object.values(state.verification_groups ?? {}).map((group) => [group.id, scopeHash({ ...state, files: groupInputs(state, group) }, state.root ?? cwd, true)])) : void 0;
+var evidence = verificationEvidenceBlockers(state, config, scopeHash(state, state.root ?? cwd), groupHashes);
+evidence.push(...reviewEvidenceBlockers(state, scopeHash(state, state.root ?? cwd)));
 if (evidence.length) refuse(evidence.join("; "));
 if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].includes(state.stage)) {
   const lastCommit = state.commits.findLast((entry) => entry.hash !== void 0)?.hash;
   const blockers = sonarCommitBlockers(state.sonar_policy, state.sonar_audit, scopeHash(state, state.root ?? cwd), lastCommit);
+  if (state.sonar_policy.source === "ide-local" && state.sonar_audit) {
+    const updated = lastLocalRuleUpdate(state.sonar_policy, state.root ?? cwd);
+    const rulesHash = localRulesFingerprint(state.sonar_policy, state.root ?? cwd);
+    if (updated && updated !== state.sonar_audit.rules_updated_at || rulesHash && rulesHash !== state.sonar_audit.rules_hash)
+      blockers.push("project rule configuration changed; rerun sonar_check and review");
+  }
   if (blockers.length) refuse(blockers.join("; "));
 }
 var workspace = state.root ?? cwd;
 var entries = stagedEntries().map((entry) => {
-  const absolute = import_node_path.default.resolve(cwd, entry.path);
-  const relativePath = import_node_path.default.relative(workspace, absolute).replaceAll("\\", "/");
+  const absolute = import_node_path2.default.resolve(cwd, entry.path);
+  const relativePath = import_node_path2.default.relative(workspace, absolute).replaceAll("\\", "/");
   return { ...entry, path: relativePath };
 });
 var scope = checkFileScope(state, entries.map((entry) => entry.path), config);
@@ -795,7 +990,7 @@ if (!scope.ok) {
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
 for (const entry of entries) {
-  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path.default.relative(cwd, import_node_path.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
+  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path2.default.relative(cwd, import_node_path2.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
 }
 var sensitive = riskyPaths(entries);
 var riskyChanges = entries.filter((entry) => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? "")).map((entry) => `${entry.status}	${entry.path}`);

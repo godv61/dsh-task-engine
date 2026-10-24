@@ -77,7 +77,7 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
             sandbox: { mode: 'workspace-write', denied: false },
             stdout: { text: request.command.startsWith('git -c core.quotepath=false log')
               ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n'
-              : 'checks passed' },
+              : '# tests 1\n# pass 1' },
             stderr: { text: '' },
           }
         },
@@ -101,7 +101,7 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
 
 /** Run `verify` with a command, optionally failing. */
 async function verify(f, command) {
-  return f.call({ operation: 'verify', command, description: 'checks' })
+  return f.call({ operation: 'verify', command: command === 'pass' ? 'npm test' : command, description: 'checks' })
 }
 
 // ---------------------------------------------------------------- P1: stale verification

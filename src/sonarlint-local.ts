@@ -3,12 +3,13 @@ import { spawn, execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join, relative, resolve, sep } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
-import type { SonarAudit, SonarFinding, SonarPolicy } from './sonar.ts'
+import type { LocalAuditBaseline, SonarAudit, SonarFinding, SonarPolicy } from './sonar.ts'
 import { isBlockingFinding, isIncludedAuditPath } from './sonar.ts'
 import { resolveSonarLintEngine } from './sonarlint-install.ts'
+import { listSonarProjectRules } from './sonar-rule-catalog.ts'
 
 const run = promisify(execFile)
 const SUPPORTED_FILE = /\.(?:java|js|jsx|ts|tsx|vue|css|scss|html|jsp|xml|json|ya?ml|sql|properties|py|go|kt|kts|cs|c|cc|cpp|h|hpp|php|rb|sh|scala|groovy)$/iu
@@ -25,6 +26,12 @@ function localLanguage(path: string): string | undefined {
   if (/\.html?$/iu.test(path)) return 'HTML'
   if (/\.xml$/iu.test(path)) return 'XML'
   return undefined
+}
+
+/** Never use a finding whose rule is outside the current project's active rule manifest. */
+export function assertActiveFindingRules(findings: Pick<SonarFinding, 'rule'>[], active: ReadonlySet<string>): void {
+  const unexpected = [...new Set(findings.filter(finding => !active.has(finding.rule)).map(finding => finding.rule))]
+  if (unexpected.length) throw new Error(`本地分析器返回当前项目未启用的规则：${unexpected.join(', ')}；请更新项目规则后重新审核`)
 }
 
 /** Languages which the server can assign to changed files that this local engine cannot analyze. */
@@ -52,6 +59,60 @@ export function missingLocalAuditScope(paths: string[], taskPaths: string[]): st
 }
 
 interface ChangedFile { path: string; lines: Set<number>; newFile: boolean }
+
+function auditPathKey(path: string): string {
+  const normalized = path.replaceAll('\\', '/').replace(/^\.\//u, '')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+async function referenceCommit(root: string, reference: string): Promise<string> {
+  if (!/^[A-Za-z0-9._/-]+$/u.test(reference) || reference.startsWith('-')) throw new Error('invalid Sonar reference branch')
+  return (await run('git', ['rev-parse', '--verify', `${reference}^{commit}`], { cwd: root })).stdout.trim()
+}
+
+function auditFileHash(root: string, path: string): string {
+  const absolute = resolve(root, path)
+  const rel = relative(resolve(root), absolute)
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('audit path escaped the project root')
+  return createHash('sha256').update(readFileSync(absolute)).digest('hex')
+}
+
+/** Capture pre-existing dirty code before task execution, rather than adopting it as delivery. */
+export async function captureLocalAuditBaseline(root: string, reference: string): Promise<LocalAuditBaseline> {
+  const commit = await referenceCommit(root, reference)
+  const files = (await changedLines(root, reference)).map(file => ({ path: file.path, hash: auditFileHash(root, file.path) }))
+  if (await referenceCommit(root, reference) !== commit) throw new Error('Git reference changed while capturing the local audit baseline')
+  return { reference, commit, files }
+}
+
+/** Only unchanged baseline files outside the declared task can be excluded. Legacy tasks stay strict. */
+export async function filterPreexistingAuditChanges(root: string, reference: string, changes: ChangedFile[],
+  taskPaths?: string[], baseline?: LocalAuditBaseline): Promise<{ changes: ChangedFile[]; excluded: string[] }> {
+  if (!baseline || !taskPaths || baseline.reference !== reference || await referenceCommit(root, reference) !== baseline.commit) {
+    return { changes, excluded: [] }
+  }
+  const declared = new Set(taskPaths.map(auditPathKey))
+  const original = new Map(baseline.files.map(file => [auditPathKey(file.path), file.hash]))
+  const excluded: string[] = []
+  const selected = changes.filter(file => {
+    const key = auditPathKey(file.path)
+    if (declared.has(key) || original.get(key) !== auditFileHash(root, file.path)) return true
+    excluded.push(file.path)
+    return false
+  })
+  return { changes: selected, excluded }
+}
+
+async function localAuditChanges(root: string, policy: SonarPolicy, taskPaths?: string[], baseline?: LocalAuditBaseline) {
+  const selected = await filterPreexistingAuditChanges(root, policy.reference_branch!,
+    (await changedLines(root, policy.reference_branch!)).filter(file => isIncludedAuditPath(file.path, policy.include_paths)),
+    taskPaths, baseline)
+  if (taskPaths !== undefined) {
+    const missing = missingLocalAuditScope(selected.changes.map(file => file.path), taskPaths)
+    if (missing.length) throw new Error(`本地规则审核范围漏登 ${missing.length} 个新增代码文件；先用 dev_task scope 补齐后重试：${missing.join(', ')}`)
+  }
+  return selected
+}
 
 /** Compare the current working tree with a reference; an untracked file is wholly new. */
 export async function changedLines(root: string, reference: string, taskPaths?: string[]): Promise<ChangedFile[]> {
@@ -140,18 +201,26 @@ function connectionCachePath(stateDir: string, connectionId: string): string {
   return path
 }
 
+/** Hash the analyzer's actual synchronized project config, rather than only a UI count. */
+export function localRulesFingerprint(policy: SonarPolicy, root: string, connectionId?: string): string | undefined {
+  const stateDir = localStateDir(policy, root)
+  const id = connectionId ?? currentBinding(stateDir)?.connection_id ?? 'project'
+  try {
+    const config = readFileSync(join(connectionCachePath(stateDir, id), 'projects',
+      Buffer.from(policy.project_key).toString('hex'), 'analyzer_config.pb'))
+    return createHash('sha256').update(id).update(config).digest('hex')
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return undefined }
+}
+
 /** Analyze only changed supported files with the project's synchronized Quality Profile. */
 export async function inspectLocalRules(policy: SonarPolicy, token: string, root: string,
   scopeHash: string, signal?: AbortSignal, taskPaths?: string[], prepareOnly = false,
-  connectionId?: string): Promise<SonarAudit> {
+  connectionId?: string, baseline?: LocalAuditBaseline): Promise<SonarAudit> {
   if (!token) throw new Error('本地规则审核需要当前项目 SonarQube Token')
   if (!policy.reference_branch) throw new Error('本地规则审核需要新代码参考分支')
-  const changes = (prepareOnly ? [] : await changedLines(root, policy.reference_branch))
-    .filter(file => isIncludedAuditPath(file.path, policy.include_paths))
-  if (taskPaths !== undefined) {
-    const missing = missingLocalAuditScope(changes.map(file => file.path), taskPaths)
-    if (missing.length) throw new Error(`本地规则审核范围漏登 ${missing.length} 个新增代码文件；先用 dev_task scope 补齐后重试：${missing.join(', ')}`)
-  }
+  const startingCommit = prepareOnly ? undefined : await referenceCommit(root, policy.reference_branch)
+  const selected = prepareOnly ? { changes: [], excluded: [] } : await localAuditChanges(root, policy, taskPaths, baseline)
+  const changes = selected.changes
   const unsupported = changes.filter(file => !localLanguage(file.path))
   const profilesUrl = new URL(`${policy.host_url.replace(/\/$/u, '')}/api/qualityprofiles/search`)
   profilesUrl.searchParams.set('project', policy.project_key)
@@ -291,6 +360,7 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
     }
     const analyzers = new Map<string, string>(pluginStatus.pluginStatuses.flatMap((entry: any) =>
       typeof entry.language === 'string' && typeof entry.state === 'string' ? [[entry.language.toUpperCase(), entry.state]] : []))
+    const rulesHash = localRulesFingerprint(policy, root, connectionId)
     const profileCoverage = profileData.profiles.filter(profile => profile.language && Number(profile.activeRuleCount) > 0)
       .map(profile => ({ language: profile.language!.toUpperCase(), active_rules: Number(profile.activeRuleCount),
         analyzer: analyzers.get(profile.language!.toUpperCase()) ?? 'UNAVAILABLE' }))
@@ -305,6 +375,19 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
       const language = localLanguage(file.ideRelativePath)
       return !!language && activeLanguages.has(language) && !unavailablePaths.has(file.ideRelativePath)
     })
+    const languages = new Set(scanned.map(file => localLanguage(file.ideRelativePath)))
+    if (scanned.some(file => /\.(vue|html?)$/iu.test(file.ideRelativePath))) {
+      for (const language of ['JS', 'TS', 'CSS', 'WEB']) languages.add(language)
+    }
+    if (languages.has('HTML')) languages.add('WEB')
+    const manifests = await Promise.all(profileCoverage.filter(profile => languages.has(profile.language)).map(async profile => {
+      const view = await listSonarProjectRules(policy.host_url, policy.project_key, token, profile.language)
+      return { language: profile.language, profiles: view.profiles.filter(item => item.language === profile.language).map(item => item.key).sort(),
+        rules: view.rules.sort((a, b) => a.key.localeCompare(b.key)) }
+    }))
+    manifests.sort((a, b) => a.language.localeCompare(b.language))
+    const activeRules = new Set(manifests.flatMap(manifest => manifest.rules.map(rule => rule.key)))
+    const manifestHash = createHash('sha256').update(JSON.stringify(manifests)).digest('hex')
     if (scanned.length) {
       notify('file/didUpdateFileSystem', { addedFiles: scanned, changedFiles: [], removedFiles: [] })
       const status = await request('file/getFilesStatus', { fileUrisByConfigScopeId: { project: scanned.map(file => file.uri) } })
@@ -316,6 +399,7 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
       extraProperties: {}, shouldFetchServerIssues: false,
     }) : { rawIssues: [], failedAnalysisFiles: [] }
     if (response.failedAnalysisFiles?.length) throw new Error(`SonarLint 无法分析：${response.failedAnalysisFiles.join(', ')}`)
+    assertActiveFindingRules((response.rawIssues ?? []).map((issue: any) => ({ rule: String(issue.ruleKey ?? '') })), activeRules)
     const rawFindings: SonarFinding[] = (response.rawIssues ?? []).flatMap((issue: any) => {
       const uri = issue.fileUri ?? issue.uri ?? files[0]?.uri
       const line = issue.textRange?.startLine ?? issue.primaryLocation?.textRange?.startLine
@@ -329,11 +413,22 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
         ...(typeof line === 'number' ? { line } : {}) }]
     })
     const findings = [...new Map(rawFindings.map(finding => [finding.key, finding])).values()]
+    assertActiveFindingRules(findings, activeRules)
     const blocking = findings.filter(isBlockingFinding)
+    if (rulesHash !== localRulesFingerprint(policy, root, connectionId)) throw new Error('project rules changed during analysis; retry the audit')
+    if (!prepareOnly) {
+      if (await referenceCommit(root, policy.reference_branch) !== startingCommit) throw new Error('Git reference changed during analysis; retry the audit')
+      // Newly changed out-of-scope code must not slip in while the analyzer runs.
+      await localAuditChanges(root, policy, taskPaths, baseline)
+    }
     return { ce_task_id: 'local', analysis_id: randomUUID(), gate: blocking.length || uncovered.length ? 'ERROR' : 'OK',
       checked_at: new Date().toISOString(), scope_hash: scopeHash, findings, blocking,
       ...(uncovered.length ? { uncovered_files: uncovered } : {}),
-      target: policy.reference_branch, scanned_files: scanned.map(file => file.ideRelativePath), profile_coverage: profileCoverage }
+      target: policy.reference_branch, scanned_files: scanned.map(file => file.ideRelativePath), profile_coverage: profileCoverage,
+      ...(rulesHash ? { rules_hash: rulesHash } : {}),
+      rule_manifest_hash: manifestHash,
+      ...(selected.excluded.length ? { excluded_preexisting_files: selected.excluded } : {}),
+      ...(currentBinding(stateDir)?.updated_at ? { rules_updated_at: currentBinding(stateDir)!.updated_at } : {}) }
   } finally {
     settled = true
     signal?.removeEventListener('abort', onAbort)

@@ -215,12 +215,27 @@ const deleteRuleRequestSchema = z.object({
 })
 
 /** Browser-safe shape of one task ledger item's dispatch/review audit. */
+const taskDispatchSchema = z.object({ description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
+  status: z.string().optional(), execution: z.string().optional(), output: z.string().optional(), error: z.string().optional(), finished_at: z.string().optional() })
+const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spawn', 'fork']), mode: z.enum(['direct', 'spawn', 'fork']),
+  reason: z.string(), boundary: z.enum(['local', 'independent', 'coupled']), context: z.enum(['brief', 'history']),
+  files: z.array(z.string()), acceptance: z.array(z.string()), depends_on: z.array(z.string()),
+  review: z.enum(['main', 'independent']), review_reason: z.string(), at: z.string(),
+  capabilities: z.object({ spawn: z.boolean(), fork: z.boolean(), reviewer: z.boolean() }) })
+const independentReviewSchema = z.object({ status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
+  run_id: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), output: z.string().optional(),
+  scope_hash: z.string(), plan_key: z.string(), dispatch_at: z.string(), verification_at: z.string(),
+  spec: z.enum(['pass', 'fail']).optional(), quality: z.enum(['pass', 'fail']).optional(), notes: z.array(z.string()).optional(), read_files: z.array(z.string()).optional(),
+  context_hash: z.string().optional(), read_coverage: z.array(z.object({ file: z.string(), lines: z.number() })).optional() })
 const taskLedgerItemSchema = z.object({
   id: z.string(),
   title: z.string(),
   status: z.string(),
-  dispatch: z.object({ description: z.string(), at: z.string() }).optional(),
+  dispatch: taskDispatchSchema.optional(), dispatch_history: z.array(taskDispatchSchema).optional(),
+  execution_plan: executionPlanSchema.optional(), independent_review: independentReviewSchema.optional(),
   review: z.object({
+    scope_hash: z.string().optional(),
+    independent_run_id: z.string().optional(),
     spec: z.object({ outcome: z.enum(['pass', 'fail']), notes: z.array(z.string()).optional() }),
     quality: z.object({ outcome: z.enum(['pass', 'fail']), notes: z.array(z.string()).optional() }),
   }).optional(),
@@ -228,7 +243,18 @@ const taskLedgerItemSchema = z.object({
 
 /** `readTasks` result: every task record under the workspace's `.dsh/`. */
 const taskLedgerViewSchema = z.object({
+  next_cursor: z.string().optional(), total_count: z.number().optional(),
+  errors: z.array(z.object({ file: z.string(), message: z.string() })).optional(),
   tasks: z.array(z.object({
+    evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
+    verification_groups: z.array(z.object({ id: z.string(), command: z.string(),
+      status: z.enum(['passed', 'failed', 'blocked', 'stale', 'missing']), test_count: z.number().nullable(),
+      checked_at: z.string().optional(), problems: z.array(z.string()) })).optional(),
+    review_status: z.enum(['valid', 'stale', 'missing', 'blocked', 'historical']).optional(),
+    complexity: z.string().optional(),
+    lifecycle: z.enum(['active', 'ready_to_close', 'archived']).optional(), completed_at: z.string().optional(),
+    related_task: z.object({ id: z.string(), kind: z.string() }).optional(),
+    items_done: z.number().optional(), next_action: z.string().optional(),
     risk_level: z.string().optional(), updated_at: z.string().optional(),
     verification_passed: z.boolean().optional(), review_outcome: z.string().optional(),
     sonar: z.object({
@@ -316,7 +342,13 @@ const projectInitStepRequestSchema = projectInitGenerateRequestSchema.extend({
   evidence_prompt: z.string().optional(),
 })
 const projectInitStepInspectRequestSchema = initGenerateRequestSchema.extend({ target: z.string() })
-const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string() })
+const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string(),
+  reads: z.array(z.object({ path: z.string(), start_line: z.number(), end_line: z.number(), sha256: z.string() })).optional(),
+  graph_queries: z.array(z.object({ mode: z.enum(['status', 'files', 'context']), query: z.string().optional(), ok: z.boolean() })).optional() })
+const projectInitJobRequestSchema = z.object({ path: z.string(), job_id: z.string().optional(),
+  generation: projectInitStepRequestSchema.omit({ path: true }).extend({ generation_id: z.string().max(80).optional() }).optional() })
+const projectInitJobViewSchema = z.object({ job_id: z.string(), status: z.enum(['running', 'completed', 'failed']),
+  updated_at: z.string(), result: projectInitStepResultSchema.optional(), error: z.string().optional() })
 const codeGraphStateSchema = z.object({ installed: z.boolean(), indexed: z.boolean(), summary: z.string() })
 const codeGraphPrepareRequestSchema = z.object({ path: z.string(), install: z.boolean() })
 const projectInitPreviewRequestSchema = z.object({ path: z.string(), resources: z.array(projectInitResourceSchema) })
@@ -682,6 +714,8 @@ export const TYPERT_REMOTE = {
           source: 'json',
           codec: { mode: 'strict', typeSymbol: 'string', create: () => z.string(), schema: z.string() },
         },
+        { name: 'cursor', wire: 'cursor', source: 'json',
+          codec: { mode: 'strict', typeSymbol: 'string | undefined', create: () => z.string().optional(), schema: z.string().optional() } },
       ],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#TaskLedgerView`, create: () => taskLedgerViewSchema, schema: taskLedgerViewSchema },
     },
@@ -770,6 +804,13 @@ export const TYPERT_REMOTE = {
       parameters: [{ name: 'request', wire: 'request', source: 'json',
         codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitGenerateRequest`, create: () => projectInitGenerateRequestSchema, schema: projectInitGenerateRequestSchema } }],
       result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitPreview`, create: () => projectInitPreviewSchema, schema: projectInitPreviewSchema },
+    },
+    {
+      id: `${PACKAGE}#task-engine/projectInitJob`, service: 'taskEngineController', namespace: 'task-engine',
+      method: 'projectInitJob', invocation: { kind: 'direct' },
+      parameters: [{ name: 'request', wire: 'request', source: 'json',
+        codec: { mode: 'strict', typeSymbol: `${PACKAGE}/types#ProjectInitJobRequest`, create: () => projectInitJobRequestSchema, schema: projectInitJobRequestSchema } }],
+      result: { mode: 'strict', typeSymbol: `${PACKAGE}/types#InitJobView`, create: () => projectInitJobViewSchema, schema: projectInitJobViewSchema },
     },
     {
       id: `${PACKAGE}#task-engine/generateProjectInitStep`, service: 'taskEngineController', namespace: 'task-engine',

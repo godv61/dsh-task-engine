@@ -141,13 +141,15 @@ test('ledger shows absent storage as empty and propagates access errors',async()
  controller.fs=()=>({resolve:async p=>p,listDir:async()=>{throw Object.assign(new Error('denied'),{code:'EACCES'})}})
  await assert.rejects(()=>controller.readTasks('/project'),/denied/)
 })
-test('ledger rejects malformed records instead of pretending there are no tasks',async()=>{
+test('ledger isolates malformed records and reports their errors',async()=>{
  const {default:Controller}=await import('./lib/controller.js')
  const controller=Object.create(Controller.prototype)
  controller.authorizedPath=async p=>p
  for(const content of ['{broken','null','{}']) {
    controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'task-broken.json'}],readText:async()=>content})
-   await assert.rejects(()=>controller.readTasks('/project'),/任务记录/)
+   const result = await controller.readTasks('/project')
+   assert.deepEqual(result.tasks, [])
+   assert.match(result.errors[0].message, /任务记录/)
  }
 })
 test('ledger exposes Sonar findings without project credentials',async()=>{

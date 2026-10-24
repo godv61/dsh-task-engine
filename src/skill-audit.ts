@@ -91,13 +91,11 @@ function evidenceBlockers(
     case 'none':
       return []
     case 'artifact': {
-      // Any artifact recorded at this stage proves the skill produced its document.
-      // Requiring a specific id would guess which one, and the workflow already
-      // declares what each stage must record.
+      // Shared stage evidence is complete only when every declared document is present.
       const declared = workflow.artifacts.filter(artifact => artifact.stage === stage)
       if (declared.length === 0) return [`${stage}: "${name}" declares artifact evidence, but the stage has no artifact declaration`]
       const recorded = state.artifacts ?? {}
-      const present = declared.some(artifact => artifact.fields.every(field => (recorded[artifact.id]?.[field] ?? '').trim() !== ''))
+      const present = declared.every(artifact => artifact.fields.every(field => (recorded[artifact.id]?.[field] ?? '').trim() !== ''))
       return present ? [] : [`${stage}: "${name}" declares artifact evidence, but no artifact is recorded at this stage`]
     }
     case 'review':
@@ -122,6 +120,9 @@ export function skillBlockers(state: TaskState, workflow: WorkflowConfig, sessio
     // a task-scoped, source-qualified dev_task load so a same-named Skill or a
     // load for another task cannot satisfy this binding.
     const exact = `${state.id}#${entry.skill.source}:${entry.skill.name}`
+    if (state.skill_loads && (!state.skill_loads[stage]?.[`${entry.skill.source}:${entry.skill.name}`]
+      || state.skill_loads[stage]?.[`${entry.skill.source}:${entry.skill.name}`]?.session_id !== (session?.id ?? '')))
+      return [`${stage}: load skill "${entry.skill.source}:${entry.skill.name}" again for this stage`]
     const name = state.complexity !== undefined || entry.skill.source === 'codex-project'
       ? `${entry.skill.source}:${entry.skill.name}` : entry.skill.name
     const isLoaded = loaded.has(exact) || (state.complexity === undefined && entry.skill.source !== 'codex-project'

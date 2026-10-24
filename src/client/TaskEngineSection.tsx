@@ -10,8 +10,9 @@
 
 import type { ResourceImportRequest, ResourcePreview } from '../resource-types.ts'
 import type { MetaSkill } from '../adaptive.ts'
-import type { InitResource, ProjectInventory } from '../project-init.ts'
+import type { InitGraphQueryRecord, InitReadRecord, InitResource, ProjectInventory } from '../project-init.ts'
 import type { SonarProjectRuleView } from '../sonar-rule-catalog.ts'
+import type { VerificationGroupView } from '../verification-state.ts'
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -144,8 +145,12 @@ export interface TaskLedgerItem {
   id: string
   title: string
   status: string
-  dispatch?: { description: string; at: string }
+  execution_plan?: import('../execution-plan.ts').ExecutionPlan
+  independent_review?: import('../execution-plan.ts').IndependentReview
+  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string }
+  dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]
   review?: {
+    independent_run_id?: string
     spec: { outcome: 'pass' | 'fail'; notes?: string[] }
     quality: { outcome: 'pass' | 'fail'; notes?: string[] }
   }
@@ -153,6 +158,9 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and per-item audit trail. */
 export interface TaskLedgerEntry {
+  evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
+  verification_groups?: VerificationGroupView[]
+  review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'
   complexity?: string
   risk_level?: string
   updated_at?: string
@@ -190,6 +198,9 @@ export interface TaskLedgerEntry {
 /** `readTasks` result: every task record under the workspace's `.dsh/`. */
 export interface TaskLedgerView {
   tasks: TaskLedgerEntry[]
+  errors?: { file: string; message: string }[]
+  next_cursor?: string
+  total_count?: number
 }
 
 /** `readInit` result: the workspace's root `AGENTS.md`, or absent. */
@@ -244,6 +255,16 @@ export interface ProjectInitStepPromptView {
 export interface ProjectInitStepResult {
   resource: InitResource | null
   reason: string
+  reads?: InitReadRecord[]
+  graph_queries?: InitGraphQueryRecord[]
+}
+
+export interface InitJobView {
+  job_id: string
+  status: 'running' | 'completed' | 'failed'
+  updated_at: string
+  result?: ProjectInitStepResult
+  error?: string
 }
 
 export interface CodeGraphState {
@@ -254,6 +275,9 @@ export interface CodeGraphState {
 
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
+  projectInitJob(request: { path: string; job_id?: string; generation?: {
+    target: string; prior_resources: InitResource[]; system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; generation_id?: string
+  } }): Promise<RemoteResult<InitJobView>>
   resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
   importResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
@@ -283,7 +307,7 @@ export interface TaskEngineRemote {
   readRule(request: { name: string; level: 'project' | 'user' | 'bundled'; path?: string }): Promise<RemoteResult<ReadRuleResult>>
   deleteSkill(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
   deleteRule(request: { name: string; level: 'project' | 'user'; path?: string }): Promise<RemoteResult<WriteResourceResult>>
-  readTasks(path: string): Promise<RemoteResult<TaskLedgerView>>
+  readTasks(path: string, cursor: string): Promise<RemoteResult<TaskLedgerView>>
   readInit(path: string): Promise<RemoteResult<InitView>>
   writeInit(request: { path: string; content: string; overwrite?: boolean }): Promise<RemoteResult<InitWriteResult>>
   generateInit(request: { path: string }): Promise<RemoteResult<InitDraft>>

@@ -25,6 +25,8 @@
                 本仓库使用 `dev_task` 管理工程任务。开发请求先加载 `eng-delivery`，读取当前项目和任务状态；新任务按需求复杂度选择低、中、高或超高流程。项目根 `.dsh/meta.json` 保存元技能挂载和可选 SonarQube 配置，`.dsh/eng.json` 保存兼容流程配置。阶段执行时加载实际生效的 Skill 与 Rule，记录产物、实施项、测试和审核证据。
 
                 阶段流转、验证、评审、任务完成及受控提交通过 `dev_task`；工具拒绝时按返回条件修正，不绕过。项目 Skill 优先于同名用户或内置 Skill。SonarQube 只在配置启用后的代码审核阶段执行；远程操作或发布由用户明确决定。
+
+                实施前为每项调用 plan_execution 判断边界、允许修改的文件、验收和依赖，默认由引擎自动选择主会话或子代理，无需用户提醒。按计划 dispatch；需要独立审核时 review_dispatch，再由主会话核对、review_item 并完成实施项。所有委派都经 dev_task 关联台账。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

@@ -61,15 +61,17 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="first-project">
         <h2>首次初始化项目</h2>
+        <p>生成期间可以切换工程任务内的其他菜单或暂时关闭工作台；刷新或关闭浏览器不会取消服务端生成作业，返回后恢复查看。作业结果保存在项目 <code>.dsh/init-jobs/</code>，草案和提示词编辑保存在当前浏览器。DSH 进程重启不能续接生成到一半的输出，未完成作业等待租约过期后可重试。运行中暂时不能切换工作区。某个可选候选长期失败时，可点击<strong>跳过当前候选</strong>继续其他步骤。</p>
+        <p>可以通过步骤选项直接切换查看和编辑；切换不跳过候选，也不改变完成进度，各步骤提示词分别保留。初始路径清单是建议查阅入口，不代表已读取。生成模型通过受限只读工具列目录、搜索并读取实际文件；完成后显示读取记录及可选 CodeGraph 查询记录。</p>
         <p>打开“工程任务 → 项目初始化”，选择项目根目录。页面先只读扫描目录与构建清单，显示候选 Skill 和已有资源。六个内置元技能已经负责需求分析、架构设计、任务编排、代码开发、测试和审核的基础方法；初始化不强制生成项目 Skill 或 Rule。项目地图、技术栈、业务能力、领域编码 Skill 均按仓库证据选做，不会为六个阶段机械生成同名 Skill，也不会凭语言或依赖自动生成编码 Rule。已有阶段 Skill 保留并继续挂载。通用规则与单项生成模板默认收起；当前步骤的专属证据单独列出来源文件和可编辑提示词。项目地图步骤使用整个仓库的模块清单和可选的 CodeGraph 索引；其它候选步骤只读取相应的有限源码。模板中的 <code>{{target}}</code>、<code>{{previous}}</code>、<code>{{meta_skills}}</code>、<code>{{limit}}</code> 按步骤填入。可选：点击“安装 CodeGraph 并建立索引”或“更新项目索引”。使用者可修改当前步骤提示词，再点击<strong>生成下一项</strong>，审阅并修改后继续；也可点击<strong>连续生成全部</strong>。每一步模型只生成一个资源，格式错误会自动重试；持续失败时停在当前步骤并保留已完成草案，检查提示词后点击<strong>继续连续生成</strong>。刷新后也可在当前浏览器恢复；点击“从头开始”可清除草案。全部生成后检查正文、简介和元技能挂载；编辑或移除建议后点击<strong>检查修改</strong>，最后点击<strong>确认写入项目</strong>。</p>
         <div class="scroll"><table><thead><tr><th>阶段</th><th>会发生什么</th><th>你要检查什么</th></tr></thead><tbody>
-          <tr><td>生成下一项 / 连续生成全部</td><td>按当前 Skill 用途读取专属文件和可选图谱；模型逐项生成，浏览器保存进度。</td><td>当前步骤的来源文件是否匹配用途；可跳过重复或证据不足的建议。</td></tr>
+          <tr><td>生成下一项 / 连续生成全部</td><td>按当前 Skill 用途读取实际文件和可选图谱；服务端保存作业结果，浏览器保存草案。</td><td>区分建议入口与实际读取记录；可切换步骤查看，跳过重复或证据不足的建议。</td></tr>
           <tr><td>检查修改</td><td>预览并校验 Skill、挂载关系；生成了项目地图时检查全仓覆盖。</td><td>技术栈是否来自实际清单；项目知识是否可跨需求复用。</td></tr>
           <tr><td>确认写入项目</td><td>按同一提案哈希写入项目文件；已有同名文件不会被静默覆盖。</td><td>查看生成的内容与绑定，再决定哪些文件提交给团队。</td></tr>
         </tbody></table></div>
         <p>内置元技能负责各阶段的通用方法和交接契约，不要求每个项目再生成六份同名 Skill。若项目已有 <code>&lt;项目名&gt;-&lt;元技能名&gt;</code> 文件，初始化会保留原文件并自动挂载；团队需要特殊阶段方法时仍可手动创建。</p>
         <p><code>&lt;项目名&gt;-project-map</code> 是可选的全仓知识补充；如果生成，它应描述整个仓库的模块职责、依赖和通用入口，可挂到需求分析、架构设计、任务编排和代码开发。技术栈与后端/前端开发 Skill 也按证据选做。Rule 不在初始化时按语言预设；团队明确规范或真实、可复用的审核失败案例确认后，再建立具体 Rule 并挂到相关 Skill。某个需求的页面、接口和验收条件放进任务产物。工作台同页的 <code>AGENTS.md</code> 生成功能是另一项操作。</p>
-        <p>页面被动加载不会安装 CodeGraph。使用者明确点击索引按钮后，缺少 CLI 时插件会在运行 DSH 的机器上执行全局 npm 安装，然后在所选项目执行 <code>codegraph init --yes</code>；已有索引执行 <code>codegraph sync</code>。索引位于项目 <code>.codegraph/</code>。项目地图步骤会读取图谱状态、目录结构和可信符号线索；低置信度匹配会被排除，不能仅凭图谱推断业务含义、调用关系或团队规则。CodeGraph 和 OpenSpec 都不是初始化前置条件；插件不会自动安装 OpenSpec。</p>
+        <p>页面被动加载不会安装 CodeGraph。使用者明确点击索引按钮后，缺少 CLI 时插件会在运行 DSH 的机器上执行全局 npm 安装，然后在所选项目执行 <code>codegraph init --yes</code>；已有索引执行 <code>codegraph sync</code>。索引位于项目 <code>.codegraph/</code>。项目地图步骤会读取图谱目录和有限的可信符号线索；查询超时或不可用时继续使用目录与源码证据。低置信度匹配会被排除，不能仅凭图谱推断业务含义、调用关系或团队规则。CodeGraph 和 OpenSpec 都不是初始化前置条件；插件不会自动安装 OpenSpec。</p>
         <p>提案还会建议可选的 <code>&lt;项目名&gt;-business-capabilities</code> Skill。只有页面、路由、接口、测试或业务文档能支持业务能力描述时才保留；每项能力应给出证据路径，并分别标注代码事实、合理推导和待业务确认。它可挂载到需求分析和架构设计，供后续需求复用。</p>
         <p>团队共享时，审阅后将 <code>.dsh/skills/</code>、<code>.dsh/rules/</code>、<code>.dsh/meta.json</code> 纳入 Git。Token 和本地审核报告不应随代码提交。</p>
       </section>
@@ -110,7 +112,7 @@ pnpm dsh web --no-open</code></pre>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
           <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；实施中、已完成或有审查记录的项仍受保护。</li>
-          <li>实现每项时记录 <code>dispatch</code>、<code>review_item</code>；开发者可在当前会话直接实施，不要求分派给别人。变更文件登记在任务 <code>files</code> 范围内。修改代码后旧测试和审核回执会失效。</li>
+          <li>实施前用 <code>plan_execution</code> 为每项记录边界、文件、验收、依赖与理由；普通需求无需指定子代理。引擎根据实际宿主能力选择主会话或子代理，<code>dispatch</code> 按计划执行。需要独立审核时，在真实验证后调用 <code>review_dispatch</code>，再由主会话核对并 <code>review_item</code>、标记实施项完成。台账显示计划方式、实际方式、选择原因和审核结果。变更文件登记在任务 <code>files</code> 范围内；修改代码后旧测试和审核回执会失效。</li>
           <li>测试阶段调用 <code>verify</code> 执行真实命令；代码审核阶段运行 <code>sonar_check</code>（若启用 Sonar），处理问题后记录 <code>review</code>。通过门禁后按 <code>status.commit</code> 的提示提交并完成任务。</li>
         </ol>
         <h3>给会话的第一条需求示例</h3>
@@ -125,6 +127,9 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="tests">
         <h2>测试和证据</h2>
+        <p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
+        <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。旧活动任务可以显式规划测试组升级，旧全局回执保留为历史，不直接认作分组通过；归档任务始终只读。</p>
+        <p>开发阶段也支持原地缺陷返工。执行计划登记允许修改的交付文件，测试计划还登记只读配置等输入；共同配置未修改时不必列为共同交付。测试结果中的 <code>group_result</code> 表示本组状态，<code>task_verified</code> 和兼容字段 <code>ok</code> 表示任务整体状态，本组通过后可以先验收对应实施项。</p>
         <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
