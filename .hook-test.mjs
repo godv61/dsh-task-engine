@@ -83,7 +83,7 @@ async function repo(name, task) {
   // The gate body stays byte-identical to the shipped hook; only the shebang is
   // replaced, so the test exercises the real gate under a runnable interpreter.
   const gate = readFileSync(HOOK, 'utf8').replace(/^#![^\n]*\n/u, '')
-  writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`)
+  writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`, { mode: 0o755 })
   writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{\n  "type": "commonjs"\n}\n')
   writeFileSync(join(root, '.dsh', `task-${task.id}.json`), JSON.stringify(task, null, 2))
   writeFileSync(join(root, 'src', 'app.js'), 'console.log(1)\n')
@@ -189,7 +189,7 @@ test('the installed hook finds a registered task in a monorepo subdirectory', as
     mkdirSync(join(sub, '.dsh'), { recursive: true })
     mkdirSync(join(sub, 'src'), { recursive: true })
     const gate = readFileSync(HOOK, 'utf8').replace(/^#![^\n]*\n/u, '')
-    writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`)
+    writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`, { mode: 0o755 })
     writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{ "type": "commonjs" }\n')
     writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{ "roots": ["module"] }\n')
     writeFileSync(join(sub, '.dsh', 'task-HOOK-1.json'), JSON.stringify(approvedTask({

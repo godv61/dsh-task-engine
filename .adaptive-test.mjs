@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { adaptiveWorkflow, COMPLEXITY_OPTIONS } from './lib/adaptive.js'
@@ -47,8 +47,8 @@ function fixture(extra = {}, services = {}) {
       if (intent?.kind === 'createIfAbsent' && files.has(target.path)) throw new Error('already exists')
       files.set(target.path, content)
     },
-    listDir: async target => [...new Set([...files.keys()].filter(path => path.startsWith(target.path + '\\'))
-      .map(path => path.slice(target.path.length + 1).split('\\')[0]))].map(name => ({ name })),
+    listDir: async target => [...new Set([...files.keys()].filter(path => path.startsWith(target.path + sep))
+      .map(path => path.slice(target.path.length + 1).split(sep)[0]))].map(name => ({ name })),
   }
   const ctx = { fs, tools: { register(tool) { execute = tool.execute; return () => {} } }, get(name) {
     if (name in services) return services[name]
