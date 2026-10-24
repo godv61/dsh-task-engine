@@ -768,7 +768,7 @@ function loadTasks() {
       const json = readJson(import_node_path2.default.join(dir, name));
       if (json === void 0 || json.id === void 0) continue;
       const task = normalizeTask(json);
-      const projectRoot = task.root === void 0 ? root : import_node_path2.default.resolve(task.root);
+      const projectRoot = import_node_fs2.default.realpathSync.native(task.root === void 0 ? root : import_node_path2.default.resolve(task.root));
       const insideRepo = import_node_path2.default.relative(process.cwd(), projectRoot);
       const workspaceInsideProject = import_node_path2.default.relative(projectRoot, root);
       if (insideRepo.startsWith("..") || import_node_path2.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path2.default.isAbsolute(workspaceInsideProject)) {

@@ -1,11 +1,12 @@
 import test from 'node:test'
 import fs from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
+import { execFileSync } from 'node:child_process'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, readdirSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, parse, resolve, sep } from 'node:path'
-import { prepareImport, commitImport } from './lib/resource-import.js'
+import { prepareImport, commitImport, assertRealPath } from './lib/resource-import.js'
 
 const file = (path, text) => ({path,base64:Buffer.from(text).toString('base64')})
 const skill = '---\nname: sample-skill\ndescription: A test skill\n---\n# Sample\n'
@@ -15,6 +16,19 @@ function fixture(t) {
   t.after(()=> { const full=resolve(root); assert.ok(full.startsWith(resolve(tmpdir())+sep)); rmSync(full,{recursive:true,force:true}) })
   return {root,base:join(root,'skills')}
 }
+
+test('Windows 8.3 aliases remain ordinary paths while linked ancestors are still rejected', { skip: process.platform !== 'win32' }, t => {
+ const {root} = fixture(t), source = join(root, 'ordinary directory with long name')
+ mkdirSync(source)
+ const short = execFileSync('cmd.exe', ['/d', '/s', '/c', `for %I in ("${source}") do @echo %~sI`],
+   { encoding: 'utf8', windowsVerbatimArguments: true }).trim()
+ if (!short.includes('~')) { t.skip('filesystem does not expose an 8.3 alias'); return }
+ assert.doesNotThrow(() => assertRealPath(join(short, 'not-created-yet', 'file.md')))
+ const linked = join(source, 'linked'), outside = join(root, 'outside')
+ mkdirSync(outside); mkdirSync(join(outside, 'child'))
+ symlinkSync(outside, linked, 'junction')
+ assert.throws(() => assertRealPath(join(short, 'linked', 'child')), /符号链接|目录联接/)
+})
 test('preview has no filesystem side effects and reports exact bytes',t=>{
  const {base}=fixture(t),r=baseRequest(),p=prepareImport(r,base,()=>false).preview
  assert.equal(p.name,'sample-skill');assert.equal(p.files,2);assert.equal(p.bytes,Buffer.byteLength(skill)+3);assert.equal(existsSync(base),false)

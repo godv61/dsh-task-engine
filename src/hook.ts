@@ -113,7 +113,8 @@ function loadTasks(): { file: string; task: TaskState }[] {
       const json = readJson(path.join(dir, name))
       if (json === undefined || json.id === undefined) continue
       const task = normalizeTask(json)
-      const projectRoot = task.root === undefined ? root : path.resolve(task.root)
+      // Git reports long Windows paths while old task roots may use an 8.3 alias.
+      const projectRoot = fs.realpathSync.native(task.root === undefined ? root : path.resolve(task.root))
       const insideRepo = path.relative(process.cwd(), projectRoot)
       const workspaceInsideProject = path.relative(projectRoot, root)
       if (insideRepo.startsWith('..') || path.isAbsolute(insideRepo)

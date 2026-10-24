@@ -13,9 +13,9 @@
 
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -163,6 +163,9 @@ function projectProbe(fs: Fs): FileProbe {
  * or a `..`-carrying target must never write outside the project.
  */
 export function assertInsideRoot(root: string, cwd: string, relPath: string): void {
+  if (!isAbsolute(relPath) && win32.isAbsolute(relPath)) {
+    throw new Error(`write target ${relPath} escapes the project root ${root}`)
+  }
   const target = resolve(cwd, relPath)
   const rootDir = resolve(root)
   const inside = relative(rootDir, target)
@@ -481,7 +484,7 @@ function hookPaths(cwd: string | undefined): { repoRoot: string; hooksRel: strin
   let repoRoot: string
   let hooksDir: string
   try {
-    repoRoot = resolve(git(['rev-parse', '--show-toplevel']))
+    repoRoot = realpathSync.native(resolve(git(['rev-parse', '--show-toplevel'])))
     hooksDir = resolve(git(['rev-parse', '--path-format=absolute', '--git-path', 'hooks']))
   } catch { throw new Error('install_hook requires an accessible Git worktree') }
   let configured = ''
@@ -489,7 +492,7 @@ function hookPaths(cwd: string | undefined): { repoRoot: string; hooksRel: strin
   catch { /* `git config --get` exits 1 when this optional setting is absent. */ }
   if (configured) throw new Error('Git 配置了 core.hooksPath；请在自定义钩子目录手工组合提交门禁')
   const hooksRel = relative(repoRoot, hooksDir)
-  const workspaceRel = relative(repoRoot, resolve(cwd))
+  const workspaceRel = relative(repoRoot, realpathSync.native(resolve(cwd)))
   if (!hooksRel || hooksRel.startsWith('..') || isAbsolute(hooksRel)
     || workspaceRel.startsWith('..') || isAbsolute(workspaceRel)) {
     throw new Error('Git hooks or task workspace lie outside the worktree; install_hook cannot safely write there')

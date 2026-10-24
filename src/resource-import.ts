@@ -18,8 +18,11 @@ export function assertRealPath(path: string): void {
       // This avoids requiring access to protected ancestors of an accessible path.
       const actual = realpathSync.native(cursor)
       const key = (value: string) => process.platform === 'win32' ? value.replace(/\\/gu, '/').toLowerCase() : value
-      if (linked || key(actual) !== key(cursor)) throw new Error('不允许符号链接或目录联接：' + cursor)
-      return
+      if (linked || (process.platform !== 'win32' && key(actual) !== key(cursor))) throw new Error('不允许符号链接或目录联接：' + cursor)
+      if (key(actual) === key(cursor)) return
+      // Windows realpath expands ordinary 8.3 names (for example RUNNER~1).
+      // Inspect differing ancestors until the spelling agrees; a real junction
+      // or symlink is still rejected by lstat, including one above this path.
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
