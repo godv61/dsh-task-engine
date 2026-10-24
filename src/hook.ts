@@ -105,7 +105,8 @@ function taskRoots(repoRoot: string): string[] {
 
 function loadTasks(): { file: string; task: TaskState }[] {
   const out: { file: string; task: TaskState }[] = []
-  for (const root of taskRoots(process.cwd())) {
+  const repoRoot = fs.realpathSync.native(process.cwd())
+  for (const root of taskRoots(repoRoot)) {
     const dir = path.join(root, '.dsh')
     if (!fs.existsSync(dir)) continue
     const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
@@ -115,7 +116,7 @@ function loadTasks(): { file: string; task: TaskState }[] {
       const task = normalizeTask(json)
       // Git reports long Windows paths while old task roots may use an 8.3 alias.
       const projectRoot = fs.realpathSync.native(task.root === undefined ? root : path.resolve(task.root))
-      const insideRepo = path.relative(process.cwd(), projectRoot)
+      const insideRepo = path.relative(repoRoot, projectRoot)
       const workspaceInsideProject = path.relative(projectRoot, root)
       if (insideRepo.startsWith('..') || path.isAbsolute(insideRepo)
         || workspaceInsideProject.startsWith('..') || path.isAbsolute(workspaceInsideProject)) {
@@ -311,7 +312,7 @@ if (!messageFile) {
 }
 
 const message = readCommitMessage(messageFile)
-const cwd = process.cwd()
+const cwd = fs.realpathSync.native(process.cwd())
 const tasks = loadTasks()
 
 // Locate the task by id from the summary first; only then read its frozen config.

@@ -760,7 +760,8 @@ function taskRoots(repoRoot) {
 }
 function loadTasks() {
   const out = [];
-  for (const root of taskRoots(process.cwd())) {
+  const repoRoot = import_node_fs2.default.realpathSync.native(process.cwd());
+  for (const root of taskRoots(repoRoot)) {
     const dir = import_node_path2.default.join(root, ".dsh");
     if (!import_node_fs2.default.existsSync(dir)) continue;
     const names = import_node_fs2.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
@@ -769,7 +770,7 @@ function loadTasks() {
       if (json === void 0 || json.id === void 0) continue;
       const task = normalizeTask(json);
       const projectRoot = import_node_fs2.default.realpathSync.native(task.root === void 0 ? root : import_node_path2.default.resolve(task.root));
-      const insideRepo = import_node_path2.default.relative(process.cwd(), projectRoot);
+      const insideRepo = import_node_path2.default.relative(repoRoot, projectRoot);
       const workspaceInsideProject = import_node_path2.default.relative(projectRoot, root);
       if (insideRepo.startsWith("..") || import_node_path2.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path2.default.isAbsolute(workspaceInsideProject)) {
         refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
@@ -910,7 +911,7 @@ if (!messageFile) {
   process.exit(0);
 }
 var message = readCommitMessage(messageFile);
-var cwd = process.cwd();
+var cwd = import_node_fs2.default.realpathSync.native(process.cwd());
 var tasks = loadTasks();
 var taskId = extractTaskId(message);
 var state;

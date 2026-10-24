@@ -785,17 +785,24 @@ function memProbe(files) {
 // ── 35. 0.23: Remote path guard + workspace registry ────────────────────────
 {
   const ctl = await import('./lib/controller.js')
-  assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'absolute workspace passes')
-  assert(ctl.checkedPath('D:/proj/one/') === 'D:/proj/one', 'trailing slash is normalized')
+  const one = process.platform === 'win32' ? 'D:/proj/one' : '/proj/one'
+  const system = process.platform === 'win32' ? 'C:/Windows/system32' : '/etc'
+  assert(ctl.checkedPath(one) === one, 'native absolute workspace passes')
+  assert(ctl.checkedPath(one + '/') === one, 'trailing slash is normalized')
   await assertThrows(() => ctl.checkedPath('relative/path'), 'must be absolute', 'relative path is rejected')
-  await assertThrows(() => ctl.checkedPath('C:/Windows/system32'), 'not an allowed workspace', 'system root is rejected')
-  await assertThrows(() => ctl.checkedPath('c:/windows'), 'not an allowed workspace', 'case variant of a system root is rejected')
-  ctl.registerWorkspace('D:/proj/one')
-  assert(ctl.checkedPath('D:/PROJ/one') === 'D:/PROJ/one', 'registered workspace passes under any case')
-  await assertThrows(() => ctl.checkedPath('D:/other-project'), 'not registered', 'unregistered workspace is rejected once the registry is active')
+  await assertThrows(() => ctl.checkedPath(system), 'not an allowed workspace', 'native system root is rejected')
+  ctl.registerWorkspace(one)
+  if (process.platform === 'win32') {
+    await assertThrows(() => ctl.checkedPath('c:/windows'), 'not an allowed workspace', 'case variant of a system root is rejected')
+    assert(ctl.checkedPath('D:/PROJ/one') === 'D:/PROJ/one', 'Windows registered workspace passes under any case')
+  } else {
+    await assertThrows(() => ctl.checkedPath('/PROJ/one'), 'not registered', 'POSIX workspace case remains significant')
+    await assertThrows(() => ctl.checkedPath('D:/proj/one'), 'must be absolute', 'foreign Windows path is not a POSIX workspace')
+  }
+  await assertThrows(() => ctl.checkedPath(one + '-other'), 'not registered', 'unregistered workspace is rejected once the registry is active')
   ctl.enableStrictWorkspaces()
-  await assertThrows(() => ctl.checkedPath('D:/still-unregistered'), 'not registered', 'strict mode keeps rejecting unregistered workspaces')
-  assert(ctl.checkedPath('D:/proj/one') === 'D:/proj/one', 'strict mode still admits registered workspaces')
+  await assertThrows(() => ctl.checkedPath(one + '-unregistered'), 'not registered', 'strict mode keeps rejecting unregistered workspaces')
+  assert(ctl.checkedPath(one) === one, 'strict mode still admits registered workspaces')
 }
 
 
@@ -827,6 +834,15 @@ function memProbe(files) {
 // mode, so every path asserted VALID here must be registered first.
 {
   const ctl = await import('./lib/controller.js')
+  if (process.platform !== 'win32') {
+    const valid = ['/work/my project', '/mydir/users-guide', '/proj/one/', '/home/alice/projects/app']
+    for (const good of valid) ctl.registerWorkspace(good)
+    for (const good of valid) assert(ctl.checkedPath(good) === good.replace(/\/$/u, ''), 'native POSIX workspace passes')
+    for (const bad of ['/proj/../../etc', '/home/x/../../usr', '/proj/../../../root', '/var/cache'])
+      await assertThrows(() => ctl.checkedPath(bad), 'not an allowed workspace', 'normalized POSIX system path is rejected')
+    await assertThrows(() => ctl.checkedPath('/'), 'filesystem root', 'POSIX root is rejected')
+    await assertThrows(() => ctl.checkedPath('relative/path'), 'must be absolute', 'relative POSIX path is rejected')
+  } else {
   const valid = ['D:/work/my project', 'D:/mydir/users-guide', 'D:/proj/one/', 'C:/Users/alice/projects/app']
   for (const good of valid) ctl.registerWorkspace(good)
   // Must still accept ordinary workspaces, including names that merely look risky.
@@ -854,6 +870,7 @@ function memProbe(files) {
   // Regression guard for behaviour block 35 already covered.
   await assertThrows(() => ctl.checkedPath('C:/Windows/system32'), 'not an allowed workspace', 'the original system-root case still fails closed')
   await assertThrows(() => ctl.checkedPath('relative/path'), 'must be absolute', 'a relative path is still rejected')
+  }
 }
 
 // ── 37. 0.23.3: init writes never escape the authorized workspace ──────────

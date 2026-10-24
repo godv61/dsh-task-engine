@@ -1986,7 +1986,7 @@ export function checkedPath(raw: string): string {
   // registers is stable across platforms.
   const normalized = resolve(raw).replace(/\\/gu, '/').replace(/\/+$/u, '') || '/'
   const lower = normalized.toLowerCase()
-  if (lower !== '/' && /^[a-z]:$/u.test(lower)) {
+  if (lower === '/' || /^[a-z]:$/u.test(lower)) {
     throw new RemoteError('gateway/internal', `task-engine: a filesystem root is not an allowed workspace: ${raw}`, {})
   }
   const forbidden = process.platform === 'win32' ? FORBIDDEN_WINDOWS : FORBIDDEN_POSIX
