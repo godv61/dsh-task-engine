@@ -9,6 +9,26 @@ export function mavenTestEvidence(command: string, output: string): { count: num
   return { count: Math.max(...summaries.map(match => Math.max(0, Number(match[1]) - Number(match[4])))) }
 }
 
+/**
+ * CTest / GoogleTest evidence, so C++ suites can also cross the verification gate.
+ * Returns null when the run is neither, leaving the other runner detectors untouched.
+ */
+export function ctestOrGtestEvidence(command: string, output: string): { count: number | null } | null {
+  const isCtest = /(?:^|\s)(?:[^\s;&|]*[\\/])?ctest(?:\.exe)?(?=\s|$)/iu.test(command)
+  const gtestRan = /\[\s*=+\s*\]\s*(\d+)\s+tests?\s+from\s+\d+\s+test suite(?:s)?\s+ran\./iu.test(output)
+  if (!isCtest && !gtestRan) return null
+  // ctest prints "N% tests passed, M tests failed out of T" only when M > 0;
+  // a clean run collapses to "100% tests passed out of T".
+  const summary = output.match(/(\d+)%\s+tests?\s+passed(?:,\s*(\d+)\s+tests?\s+failed)?\s+out\s+of\s*(\d+)/iu)
+  if (summary) return { count: Number(summary[2] ?? 0) > 0 ? 0 : Number(summary[3]) }
+  const failedTests = output.match(/\[\s*FAILED\s*\]\s*(\d+)\s+tests?/iu)
+  if (failedTests && Number(failedTests[1]) > 0) return { count: 0 }
+  const passedTests = output.match(/\[\s*PASSED\s*\]\s*(\d+)\s+tests?/iu)
+  if (passedTests) return { count: Number(passedTests[1]) }
+  if (/no tests were found|\b0 tests?\s+from\s+0 test suite(?:s)?\s+ran\./iu.test(output)) return { count: 0 }
+  return { count: null }
+}
+
 /** The shell must run one validator, not a second command that can forge its output or exit status. */
 export function validationCommandProblem(command: string): string | undefined {
   if (/[;&|`<>\r\n]/u.test(command) || /\$\(/u.test(command)) {
@@ -40,6 +60,8 @@ export function testEvidence(command: string, output: string): { count: number |
   }
   const maven = mavenTestEvidence(command, output)
   if (maven) return maven
+  const ctestOrGtest = ctestOrGtestEvidence(command, output)
+  if (ctestOrGtest) return ctestOrGtest
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]
