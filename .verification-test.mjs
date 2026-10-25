@@ -45,3 +45,27 @@ test('trivial shell commands cannot satisfy a skill command receipt', () => {
   for (const command of ['echo ok', 'printf ok', 'true', 'exit 0']) assert.ok(skillCommandProblem(command), command)
   assert.equal(skillCommandProblem('npm run lint'), undefined)
 })
+
+test('ctest and GoogleTest runs report the tests that actually passed', () => {
+  const cases = [
+    ['ctest --test-dir build --output-on-failure', '100% tests passed, 0 tests failed out of 192', 192],
+    ['ctest --test-dir build', '100% tests passed out of 192', 192],
+    ['ctest --test-dir build', '0% tests passed out of 0', 0],
+    ['ctest --test-dir build --output-on-failure', '66% tests passed, 65 tests failed out of 192', 0],
+    ['/usr/bin/ctest', '100% tests passed, 0 tests failed out of 1', 1],
+    ['ctest', 'No tests were found!!!', 0],
+    ['ctest --test-dir build', 'Test #1: link\n    Test Passed.', null],
+    ['/work/build/foray_platform_tests', '[==========] 192 tests from 39 test suites ran.\n[  PASSED  ] 192 tests.', 192],
+    ['/work/build/foray_platform_tests', '[==========] 5 tests from 2 test suites ran.\n[  FAILED  ] 3 tests, listed below:\n[  PASSED  ] 2 tests.', 0],
+    ['/work/build/empty_tests', '[==========] 0 tests from 0 test suites ran.\n[  PASSED  ] 0 tests.', 0],
+    ['./build/suite_tests', '[==========] Running 4 tests from 1 test suite.\n[       OK ] A.B (0 ms)\n[==========] 4 tests from 1 test suite ran. (2 ms total)\n[  PASSED  ] 4 tests.', 4],
+    ['ctest --test-dir build --output-on-failure',
+      'Test project /work/build\n    Start 1: RoboLinkCodec.AckPayloadRoundTrips\n1/2 Test #1: RoboLinkCodec.AckPayloadRoundTrips .... Passed\n2/2 Test #2: RoboLinkCodec.RejectsUnknownMessageType .... Passed\n\n100% tests passed, 0 tests failed out of 2', 2],
+    ['ctest --test-dir build --output-on-failure',
+      'Test project /work/build\n\n50% tests passed, 1 tests failed out of 2\n\nThe following tests FAILED:\n\t2 - RoboLinkCodec.Broken (Failed)', 0],
+  ]
+  for (const [command, stdout, expected] of cases) {
+    assert.equal(testEvidence(command, stdout).count, expected, command)
+    assert.equal(receiptHasRequiredTests({ command, stdout, stderr: '' }), expected > 0, command)
+  }
+})

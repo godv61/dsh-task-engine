@@ -53,7 +53,7 @@ npm run verify:package
 
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test、CTest/GoogleTest 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 
@@ -77,3 +77,5 @@ npm run verify:package
 新建的 ide-local Sonar 任务保存 `sonar_baseline`：参考版本解析出的提交和创建前已修改代码文件的 SHA-256（不保存正文）。任务范围外、内容仍与该基线一致的既有改动不纳入本次任务审核，排除路径写入报告；开始后新增或再次修改的代码仍需登记。参考提交变化、旧任务没有基线或创建时无法读取 Git 时保留严格范围检查，不补造历史基线。分析结束前会再核对参考提交与范围，避免运行中漏入新代码。
 
 验证支持标准 Maven 生命周期以及 Surefire/Failsafe 的短目标和完整坐标目标；仍要求真实非零测试摘要，失败或全部跳过的测试不通过。
+
+CTest 读取 `N% tests passed, M tests failed out of T`（M 非零按 0 计），GoogleTest 二进制读取 `[==========] N tests from … ran.` 与 `[  PASSED  ] N tests`；`No tests were found` 或 `0 tests from 0 test suites ran.` 按 0 计。
