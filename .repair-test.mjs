@@ -269,13 +269,14 @@ for (const providerName of ['spawn', 'fork']) for (const outcome of ['completed'
   await f.call({ operation: 'items', items: [{ id: 'I1', title: 'delegate' }] })
   let disposed = 0
   const get = f.ctx.get
-  f.ctx.get = name => name === 'subagents' ? { getProvider: provider => ({ inheritsParentContext: provider === 'fork', capabilities: { depthLimit: true } }), start: async (provider, request) => {
+  f.ctx.get = name => name === 'subagents' ? { getProvider: provider => ({ inheritsParentContext: provider === 'fork', capabilities: { depthLimit: true } }), startActivation: async ({provider,request,delivery}) => {
+    assert.equal(delivery, "caller")
     assert.equal(provider, providerName)
     assert.equal(request.parent.session.id, 'assessment')
     assert.equal(request.maxDepth, 3)
     assert.match(request.prompt[0].text, /Allowed delivery paths: a.js/)
     assert.match(request.prompt[0].text, /preserve interfaces/)
-    return { id: 'real-host-id', result: Promise.resolve({ stopReason: outcome, output: [{ type: 'text', text: 'delivered' }] }), dispose: async () => { disposed++ } }
+    return { childId: 'real-host-id', result: Promise.resolve({ stopReason: outcome, output: [{ type: 'text', text: 'delivered' }] }), dispose: async () => { disposed++ } }
   } } : get(name)
   await f.call({ operation: 'dispatch', item_id: 'I1', execution: providerName, description: 'implement' })
   assert.equal(f.current().items[0].dispatch.run_id, 'real-host-id')
@@ -359,7 +360,7 @@ test('active dispatch prevents parent ledger edits and failed disposal requires 
   const f = await fixture()
   const s = f.current(); s.stage = '开发'; s.items = [{ id: 'I1', title: 'delegate', status: 'todo' }]; f.save(s)
   const get = f.ctx.get
-  f.ctx.get = name => name === 'subagents' ? { getProvider: () => ({ inheritsParentContext: false, capabilities: { depthLimit: true } }), start: async () => {
+  f.ctx.get = name => name === 'subagents' ? { getProvider: () => ({ inheritsParentContext: false, capabilities: { depthLimit: true } }), startActivation: async () => {
     for (const args of [
       { operation: 'items', items: [{ id: 'I1', title: 'changed', status: 'done' }] },
       { operation: 'scope', files: ['other.js'] },
@@ -367,7 +368,7 @@ test('active dispatch prevents parent ledger edits and failed disposal requires 
       { operation: 'revise', revision_kind: 'defect', revision_reason: 'change', target_stage: '开发' },
     ]) await assert.rejects(() => f.call(args), /child dispatch is still active/)
     await f.call({ operation: 'status' })
-    return { id: 'child', result: Promise.resolve({ stopReason: 'completed', output: [] }), dispose: async () => { throw new Error('cleanup interrupted') } }
+    return { childId: 'child', result: Promise.resolve({ stopReason: 'completed', output: [] }), dispose: async () => { throw new Error('cleanup interrupted') } }
   } } : get(name)
   await f.call({ operation: 'dispatch', item_id: 'I1', execution: 'spawn' })
   assert.equal(f.current().items[0].dispatch.status, 'running')

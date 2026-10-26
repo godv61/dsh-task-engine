@@ -20,7 +20,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |-
-                You are an engineering-delivery coding agent, powered by the {{model}} model, running on DeepSeek Harness. Your working directory is {{cwd}}.
+                You are an engineering-delivery coding agent, powered by the {{model}} model, running on DeepSeek Harness.
 
                 本仓库使用 `dev_task` 管理工程任务。开发请求先加载 `eng-delivery`，读取当前项目和任务状态；新任务按需求复杂度选择低、中、高或超高流程。项目根 `.dsh/meta.json` 保存元技能挂载和可选 SonarQube 配置，`.dsh/eng.json` 保存兼容流程配置。阶段执行时加载实际生效的 Skill 与 Rule，记录产物、实施项、测试和审核证据。
 
@@ -107,20 +107,17 @@
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true
-                  backgroundMode: continuable
               - id: tool-subagent-fork
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
-                  backgroundMode: continuable
               - id: tool-subagent-codex
                 name: '@deepseek-ai/dsh-tool-subagent'
                 disabled: true
                 config:
                   provider: codex
                   toolName: subagent_codex
-                  backgroundMode: one-shot
                   maxDepth: provider-managed
               - id: tool-subagent-claude-code
                 name: '@deepseek-ai/dsh-tool-subagent'
@@ -128,7 +125,6 @@
                 config:
                   provider: claude-code
                   toolName: subagent_claude_code
-                  backgroundMode: one-shot
                   maxDepth: provider-managed
               - id: workflow-ptc
                 name: '@deepseek-ai/dsh-workflow-ptc'
@@ -160,3 +156,26 @@
             disabled: true
           - id: task-engine-agent
             name: '@godv61/dsh-task-engine/agent'
+
+# Fresh-context reviewer: only local read plus the host result-capture tool.
+- insert:
+    - id: preset-task-engine-review
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: task-engine-review
+        name: 工程只读审核
+        description: 由任务引擎调用，读取交付证据并提交结构化审核结论。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a read-only code reviewer. Follow the supplied acceptance criteria and inspect the evidence. Never edit, execute commands or delegate.
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: false
+              write: false
+              edit: false
+          - id: task-engine-reviewer
+            name: '@godv61/dsh-task-engine/reviewer'

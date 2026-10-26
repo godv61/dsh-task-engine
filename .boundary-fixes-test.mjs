@@ -32,9 +32,13 @@ async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto',
   const statePath = join(root, '.dsh/task-BOUNDARY.json')
   const state = () => JSON.parse(readFileSync(statePath, 'utf8'))
   const save = value => writeFileSync(statePath, JSON.stringify(value))
-  const starts = [], commands = []
-  runtime = { getProvider: name => ({ inheritsParentContext: name === 'fork', capabilities: { depthLimit: true, toolFilter: true } }),
-    start: async (provider, request) => {
+  const starts = [], commands = [], children = new Map()
+  const query={observeSession:async id=>({header:{id},events:children.get(id)??[],[Symbol.dispose](){}})}
+  const reviewerPolicy={preset:"task-engine-review",proof:id=>children.has(id)?{version:1,preset:"task-engine-review",child_id:id,tools:["read","structured_output"]}:undefined}
+  runtime = { getProvider: name => ({ inheritsParentContext: name === 'fork', capabilities: { depthLimit: true, agentPreset: true } }),
+    startActivation: async spec => {
+      const request={...spec.request,label:spec.label,signal:spec.signal}
+      assert.equal(spec.delivery,'caller');assert.equal(spec.request.cwd,root)
       starts.push(request)
       const reviewer = request.label.endsWith('/review')
       if (!reviewer) implementation()
@@ -44,7 +48,8 @@ async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto',
           { type: 'tool/result', data: { message: { toolCallId: `r-${index}`, isError: false, content: [{ type: 'text', text:
             `<path>${join(root, file)}</path>\n<type>file</type>\n<content>\n${lines.map((line, n) => `${n + 1}: ${line}`).join('\n')}${lines.length ? '\n\n' : ''}(End of file - total ${lines.length} lines)\n</content>` }] } } }]
       }) : []
-      return { id: `${reviewer ? 'review' : 'implementation'}-${starts.length}`, localAgent: { session: { snapshotEvents: () => events } },
+      const childId=`${reviewer ? 'review' : 'implementation'}-${starts.length}`;children.set(childId,events)
+      return { childId,
         result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: reviewer ? JSON.stringify({ spec: 'pass', quality: 'pass', notes: ['Controlled review transport; required reads independently checked.'] }) : 'delivered' }] }), dispose: async () => {} }
     } }
   const shell = { resolve: spec => spec, run: async spec => {
@@ -54,7 +59,7 @@ async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto',
       ? ['-NoProfile', '-NonInteractive', '-Command', spec.command] : ['-c', spec.command], { cwd: spec.workdir, encoding: 'utf8', env, timeout: 30_000 })
     return { exitCode: run.status, timedOut: !!run.error, aborted: false, stdout: { text: run.stdout ?? '' }, stderr: { text: run.stderr ?? '' } }
   } }
-  const ctx = { fs, tools: { register(tool) { execute = tool.execute } }, get: name => name === 'subagents' ? runtime : name === 'shell' ? shell
+  const ctx = { fs, tools: { register(tool) { execute = tool.execute } }, get: name => name === 'subagents' ? runtime : name === 'sessionQuery' ? query : name === 'taskEngineReviewPolicy' ? reviewerPolicy : name === 'shell' ? shell
     : name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'workspace-write', workspaceRoot: root }) } : undefined }
   registerDevTask(ctx)
   const events = [], session = { id: 'parent', header: { cwd: root }, snapshotEvents: () => events }
@@ -120,7 +125,7 @@ for (const rename of [false, true]) test(`planned ${rename ? 'rename' : 'deletio
   assert.equal(f.state().items[0].independent_review.status, 'completed')
   assert.match(f.starts.at(-1).prompt[0].text, /Current task risk: high_risk/)
   assert.match(f.starts.at(-1).prompt[0].text, /baseline.git.path/)
-  assert.deepEqual(f.starts.at(-1).toolFilter, { allow: ['read'] })
+  assert.equal(f.starts.at(-1).agentPreset,'task-engine-review');assert.equal(f.starts.at(-1).toolFilter,undefined)
   await f.call({ operation: 'review_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass' })
   await f.call({ operation: 'items', items: [{ id: 'I1', status: 'done' }] })
   assert.equal(f.state().items[0].status, 'done')

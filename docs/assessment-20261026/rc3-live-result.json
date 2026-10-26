@@ -1,0 +1,192 @@
+{
+  "captured_at": "2026-10-26T07:14:35.573Z",
+  "captured_at_east8": "2026-10-26 15:14:35 UTC+08:00",
+  "assertions_passed": true,
+  "dsh_tag": "dsh-v0.2.1-rc.3",
+  "dsh_revision": "1f81c047fc48fa190a683e469daa699857e9afe8",
+  "plugin_version": "0.35.0-local-unpublished",
+  "root": "C:\\Users\\ggbond\\AppData\\Local\\Temp\\dsh-rc3-acceptance-20261026",
+  "parent_id": "session-bb7074ae-8559-4476-8b16-1cafb5a8c2f7",
+  "stage": "代码开发",
+  "verified": true,
+  "items": [
+    {
+      "id": "ADD",
+      "status": "done",
+      "mode": "spawn",
+      "implementation_id": "e7eda3ff-4921-48f0-a10c-f55b90ac35a5",
+      "inherited_records": 0,
+      "review_id": "5f5116e4-3ccf-4597-ae56-b46004d827d5",
+      "policy": {
+        "version": 1,
+        "preset": "task-engine-review",
+        "child_id": "5f5116e4-3ccf-4597-ae56-b46004d827d5",
+        "tools": [
+          "read",
+          "structured_output"
+        ]
+      },
+      "actual_review_catalogs": [
+        [
+          "read",
+          "structured_output"
+        ]
+      ],
+      "actual_review_calls": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "structured_output"
+      ],
+      "full_reads": [
+        {
+          "file": "add.mjs",
+          "lines": 42
+        },
+        {
+          "file": "add.test.mjs",
+          "lines": 94
+        }
+      ],
+      "spec": "pass",
+      "quality": "pass",
+      "implementation_usage": {
+        "inputTokens": 7210,
+        "outputTokens": 3508,
+        "cacheReadTokens": 120192,
+        "cacheWriteTokens": 0,
+        "totalTokens": 130910
+      },
+      "review_usage": {
+        "inputTokens": 8579,
+        "outputTokens": 3112,
+        "cacheReadTokens": 24704,
+        "cacheWriteTokens": 0,
+        "totalTokens": 36395
+      }
+    },
+    {
+      "id": "MULT",
+      "status": "done",
+      "mode": "fork",
+      "implementation_id": "c02c8567-cddf-4a2c-8acd-7b44a64de6f4",
+      "inherited_records": 218,
+      "review_id": "88ac3b38-98d8-4bff-87cd-2b0fd96e3dea",
+      "policy": {
+        "version": 1,
+        "preset": "task-engine-review",
+        "child_id": "88ac3b38-98d8-4bff-87cd-2b0fd96e3dea",
+        "tools": [
+          "read",
+          "structured_output"
+        ]
+      },
+      "actual_review_catalogs": [
+        [
+          "read",
+          "structured_output"
+        ]
+      ],
+      "actual_review_calls": [
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "read",
+        "structured_output"
+      ],
+      "full_reads": [
+        {
+          "file": "multiply.mjs",
+          "lines": 42
+        },
+        {
+          "file": "multiply.test.mjs",
+          "lines": 101
+        }
+      ],
+      "spec": "pass",
+      "quality": "pass",
+      "implementation_usage": {
+        "inputTokens": 27665,
+        "outputTokens": 5409,
+        "cacheReadTokens": 761856,
+        "cacheWriteTokens": 0,
+        "totalTokens": 794930
+      },
+      "review_usage": {
+        "inputTokens": 11565,
+        "outputTokens": 7909,
+        "cacheReadTokens": 53504,
+        "cacheWriteTokens": 0,
+        "totalTokens": 72978
+      }
+    }
+  ],
+  "groups": [
+    {
+      "id": "add",
+      "run_id": "078c5f74-2d8e-4e01-841c-f3cdf9750814",
+      "command": "node --test --experimental-test-isolation=none --test-reporter=tap add.test.mjs",
+      "tests": 17,
+      "exit_code": 0,
+      "sandbox": {
+        "mode": "workspace-write",
+        "denied": false,
+        "enforcement": "partial"
+      },
+      "current_hash": true
+    },
+    {
+      "id": "multiply",
+      "run_id": "fa03aea9-18a6-4a38-8ba8-b2e1c0324e32",
+      "command": "node --test --experimental-test-isolation=none --test-reporter=tap multiply.test.mjs",
+      "tests": 18,
+      "exit_code": 0,
+      "sandbox": {
+        "mode": "workspace-write",
+        "denied": false,
+        "enforcement": "partial"
+      },
+      "current_hash": true
+    }
+  ],
+  "add_item_and_receipt_preserved": true,
+  "initial_failed_review_attempts": [
+    {
+      "status": "failed",
+      "error": "task-engine-reviewer (@godv61/dsh-task-engine/reviewer): reviewer policy requires a preset scope"
+    },
+    {
+      "status": "failed",
+      "error": "task-engine-reviewer (@godv61/dsh-task-engine/reviewer): reviewer policy requires a preset scope"
+    }
+  ],
+  "parent_own_tool_calls": 52,
+  "parent_usage": {
+    "inputTokens": 75227,
+    "outputTokens": 12842,
+    "cacheReadTokens": 1952768,
+    "cacheWriteTokens": 0,
+    "totalTokens": 2040837
+  },
+  "file_hashes": {
+    "add.mjs": "cb569908b38be65a7eeefefca975ae25235938edae5153e00d5916269d441a26",
+    "add.test.mjs": "548f8b48faa950262d1737f0324391e91dfa0a188839a301b1af536c4c777796",
+    "multiply.mjs": "0ffcfce6daa6de7900216382fcbc70d46d6bc0fded326354ff2a9b39393666c8",
+    "multiply.test.mjs": "56a4918220d4242c6eb0e2849c414ce7bb4b1d476030a15ec7f51c3939ec4762",
+    "package.json": "54185d29bbb08b1cbca856624b27920c49b18b0deb749edf43422789c9452033"
+  },
+  "limits": [
+    "Explicit spawn/fork instructions in a controlled fixture; this does not establish optimal automatic delegation cost.",
+    "Initial D: fixtures failed native Windows ACL provisioning; no ACL-repair command was approved.",
+    "Reviewer startup failed twice before the local guard fix; first parent turn searched outside the fixture and was stopped.",
+    "Runtime cancellation, cleanup failure and observation lease release were controlled API tests, not live cancellation trials.",
+    "Task-level review, SonarQube, commit, publish and archive were intentionally not executed."
+  ]
+}

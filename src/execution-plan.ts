@@ -1,8 +1,10 @@
 /** Task-item execution decisions and host capability checks, independent of model prose. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { ObjectJsonSchema, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
+import type SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import type { TaskItem, TaskState } from './engine.ts'
 import { requiredReviewPaths, type DeliveryChange } from './delivery-changes.ts'
+import { REVIEW_PRESET, validReviewPolicy, type ReviewPolicyProof } from './reviewer-spec.ts'
 
 export type ExecutionMode = 'direct' | 'spawn' | 'fork'
 export interface ExecutionPlan {
@@ -38,6 +40,7 @@ export interface IndependentReview {
   read_files?: string[]
   read_coverage?: { file: string; lines: number }[]
   context_hash?: string
+  policy?: ReviewPolicyProof
 }
 /** In-process re-entry guard shared by all agent-scoped registrations; host FS CAS remains authoritative across processes. */
 const taskMutations = new Set<string>()
@@ -57,14 +60,7 @@ export function hasFullReadCoverage(review: IndependentReview | undefined, files
   return files.every(file => review?.read_coverage?.some(entry => entry.file === file && Number.isSafeInteger(entry.lines) && entry.lines >= 0))
 }
 /** Narrow structural API: DSH is supplied by the host, never installed as a second runtime. */
-export interface TaskSubagents {
-  getProvider?(name: string): { capabilities: { depthLimit?: boolean; toolFilter?: boolean; outputSchema?: boolean }; inheritsParentContext?: boolean } | undefined
-  start?(provider: string, request: { label: string; parent: NonNullable<ToolRunContext['agent']>;
-    prompt: { type: 'text'; text: string }[]; signal: AbortSignal; maxDepth: number; toolFilter?: { allow: string[] }; outputSchema?: ObjectJsonSchema }): Promise<{
-      id: string; localAgent?: { session: { snapshotEvents(): readonly { type: string; data: unknown }[] } };
-      result: Promise<{ stopReason: string; output: { type: string; text?: string }[]; structured?: unknown; diagnostic?: string }>; dispose(): Promise<void>
-    }>
-}
+export type TaskSubagents = Pick<SubagentRuntime, 'getProvider' | 'startActivation' | 'listDescendants'>
 /** Native capture schema; semantic checks still reject empty evidence after host validation. */
 export const REVIEW_OUTPUT_SCHEMA: ObjectJsonSchema = {
   type: 'object',
@@ -81,13 +77,14 @@ export function taskSubagents(ctx: Context): TaskSubagents | undefined {
 }
 export function executionCapabilities(ctx: Context, liveParent: boolean): ExecutionPlan['capabilities'] {
   const runtime = taskSubagents(ctx)
-  if (!liveParent || !runtime?.start || !runtime.getProvider) return { spawn: false, fork: false, reviewer: false }
+  if (!liveParent || !runtime?.startActivation || !runtime.getProvider) return { spawn: false, fork: false, reviewer: false }
   const spawn = runtime.getProvider('spawn')
   const fork = runtime.getProvider('fork')
   // Do not label an inheriting provider as an independent context/reviewer.
   return { spawn: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true,
     fork: !!fork && fork.inheritsParentContext === true && fork.capabilities.depthLimit === true,
-    reviewer: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true && spawn.capabilities.toolFilter === true }
+    reviewer: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true && spawn.capabilities.agentPreset === true
+      && !!ctx.get('sessionQuery') && ctx.get('taskEngineReviewPolicy')?.preset === REVIEW_PRESET }
 }
 /** Exact serialized decision identity, kept separate from file content hashes. */
 export function executionPlanKey(plan: ExecutionPlan): string {
@@ -147,6 +144,7 @@ export function executionItemBlockers(state: TaskState, item: TaskItem): string[
     const review = item.independent_review
     if (review?.status !== 'completed' || !review.run_id || review.spec !== 'pass' || review.quality !== 'pass'
       || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at
+      || !validReviewPolicy(review.policy, review.run_id)
       || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`)
   }

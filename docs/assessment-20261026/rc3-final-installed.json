@@ -1,0 +1,45 @@
+{
+  "version": "0.35.0",
+  "checks": [
+    {
+      "file": "package.json",
+      "sha256": "eae9ea0baabe240e053dbfed4ffdd502270e06f717c6e52975cfc7d2662c605f",
+      "installed_matches_source": true
+    },
+    {
+      "file": "cordis.patch.yml",
+      "sha256": "d5ed388adce8c35209475203b1cb4b3759ae0dc932b4f7baecc5e2f4745d87f6",
+      "installed_matches_source": true
+    },
+    {
+      "file": "lib/reviewer.js",
+      "sha256": "27e38742c3a30563821169833421d886606aeb3a1aba0c25326b816ab4c214ef",
+      "installed_matches_source": true
+    },
+    {
+      "file": "lib/reviewer-policy.js",
+      "sha256": "dbf52c643f0a7ea381ffa2873cc2c67e4346eb7851fc0da52feed1c0a026263f",
+      "installed_matches_source": true
+    },
+    {
+      "file": "lib/subagent-runtime.js",
+      "sha256": "0f7e287f235392c022e8d56ebf3e15f69550162c13d13d2f968e7eb37426bfa6",
+      "installed_matches_source": true
+    },
+    {
+      "file": "lib/dev-task.js",
+      "sha256": "b8753b9a438e2a5ddf80fb56c6c9eaa1da4e8325be6982c9581ecf0a09a5264a",
+      "installed_matches_source": true
+    },
+    {
+      "file": "lib/client.js",
+      "sha256": "9b10cb1cd40de77425cb46e1108b56ffa5abb38ce32fe89c6890214d528bd87c",
+      "installed_matches_source": true
+    },
+    {
+      "file": "docs/development.md",
+      "sha256": "8d7526f67647faac918483e044d32833589bccc2149d205cdc631e1fd5173394",
+      "installed_matches_source": true
+    }
+  ]
+}

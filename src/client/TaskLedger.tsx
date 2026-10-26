@@ -14,6 +14,7 @@ import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { TaskEngineRemote, TaskLedgerEntry, TaskLedgerItem } from './TaskEngineSection.ts'
 import { formatEastEightTime } from '../time.ts'
+import { validReviewPolicy } from '../reviewer-spec.ts'
 
 const card: CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 10,
@@ -71,6 +72,7 @@ function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
     const review = item.independent_review
     lines.push(createElement('details', { key: 'independent-review' },
       createElement('summary', null, `独立审核 · ${statusLabel(review.status)}${review.spec ? ` · 规格${review.spec === 'pass' ? '通过' : '不通过'}` : ''}${review.quality ? ` · 质量${review.quality === 'pass' ? '通过' : '不通过'}` : ''} · ${review.run_id ?? '等待运行 ID'}`),
+      createElement('p', { style: metaLine }, validReviewPolicy(review.policy, review.run_id) ? '只读限制已验证' : '尚无有效只读限制回执'),
       review.read_files?.length ? createElement('p', { style: metaLine }, `${review.read_coverage ? '全文行内容已核对' : '路径读取记录（未核对全文）'}：${review.read_files.join('、')}`) : null,
       createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, review.output ?? ''),
       review.error ? createElement('p', { role: 'alert' }, review.error) : null))
