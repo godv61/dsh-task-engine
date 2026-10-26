@@ -1274,7 +1274,7 @@ export default class TaskEngineController extends TypertRemoteService {
       exists: await readTextAt(fs, path, item.kind === 'rule' ? `.dsh/rules/${item.name}.md` : `.dsh/skills/${item.name}/SKILL.md`) !== undefined,
     })))
     return { inventory, existing, system_prompt: `${PROJECT_INIT_SYSTEM_PROMPT}\n仓库提示词若指定当前单一资源，只生成该资源，其余资源留待后续步骤。`, step_prompt: PROJECT_INIT_STEP_PROMPT,
-      user_prompt: `项目根目录：${path}\n一级模块：${JSON.stringify(inventory.modules.map(item => item.path))}\n构建清单及已识别事实：${JSON.stringify(inventory.manifests)}\n已有建议资源：${JSON.stringify(existing)}\n内置元技能承担各阶段通用工作；这里仅建议项目独有的可选 Skill。项目地图若生成，必须覆盖全仓；使用者可以全部跳过。已有同名项目 Skill 将保留并继续挂载。每一步只使用该资源的专属仓库证据，引用真实路径；证据不足时不生成，不编造规范或业务含义。不要在初始化时生成 Rule。` }
+      user_prompt: `项目根目录：${path}\n已发现目录/嵌套模块：${JSON.stringify(inventory.modules.map(item => item.path))}\n目录扫描范围与完整性：${JSON.stringify(inventory.discovery)}\n构建清单及已识别事实：${JSON.stringify(inventory.manifests)}\n已有建议资源：${JSON.stringify(existing)}\n内置元技能承担各阶段通用工作；这里仅建议项目独有的可选 Skill。项目地图若生成，必须覆盖全仓；使用者可以全部跳过。已有同名项目 Skill 将保留并继续挂载。每一步只使用该资源的专属仓库证据，引用真实路径；证据不足时不生成，不编造规范或业务含义。不要在初始化时生成 Rule。` }
   }
 
   /** Preview the path-only repository exploration brief for one resource. */
@@ -2082,14 +2082,22 @@ function stripJsonFence(text: string): string {
 }
 
 function projectInitProbe(fs: NonNullable<Context['fs']>, strict = false): FileProbe {
+  if (typeof fs.listDir !== 'function') return { read: (dir, rel) => strict ? fs.resolve(rel, { cwd: dir }).then(target => fs.readText(target)) : readTextAt(fs, dir, rel) }
+  const directories = new Map<string, string[] | undefined>()
   return {
     read: (dir, rel) => strict ? fs.resolve(rel, { cwd: dir }).then(target => fs.readText(target)) : readTextAt(fs, dir, rel),
     list: async (dir, rel) => {
       try {
         const target = await fs.resolve(rel, { cwd: dir })
-        return (await fs.listDir(target)).map(entry => entry.name)
-      } catch (error) { if (strict) throw error; return [] }
+        const entries = await fs.listDir(target)
+        directories.set(`${dir}\0${rel}`, entries.every(entry => entry.type !== undefined) ? entries.filter(entry => entry.type === 'directory').map(entry => entry.name) : undefined)
+        return entries.map(entry => entry.name)
+      } catch (error) {
+        if (!strict && ['ENOENT', 'ENOTDIR', 'FS_NOT_FOUND', 'FS_NOT_DIRECTORY'].includes((error as { code?: string }).code ?? '')) return []
+        throw error
+      }
     },
+    directories: async (dir, rel) => directories.get(`${dir}\0${rel}`),
   }
 }
 

@@ -88,6 +88,15 @@ function receiptHasRequiredTests(receipt) {
 ${receipt.stderr}`).count ?? 0) > 0;
 }
 
+// src/delivery-changes.ts
+function requiredReviewPaths(plan) {
+  const removed = new Set(plan.changes?.map((change) => change.path));
+  return [.../* @__PURE__ */ new Set([
+    ...plan.files.filter((file) => !removed.has(file)),
+    ...(plan.changes ?? []).flatMap((change) => [change.baseline.git.path, ...change.baseline.before ? [change.baseline.before.path] : []])
+  ])];
+}
+
 // src/execution-plan.ts
 function executionCoverageBlockers(state2) {
   if (!state2.delegation_version) return [];
@@ -112,7 +121,7 @@ function executionItemBlockers(state2, item) {
     blockers.push(`item ${item.id}: item review is missing or failed before done`);
   if (plan.review === "independent") {
     const review = item.independent_review;
-    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, plan.files))
+    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`);
   }
   return blockers;

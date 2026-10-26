@@ -60,6 +60,8 @@ function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
   const statusLabel = (status?: string): string => ({ starting: '启动中', running: '运行中', completed: '已结束', failed: '失败' })[status ?? ''] ?? '未启动'
   if (item.execution_plan) {
     const plan = item.execution_plan
+    for (const change of plan.changes ?? []) lines.push(createElement('div', { key: `change-${change.path}`, style: metaLine },
+      `计划${change.kind === 'rename' ? '重命名' : '删除'}：${change.path}${change.to ? ` → ${change.to}` : ''}；审核需读取变更前快照。`))
     lines.push(createElement('div', { key: 'plan', style: metaLine }, `计划方式：${executionLabel(plan.mode)} · ${plan.requested === 'auto' ? '自动选择' : '指定方式'}`),
       createElement('div', { key: 'reason', style: metaLine }, `选择原因：${plan.reason}`),
       createElement('div', { key: 'review-plan', style: metaLine }, `审核方式：${plan.review === 'independent' ? '独立审核子代理' : '主会话审核'} · ${plan.review_reason}`))

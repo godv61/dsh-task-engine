@@ -303,7 +303,7 @@ test('local Sonar audit ignores failing old-code gate conditions', async () => {
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
-      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
       : { paging: { total: 0 }, issues: [] } })
   const audit = await inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope', fetcher, true)
   assert.equal(audit.gate, 'OK')
@@ -347,7 +347,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   const calls = []
   const shell = { resolve: request => request, run: async spec => {
     calls.push(spec)
-    if (spec.command === 'git rev-parse HEAD') return { exitCode: 0, stdout: { text: 'abcdef1234567890\n' } }
+    if (spec.command === 'git rev-parse HEAD') return { exitCode: 0, stdout: { text: 'abcdef1234567890abcdef1234567890abcdef12\n' } }
     if (spec.command === 'git branch --show-current') return { exitCode: 0, stdout: { text: 'feature\n' } }
     if (spec.command === 'git status --porcelain --untracked-files=all') return { exitCode: 0, stdout: { text: '' } }
     const metadata = /-Dsonar\.scanner\.metadataFilePath='([^']+)'/u.exec(spec.command)?.[1]
@@ -362,7 +362,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   const state = f.state('LOCAL-1')
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
-  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
+  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
   f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
@@ -379,7 +379,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
-      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
       : { paging: { total: 0 }, issues: [] } })
   try {
     const result = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'LOCAL-1' }))
@@ -410,7 +410,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   const state = f.state('S-1')
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
-  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
+  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
   f.files.set(join(f.cwd, '.dsh/task-S-1.json'), JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)
   const oldFetch = globalThis.fetch
@@ -422,7 +422,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = 'project'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-2', componentKey: 'project' } }
-    : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-2', revision: 'abcdef1234567890' }] }
+    : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-2', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
     : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'ERROR',
       conditions: [{ metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
       : { paging: { total: 0 }, issues: [] } })

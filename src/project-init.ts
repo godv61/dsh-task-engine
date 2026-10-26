@@ -46,6 +46,8 @@ export interface ProjectInventory {
   manifests: { path: string; facts: string[] }[]
   suggestions: { name: string; kind: 'skill' | 'rule'; meta_skills: string[]; why: string }[]
   caution: string
+  discovery?: { status: 'complete' | 'partial' | 'unavailable'; directories: number; entries: number;
+    warnings: string[]; exclusions: string[]; limits: { directories: number; depth: number; entries: number } }
 }
 
 export interface ProjectInitStep {
@@ -105,7 +107,10 @@ export function projectMapCoveragePaths(inventory: ProjectInventory): string[] {
 /** Reject a feature-only map that omits independently discovered project modules. */
 export function projectMapCoverageGaps(content: string, inventory: ProjectInventory): string[] {
   const normalized = content.replace(/\\/gu, '/').toLowerCase()
-  return projectMapCoveragePaths(inventory).filter(path => !normalized.includes(path.toLowerCase()))
+  const gaps = projectMapCoveragePaths(inventory).filter(path => !normalized.includes(path.toLowerCase()))
+  if (inventory.discovery && inventory.discovery.status !== 'complete') gaps.push(`[inventory ${inventory.discovery.status}: ${inventory.discovery.warnings.join('; ')}]`)
+  if (!projectMapCoveragePaths(inventory).length) gaps.push('[no module or manifest evidence discovered; repository coverage is unproven]')
+  return gaps
 }
 
 const MANIFESTS = ['pom.xml', 'build.gradle', 'build.gradle.kts', 'package.json', 'go.mod', 'pyproject.toml', 'Cargo.toml']
@@ -120,24 +125,52 @@ function xmlVersion(raw: string, tag: string): string | undefined {
   return new RegExp(`<${tag}>([^<]+)</${tag}>`, 'u').exec(raw)?.[1]?.trim()
 }
 
-/** Read only conventional manifests and first-level structure; source code stays for model review. */
-export async function scanProject(probe: FileProbe, root: string): Promise<ProjectInventory> {
+/** Bounded repository discovery. Completion refers to this explicit search scope, not business completeness. */
+export async function scanProject(probe: FileProbe, root: string,
+  limits = { directories: 1024, depth: 16, entries: 20_000 }): Promise<ProjectInventory> {
   const project_name = slug(root)
-  const root_entries = (await probe.list?.(root, '.') ?? [])
-    .filter(entry => !['.git', 'node_modules', 'target', 'dist', 'build', '.dsh'].includes(entry)).sort().slice(0, 100)
-  const modules: ProjectInventory['modules'] = []
-  for (const name of root_entries.filter(entry => !entry.startsWith('.')).slice(0, 60)) {
-    const entries = await probe.list?.(root, name) ?? []
-    if (entries.length > 0) modules.push({ path: name, entries: entries.sort().slice(0, 50) })
+  const exclusions = ['hidden directories', 'symlinks (typed listings)', 'node_modules', 'target', 'dist', 'build', 'coverage', 'vendor', '__pycache__']
+  const skip = (name: string): boolean => name.startsWith('.') || exclusions.includes(name)
+  const discovery: NonNullable<ProjectInventory['discovery']> = { status: probe.list ? 'complete' : 'unavailable',
+    directories: 0, entries: 0, warnings: [], exclusions, limits }
+  const warn = (message: string): void => { discovery.status = 'partial'; if (!discovery.warnings.includes(message)) discovery.warnings.push(message) }
+  if (!probe.list) discovery.warnings.push('directory listing is unavailable')
+  const listing = new Map<string, string[]>()
+  const queue = [{ path: '.', depth: 0 }]
+  const visited = new Set<string>()
+  while (probe.list && queue.length) {
+    if (discovery.directories >= limits.directories || discovery.entries >= limits.entries) { warn('directory or entry discovery budget reached'); break }
+    const current = queue.shift()!
+    if (visited.has(current.path)) continue
+    visited.add(current.path)
+    try {
+      const names = [...new Set(await probe.list(root, current.path))].filter(name => name && name !== '.' && name !== '..' && !/[\\/]/u.test(name)).sort()
+      discovery.directories++
+      discovery.entries += names.length
+      const kept = names.slice(0, Math.max(0, limits.entries - (discovery.entries - names.length)))
+      if (kept.length < names.length) warn(`entry budget reached at ${current.path}`)
+      listing.set(current.path, kept)
+      const typed = await probe.directories?.(root, current.path)
+      const children = kept.filter(name => !skip(name) && (typed === undefined || typed.includes(name)))
+      if (current.depth >= limits.depth) {
+        if (children.length) warn(`depth limit reached at ${current.path}`)
+      } else for (const name of children) queue.push({ path: current.path === '.' ? name : `${current.path}/${name}`, depth: current.depth + 1 })
+    } catch (error) { warn(`cannot list ${current.path}: ${String(error)}`) }
   }
-  const manifestPaths = [...MANIFESTS,
-    ...modules.filter(module => module.entries.some(entry => MANIFESTS.includes(entry)))
-      .flatMap(module => MANIFESTS.filter(name => module.entries.includes(name)).map(name => `${module.path}/${name}`))]
+  const root_entries = (listing.get('.') ?? []).filter(entry => !skip(entry))
+  const modules: ProjectInventory['modules'] = []
+  for (const [path, entries] of listing) {
+    if (path !== '.' && entries.length && (!path.includes('/') || entries.some(name => MANIFESTS.includes(name)))) modules.push({ path, entries })
+  }
+  const manifestPaths = probe.list ? [...listing].flatMap(([path, entries]) => MANIFESTS.filter(name => entries.includes(name))
+    .map(name => path === '.' ? name : `${path}/${name}`)).sort() : MANIFESTS
   const manifests: ProjectInventory['manifests'] = []
   let hasJava = false
   let hasFrontend = false
   for (const path of manifestPaths) {
-    const raw = await probe.read(root, path)
+    let raw: string | undefined
+    try { raw = await probe.read(root, path) } catch (error) { warn(`cannot read manifest ${path}: ${String(error)}`); continue }
+    if (raw === undefined && probe.list) warn(`listed manifest is unreadable: ${path}`)
     if (raw === undefined) continue
     const facts: string[] = []
     if (/pom\.xml$/u.test(path)) {
@@ -184,6 +217,6 @@ export async function scanProject(probe: FileProbe, root: string): Promise<Proje
   if (hasFrontend) {
     suggestions.push({ name: `${project_name}-code-frontend`, kind: 'skill', meta_skills: ['code-development'], why: '检测到前端依赖；只有组件、路由或构建脚本证明项目特有实现方式时才生成，不重复通用开发方法。' })
   }
-  return { project_name, root_entries, modules, manifests, suggestions,
+  return { project_name, root_entries, modules, manifests, suggestions, discovery,
     caution: 'This inventory identifies evidence, not coding rules. The project-map and optional business-capabilities Skill are reusable repository-wide context even when init_project is called during a feature task; keep that task\'s design and call-chain findings in task artifacts. Separate confirmed code facts, plausible inference and product questions. Review representative source, tests and existing governance files before proposing Rule content; legacy violations are not standards.' }
 }
