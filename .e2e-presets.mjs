@@ -32,7 +32,7 @@ function adoptedFlow(id, extra) {
 }
 
 
-const HASH = 'abcdef1234567890'
+const HASH = 'abcdef1234567890abcdef1234567890abcdef12'
 
 /**
  * One preset driven from creation to completion.

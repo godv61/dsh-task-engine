@@ -220,6 +220,9 @@ const taskDispatchSchema = z.object({ description: z.string(), at: z.string(), p
 const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spawn', 'fork']), mode: z.enum(['direct', 'spawn', 'fork']),
   reason: z.string(), boundary: z.enum(['local', 'independent', 'coupled']), context: z.enum(['brief', 'history']),
   files: z.array(z.string()), acceptance: z.array(z.string()), depends_on: z.array(z.string()),
+  changes: z.array(z.object({ path: z.string(), kind: z.enum(['delete', 'rename']), to: z.string().optional(),
+    baseline: z.object({ commit: z.string(), blob: z.string(), git: z.object({ path: z.string(), sha256: z.string() }),
+      before: z.object({ path: z.string(), sha256: z.string() }).optional() }) })).optional(),
   review: z.enum(['main', 'independent']), review_reason: z.string(), at: z.string(),
   capabilities: z.object({ spawn: z.boolean(), fork: z.boolean(), reviewer: z.boolean() }) })
 const independentReviewSchema = z.object({ status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
@@ -325,6 +328,8 @@ const projectInitInventorySchema = z.object({
   manifests: z.array(z.object({ path: z.string(), facts: z.array(z.string()) })),
   suggestions: z.array(z.object({ name: z.string(), kind: z.enum(['skill', 'rule']), meta_skills: z.array(z.string()), why: z.string() })),
   caution: z.string(),
+  discovery: z.object({ status: z.enum(['complete', 'partial', 'unavailable']), directories: z.number(), entries: z.number(),
+    warnings: z.array(z.string()), exclusions: z.array(z.string()), limits: z.object({ directories: z.number(), depth: z.number(), entries: z.number() }) }).optional(),
 })
 const projectInitPromptViewSchema = z.object({
   inventory: projectInitInventorySchema,

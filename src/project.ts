@@ -21,6 +21,8 @@ export interface FileProbe {
   read(dir: string, relPath: string): Promise<string | undefined>
   /** Basenames of a directory's children; implementations without listing return `[]`. */
   list?(dir: string, relPath: string): Promise<string[]>
+  /** Optional typed listing avoids probing regular files as directories. Undefined means type metadata is unavailable. */
+  directories?(dir: string, relPath: string): Promise<string[] | undefined>
 }
 
 /** Directory part of a path without importing `node:path` (keeps the module browser-safe). */

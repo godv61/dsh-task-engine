@@ -438,13 +438,14 @@ export interface TaskState {
   artifacts: Record<string, Record<string, string>>
   /** Repo-relative paths this task may touch (checked by the file-scope commit gate). */
   files: string[]
-  commits: { label: string; hash?: string }[]
+  commits: { label: string; hash?: string; provided_hash?: string }[]
   /** Absolute project root recorded at create time; receipts bind to it and writes may not escape it. Absent on pre-0.21 records. */
   root?: string
   /** Language stack detected at create time. Absent on pre-0.21 records. */
   project_type?: ProjectType
-  /** Audit trail of risk changes; a high_risk → standard downgrade only appears here after human approval. Absent on pre-0.22 records. */
+  /** Approved high_risk → standard downgrades. Absent on pre-0.22 records. */
   risk_downgrades?: { from: string; to: string; at: string }[]
+  risk_changes?: { from: RiskLevel; to: RiskLevel; at: string; review_items: string[]; stage_before: string; stage_after: string }[]
   /** Fingerprint of bundled rules at create time; reports later changes. Absent on pre-0.22 records. */
   /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
   revision?: number

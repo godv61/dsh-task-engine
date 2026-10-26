@@ -191,7 +191,7 @@ const MINIMAL_RECOMMENDATION: FlowRecommendation = {
  * Derive a preset's capability set from its own structure, so the capability
  * claims can never drift from the actual gate graph.
  */
-function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
+export function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
   const caps: WorkflowCapability[] = []
   const guards = new Set(config.transitions.flatMap(t => t.requires ?? []))
   if (guards.has('verified')) caps.push('verification_gate')
@@ -269,6 +269,12 @@ export function flowSatisfies(flow: string, required: readonly WorkflowCapabilit
   const preset = FLOW_PRESETS[flow]
   if (preset === undefined) return false
   return required.every(cap => preset.capabilities.includes(cap))
+}
+
+/** Check the effective frozen graph, including adaptive flows and project overrides. */
+export function workflowSatisfies(config: WorkflowConfig, required: readonly WorkflowCapability[]): boolean {
+  const capabilities = deriveCapabilities(config)
+  return required.every(capability => capabilities.includes(capability))
 }
 
 /** Resolve an unknown flow id's failure, surprising no caller with a fallback. */

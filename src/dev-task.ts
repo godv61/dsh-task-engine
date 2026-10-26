@@ -12,7 +12,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve, win32 } from 'node:path'
@@ -55,7 +55,7 @@ import {
 } from './engine.ts'
 import {
   HIGH_RISK_REQUIRED_CAPABILITIES,
-  flowSatisfies,
+  workflowSatisfies,
   resolveFlow,
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_EVIDENCE, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
@@ -66,7 +66,9 @@ import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
 import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
-import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
+import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
+import { isFullOid, isOidInput } from './git-oid.ts'
+import { requiredReviewPaths, validateDeliveryChanges, type DeliveryChange, type DeliveryChangeInput } from './delivery-changes.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { isGradleTestCommand, skillCommandProblem, testEvidence, validationCommandProblem } from './verification-tests.ts'
@@ -142,17 +144,22 @@ async function writeText(
 
 /** Project-adapter probe over the sandboxed filesystem. */
 function projectProbe(fs: Fs): FileProbe {
+  if (typeof fs.listDir !== 'function') return { read: (dir, rel) => readText(fs, rel, dir) }
+  const directories = new Map<string, string[] | undefined>()
   return {
     read: (dir, relPath) => readText(fs, relPath, dir),
     list: async (dir, relPath) => {
       try {
         const target = await fs.resolve(relPath, { cwd: dir })
         const entries = await fs.listDir(target)
+        directories.set(`${dir}\0${relPath}`, entries.every(entry => entry.type !== undefined) ? entries.filter(entry => entry.type === 'directory').map(entry => entry.name) : undefined)
         return entries.map(entry => entry.name)
-      } catch {
-        return []
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'FS_NOT_FOUND', 'FS_NOT_DIRECTORY'].includes((error as { code?: string }).code ?? '')) return []
+        throw error
       }
     },
+    directories: async (dir, rel) => directories.get(`${dir}\0${rel}`),
   }
 }
 
@@ -283,16 +290,90 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
   }
 }
 
+const shellQuote = (text: string): string => `'${text.replaceAll("'", process.platform === 'win32' ? "''" : "'\\''")}'`
+const gitTextCommand = (command: string): string => process.platform === 'win32'
+  ? `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ${command}` : command
+const successfulCommand = (receipt: VerificationReceipt): boolean => receipt.exit_code === 0 && !receipt.aborted && !receipt.timed_out
+  && !receipt.sandbox?.denied && !receipt.sandbox?.runnerFailed
+
+/** A host may normalize newlines in command output. Accept only a reconstruction matching Git's actual blob OID. */
+function verifiedBlobText(raw: string, oid: string): string {
+  const candidates = new Set([raw, raw.replace(/\r\n/gu, '\n'), raw.replace(/\r?\n/gu, '\r\n')])
+  for (const candidate of [...candidates]) if (candidate.endsWith('\n')) candidates.add(candidate.replace(/\r?\n$/u, ''))
+  for (const text of candidates) {
+    const bytes = Buffer.from(text)
+    if (bytes.length > 262_144 || text.includes('\0')) continue
+    const hash = createHash(oid.length === 64 ? 'sha256' : 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+    if (hash === oid) return text
+  }
+  throw new Error('cannot capture a complete text baseline matching the Git blob (binary, oversized or truncated output)')
+}
+
+async function captureDeliveryChanges(ctx: Context, fs: Fs, state: TaskState, changes: DeliveryChangeInput[], exec: ToolRunContext,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<DeliveryChange[]> {
+  const root = state.root ?? exec.agent?.session.header.cwd
+  const head = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
+  const commit = head.stdout.trim().toLowerCase()
+  if (!successfulCommand(head) || !isFullOid(commit)) throw new Error('planned deletion/rename requires a readable Git baseline commit')
+  const snapshot = async (body: string): Promise<{ path: string; sha256: string }> => {
+    if (Buffer.byteLength(body) > 262_144 || body.includes('\0')) throw new Error('planned deletion/rename baseline must be text under 256 KiB')
+    const sha256 = hashText(body), path = `.dsh/review-inputs/${sha256}.txt`
+    const old = await readText(fs, path, root)
+    if (old !== undefined && hashText(old) !== sha256) throw new Error('review baseline cache was modified; restore it before replanning')
+    if (old === undefined) await writeText(fs, path, body, root, mode, { kind: 'createIfAbsent' })
+    return { path, sha256 }
+  }
+  const result: DeliveryChange[] = []
+  for (const change of changes) {
+    const tree = await runVerificationCommand(ctx, gitTextCommand(`git --literal-pathspecs ls-tree -z ${commit} -- ${shellQuote(change.path)}`), root, exec)
+    const entry = /^(?:100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]+)\0\s*$/u.exec(tree.stdout)
+    if (!successfulCommand(tree) || !entry || entry[2] !== change.path) throw new Error(`planned deletion/rename needs a tracked regular-file baseline: ${change.path}`)
+    const blob = entry[1]!
+    const content = await runVerificationCommand(ctx, gitTextCommand(`git cat-file blob ${blob}`), root, exec)
+    if (!successfulCommand(content)) throw new Error(`cannot read Git baseline: ${change.path}`)
+    const body = verifiedBlobText(content.stdout, blob)
+    const baseline: DeliveryChange['baseline'] = { commit, blob, git: await snapshot(body) }
+    const info = await fs.lstat(change.path, root ? { cwd: root } : undefined)
+    if (info && info.type !== 'file') throw new Error(`planned old path is not a regular file: ${change.path}`)
+    const before = info ? await readText(fs, change.path, root) : undefined
+    if (info && before === undefined) throw new Error(`cannot read pre-change worktree content: ${change.path}`)
+    if (before !== undefined && before !== body) baseline.before = await snapshot(before)
+    result.push({ ...change, baseline })
+  }
+  return result
+}
+
+async function assertDeliveryChanges(fs: Fs, plan: { files: string[]; changes?: DeliveryChange[] }, root?: string): Promise<void> {
+  validateDeliveryChanges(plan.changes ?? [], plan.files)
+  for (const change of plan.changes ?? []) {
+    if (await fs.lstat(change.path, root ? { cwd: root } : undefined)) throw new Error(`planned ${change.kind} old path still exists: ${change.path}`)
+    if (change.to && (await fs.lstat(change.to, root ? { cwd: root } : undefined))?.type !== 'file') throw new Error(`rename destination is missing or not a regular file: ${change.to}`)
+    for (const snapshot of [change.baseline.git, ...(change.baseline.before ? [change.baseline.before] : [])]) {
+      if (!/^[a-f0-9]{64}$/u.test(snapshot.sha256) || snapshot.path !== `.dsh/review-inputs/${snapshot.sha256}.txt`)
+        throw new Error('invalid review baseline identity')
+      const body = await readText(fs, snapshot.path, root)
+      if (body === undefined || hashText(body) !== snapshot.sha256) throw new Error(`review baseline is missing or changed: ${snapshot.path}`)
+      if (snapshot === change.baseline.git) verifiedBlobText(body, change.baseline.blob)
+    }
+  }
+}
+
 /** HEAD was checked when recorded; recheck its identity and only the declared delivery paths at close. */
-async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, exec: ToolRunContext, expectedHash?: string): Promise<void> {
+async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, exec: ToolRunContext, expectedHash?: string): Promise<string> {
   const root = state.root ?? exec.agent?.session.header.cwd
   const hash = expectedHash ?? state.commits.findLast(commit => commit.hash)?.hash
   const head = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
-  const headHash = head.stdout.trim()
-  if (head.exit_code !== 0 || !/^[0-9a-f]{7,40}$/iu.test(headHash) || (hash && !headHash.startsWith(hash))) throw new Error('recorded delivery commit is no longer HEAD')
+  const headHash = head.stdout.trim().toLowerCase()
+  if (!successfulCommand(head) || !isFullOid(headHash) || (hash && (!isOidInput(hash) || !headHash.startsWith(hash.toLowerCase())))) throw new Error('recorded delivery commit is no longer HEAD')
+  if (hash && hash.length !== headHash.length) {
+    const quoted = `'${hash}^{commit}'`
+    const resolved = await runVerificationCommand(ctx, `git rev-parse --verify --end-of-options ${quoted}`, root, exec)
+    if (!successfulCommand(resolved) || resolved.stdout.trim().toLowerCase() !== headHash)
+      throw new Error('commit abbreviation is ambiguous or does not resolve uniquely to HEAD; use its full OID')
+  }
   const before = await scopeFingerprint(fs, state, root)
   const paths = state.files.filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/u.test(path))
-  if (!paths.length) return
+  if (!paths.length) return headHash
   const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`
   // PowerShell and POSIX use different single-quote escapes. Paths have already passed the scope validator.
   const quoted = paths.map(path => process.platform === 'win32' ? `'${path.replaceAll("'", "''")}'` : quote(path)).join(' ')
@@ -334,6 +415,7 @@ async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, ex
   const after = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
   if (after.exit_code !== 0 || after.stdout.trim() !== headHash || await scopeFingerprint(fs, state, root) !== before)
     throw new Error('delivery changed during commit verification; retry on unchanged content')
+  return headHash
 }
 
 /** Run a local scanner without putting the credential on a command line or in the task record. */
@@ -1156,6 +1238,7 @@ interface OpArgs {
   context_need?: 'brief' | 'history'
   acceptance?: string[]
   depends_on?: string[]
+  changes?: DeliveryChangeInput[]
   verification_group?: string
   item_ids?: string[]
   affected_items?: string[]
@@ -1591,6 +1674,8 @@ export function registerDevTask(ctx: Context): void {
       context_need: { type: 'string', enum: ['brief', 'history'], description: 'plan_execution: brief (default) gives a fresh child only its task context; history requests fork only when completed parent history is needed.' },
       acceptance: { type: 'array', items: { type: 'string' }, description: 'plan_execution: concrete acceptance conditions for this item.' },
       depends_on: { type: 'array', items: { type: 'string' }, description: 'plan_execution: earlier registered item IDs that must finish first.' },
+      changes: { type: 'array', description: 'plan_execution: explicitly planned delete/rename operations. Keep old paths and rename destinations in files and task scope. The engine captures tracked Git and pre-change worktree text for readonly review.',
+        items: { type: 'object', properties: { path: { type: 'string' }, kind: { type: 'string', enum: ['delete', 'rename'] }, to: { type: 'string' } }, additionalProperties: false } },
       verification_group: { type: 'string', description: 'plan_verification/verify: stable test-group ID, for example backend or frontend. Plan each group with command, files including tests/configuration, and item_ids. Verify executes its declared command; no group is inferred from printed output.' },
       item_ids: { type: 'array', items: { type: 'string' }, description: 'plan_verification: implementation items validated by this group. Each item includes its own implementation and tests, never a later test item depending on its completion.' },
       affected_items: { type: 'array', items: { type: 'string' }, description: 'revise(defect): explicit affected item IDs. Shared files and downstream consumers also reopen. Omit for unknown or task-wide impact. Requirements/solution revisions remain task-wide.' },
@@ -1895,7 +1980,7 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
         const risk = a.risk_level ?? 'standard'
-        if (risk === 'high_risk' && a.complexity === undefined && !flowSatisfies(resolved.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+        if (risk === 'high_risk' && !workflowSatisfies(resolved.config, HIGH_RISK_REQUIRED_CAPABILITIES)) {
           throw new Error(
             `high_risk task cannot run on flow "${resolved.flow}" — it lacks the required capabilities ` +
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
@@ -2113,6 +2198,7 @@ export function registerDevTask(ctx: Context): void {
             rules: rules.map(r => ({ name: r.name, source: r.source, content: r.content })),
           },
           risk_downgrades: state.risk_downgrades ?? [],
+          risk_changes: state.risk_changes ?? [],
         }, null, 2)
       }
 
@@ -2125,6 +2211,14 @@ export function registerDevTask(ctx: Context): void {
         }
         if (state.sonar_policy.source !== 'ide-local' && !state.commits.some(commit => commit.hash !== undefined)) {
           throw new Error('sonar_check requires a recorded Git commit at the 测试 checkpoint; CI mode also requires a push')
+        }
+        if (state.sonar_policy.source !== 'ide-local') {
+          const recorded = state.commits.findLast(commit => commit.hash !== undefined)!
+          if (!isFullOid(recorded.hash!)) {
+            const canonical = await assertCommittedContent(ctx, fs, state, exec, recorded.hash)
+            recorded.provided_hash = recorded.hash!
+            recorded.hash = canonical
+          }
         }
         const target = state.sonar_policy.mode === 'branch' ? state.branch : a.pull_request
         if (!target) throw new Error('pull-request SonarQube audit requires pull_request')
@@ -2330,16 +2424,18 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
         }
         if (a.hash) {
-          if (!/^[0-9a-f]{7,40}$/i.test(a.hash)) throw new Error('commit hash must be a Git object id')
+          if (!isOidInput(a.hash)) throw new Error('commit hash must be a Git object id')
           const receipt = await runVerificationCommand(ctx, 'git -c core.quotepath=false log -1 --format=%H%n%s%n --name-only HEAD', state.root ?? cwd, exec)
           if (receipt.exit_code !== 0 || receipt.aborted || receipt.timed_out || receipt.sandbox?.denied || receipt.sandbox?.runnerFailed) throw new Error('cannot verify the recorded Git commit')
           const lines = receipt.stdout.trim().split(/\r?\n/)
-          if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
+          if (!lines[0]?.toLowerCase().startsWith(a.hash.toLowerCase()) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
           const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
           if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
           if (paths.some(isSensitivePath) && !riskApproved) throw new Error('实际提交触及敏感路径，但任务缺少 high_risk 验证回执')
-          await assertCommittedContent(ctx, fs, state, exec, a.hash)
-          if (!state.commits.some(entry => entry.hash === a.hash)) state.commits.push({ label: checkpoint.label!, hash: a.hash })
+          const canonical = await assertCommittedContent(ctx, fs, state, exec, a.hash)
+          const existing = state.commits.find(entry => entry.hash === canonical || entry.hash === a.hash)
+          if (existing) { existing.hash = canonical; existing.provided_hash ??= a.hash }
+          else state.commits.push({ label: checkpoint.label!, hash: canonical, provided_hash: a.hash })
         }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         if (a.hash) return `commit recorded (${checkpoint.label ?? ''}): ${a.hash}; use status to inspect remaining gates, then advance`
@@ -2506,7 +2602,10 @@ export function registerDevTask(ctx: Context): void {
           const item = requireItem(state, a.item_id)
           if (item.status !== 'todo') throw new Error('reopen the item as todo before replanning execution')
           for (const path of a.files ?? []) assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
-          item.execution_plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          const plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          validateDeliveryChanges(a.changes ?? [], plan.files)
+          if (a.changes?.length) plan.changes = await captureDeliveryChanges(ctx, fs, state, a.changes, exec, await resolveWriteMode(ctx, a, exec))
+          item.execution_plan = plan
           delete item.independent_review
           delete item.review
           note = JSON.stringify({ item_id: item.id, execution_plan: item.execution_plan,
@@ -2589,11 +2688,12 @@ export function registerDevTask(ctx: Context): void {
           const structuredReview = runtime.getProvider!('spawn')!.capabilities.outputSchema === true
           const verificationProblems = await itemVerificationBlockers(fs, state, item.id, cwd)
           if (verificationProblems.length) throw new Error(verificationProblems.join('; '))
+          await assertDeliveryChanges(fs, plan, state.root ?? cwd)
           const current = await itemContextScope(fs, state, item.id, cwd)
           const scope = await scopeFingerprint(fs, { ...state, files: plan.files }, cwd)
           const reviewConstraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources),
             workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources) : ''].filter(Boolean).join('\n\n')
-          const contextHash = hashText(JSON.stringify({ plan, artifacts: state.artifacts, constraints: reviewConstraints, scope: current,
+          const contextHash = hashText(JSON.stringify({ plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints: reviewConstraints, scope: current,
             ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
           const previous = item.independent_review
           const history = [...(item.independent_review_history ?? []), ...(previous ? [previous] : [])].slice(-10)
@@ -2615,7 +2715,7 @@ export function registerDevTask(ctx: Context): void {
             run = await runtime.start!('spawn', { label: `${state.id}/${item.id}/review`, parent: exec.agent, signal: exec.signal,
               ...structuredReview ? { outputSchema: REVIEW_OUTPUT_SCHEMA } : {},
               maxDepth: 3, toolFilter: { allow: ['read'] }, prompt: [{ type: 'text', text:
-                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.\nReview ${state.id}/${item.id}: ${item.title}.\nRead every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.\nBrief: ${JSON.stringify(plan)}\nTask artifacts: ${JSON.stringify(state.artifacts)}\nApplicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):\n${reviewConstraints}\nImplementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}\nActual parent test receipts: ${JSON.stringify(state.verification_version ? requiredGroups(state, item.id).map(group => ({ group: group.id, run: latestGroupRun(state, group.id) })) : state.verification.receipt)}\n${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] })
+                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.\nReview ${state.id}/${item.id}: ${item.title}.\nCurrent task risk: ${state.risk_level}. Read every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.\nPlanned changes: for delete/rename, verify the old path is absent and read baseline.git.path (committed old content) and baseline.before.path if present (pre-change worktree content). For rename, also read the new destination. Required complete reads: ${JSON.stringify(requiredReviewPaths(plan))}.\nBrief: ${JSON.stringify(plan)}\nTask artifacts: ${JSON.stringify(state.artifacts)}\nApplicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):\n${reviewConstraints}\nImplementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}\nActual parent test receipts: ${JSON.stringify(state.verification_version ? requiredGroups(state, item.id).map(group => ({ group: group.id, run: latestGroupRun(state, group.id) })) : state.verification.receipt)}\n${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] })
             review.run_id = run.id
             review.status = 'running'
             await writeTask(fs, state, cwd, mode)
@@ -2623,7 +2723,7 @@ export function registerDevTask(ctx: Context): void {
             review.output = result.output.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').slice(0, 24000)
             if (result.stopReason !== 'completed') throw new Error(result.diagnostic ?? result.stopReason)
             const verdict = structuredReview ? validateIndependentReview(result.structured) : parseIndependentReview(review.output)
-            const sources = await Promise.all(plan.files.map(async file => {
+            const sources = await Promise.all(requiredReviewPaths(plan).map(async file => {
               const content = await readText(fs, file, state.root ?? cwd)
               if (content === undefined) throw new Error(`review delivery is missing: ${file}`)
               return { file, content }
@@ -2631,10 +2731,11 @@ export function registerDevTask(ctx: Context): void {
             const readKey = (path: string): string => process.platform === 'win32' ? resolve(state.root ?? cwd ?? '', path).toLowerCase() : resolve(state.root ?? cwd ?? '', path)
             review.read_coverage = fullReadCoverage(run.localAgent?.session.snapshotEvents() ?? [], sources, readKey)
             review.read_files = review.read_coverage.map(entry => entry.file)
-            if (!hasFullReadCoverage(review, plan.files)) throw new Error('reviewer did not successfully read every planned delivery file in full; read missing windows or untruncated lines, then retry; no independent verdict is accepted')
+            if (!hasFullReadCoverage(review, requiredReviewPaths(plan))) throw new Error('reviewer did not successfully read every planned delivery file in full; read missing windows or untruncated lines, then retry; no independent verdict is accepted')
             Object.assign(review, verdict)
             if (structuredReview) review.output = JSON.stringify(verdict)
             if (scope !== await scopeFingerprint(fs, { ...state, files: plan.files }, cwd)) throw new Error('delivery changed during independent review')
+            await assertDeliveryChanges(fs, plan, state.root ?? cwd)
             review.status = 'completed'
           } catch (error) { review.status = 'failed'; review.error = error instanceof Error ? error.message : String(error) }
           finally {
@@ -2679,17 +2780,18 @@ export function registerDevTask(ctx: Context): void {
           if (item.dispatch?.status && item.dispatch.status !== 'completed') throw new Error('delegated item has not completed successfully')
           if (a.spec_outcome !== 'pass' && a.spec_outcome !== 'fail') throw new Error('review_item requires spec_outcome: pass|fail')
           if (a.quality_outcome !== 'pass' && a.quality_outcome !== 'fail') throw new Error('review_item requires quality_outcome: pass|fail')
+          if (item.execution_plan) await assertDeliveryChanges(fs, item.execution_plan, state.root ?? cwd)
           if (item.execution_plan?.review === 'independent') {
             const review = item.independent_review
             if (review?.status !== 'completed' || !review.run_id
               || review.plan_key !== executionPlanKey(item.execution_plan) || review.dispatch_at !== item.dispatch?.at
-              || !hasFullReadCoverage(review, item.execution_plan.files)
+              || !hasFullReadCoverage(review, requiredReviewPaths(item.execution_plan))
               || review.scope_hash !== await scopeFingerprint(fs, { ...state, files: item.execution_plan.files }, cwd))
               throw new Error('independent review is missing or stale; run review_dispatch on the current verified delivery')
             if (a.spec_outcome !== review.spec || a.quality_outcome !== review.quality) throw new Error('parent verdict cannot override independent findings; fix and re-review first')
             const constraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources),
               workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources) : ''].filter(Boolean).join('\n\n')
-            const contextHash = hashText(JSON.stringify({ plan: item.execution_plan, artifacts: state.artifacts, constraints,
+            const contextHash = hashText(JSON.stringify({ plan: item.execution_plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints,
               scope: await itemContextScope(fs, state, item.id, cwd),
               ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
             if (review.context_hash !== contextHash) throw new Error('independent review context changed; rerun review_dispatch before accepting new requirements or rules')
@@ -2761,7 +2863,7 @@ export function registerDevTask(ctx: Context): void {
                 'a task without a frozen snapshot cannot prove its flow carries the high-risk capabilities',
               )
             }
-            if (!flowSatisfies(state.flow.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+            if (!workflowSatisfies(workflow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
               throw new Error(
                 `cannot raise risk to high_risk on flow "${state.flow.flow}" — it lacks the required capabilities ` +
                 `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
@@ -2784,12 +2886,30 @@ export function registerDevTask(ctx: Context): void {
               throw new Error(`risk downgrade was not approved (${outcome}); risk_level unchanged`)
             }
           }
-          state.risk_downgrades = [
-            ...(state.risk_downgrades ?? []),
-            { from: state.risk_level, to: target, at: new Date().toISOString() },
-          ]
+          const previousRisk = state.risk_level, stageBefore = state.stage, at = new Date().toISOString()
+          if (previousRisk === 'high_risk' && target === 'standard') (state.risk_downgrades ??= []).push({ from: previousRisk, to: target, at })
           state.risk_level = target
-          note = `risk_level set to ${target} (recorded in risk_downgrades)`
+          const reviewItems: string[] = []
+          if (target === 'high_risk') {
+            const capabilities = executionCapabilities(ctx, !!exec.agent)
+            for (const item of state.items) {
+              if (item.execution_plan) {
+                Object.assign(item.execution_plan, reviewStrategy(state, item.execution_plan.mode, capabilities), { capabilities, at })
+                reviewItems.push(item.id)
+              }
+              if (item.independent_review) item.independent_review_history = [...(item.independent_review_history ?? []), item.independent_review].slice(-10)
+              delete item.independent_review
+              delete item.review
+              if (item.status === 'done') item.status = 'todo'
+            }
+            state.review = { outcome: 'pending' }
+            const implementation = workflow.stages.find(stage => stage === '开发' || stage === '代码开发')
+            if (state.items.length && implementation && workflow.stages.indexOf(state.stage) > workflow.stages.indexOf(implementation)) state.stage = implementation
+            const index = workflow.stages.indexOf(implementation ?? state.stage)
+            for (const stage of Object.keys(state.skill_results ?? {})) if (workflow.stages.indexOf(stage) >= index) delete state.skill_results![stage]
+          }
+          ;(state.risk_changes ??= []).push({ from: previousRisk, to: target, at, review_items: reviewItems, stage_before: stageBefore, stage_after: state.stage })
+          note = `risk_level set to ${target}; recorded in risk_changes. Stage: ${state.stage}. ${reviewItems.length ? `Re-review items ${reviewItems.join(', ')} using their updated review strategy; unchanged implementation and test receipts are retained. Read status before advancing.` : 'Read status for current evidence requirements.'}`
           break
         }
         case 'verify': {

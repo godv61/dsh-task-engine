@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { ObjectJsonSchema, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type { TaskItem, TaskState } from './engine.ts'
+import { requiredReviewPaths, type DeliveryChange } from './delivery-changes.ts'
 
 export type ExecutionMode = 'direct' | 'spawn' | 'fork'
 export interface ExecutionPlan {
@@ -11,6 +12,7 @@ export interface ExecutionPlan {
   boundary: 'local' | 'independent' | 'coupled'
   context: 'brief' | 'history'
   files: string[]
+  changes?: DeliveryChange[]
   acceptance: string[]
   depends_on: string[]
   review: 'main' | 'independent'
@@ -91,6 +93,12 @@ export function executionCapabilities(ctx: Context, liveParent: boolean): Execut
 export function executionPlanKey(plan: ExecutionPlan): string {
   return JSON.stringify(plan)
 }
+export function reviewStrategy(state: Pick<TaskState, 'execution_policy' | 'complexity' | 'risk_level'>, mode: ExecutionMode, capabilities: ExecutionPlan['capabilities']): Pick<ExecutionPlan, 'review' | 'review_reason'> {
+  const independent = state.execution_policy !== 'main_only'
+    && (mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
+  return independent && capabilities.reviewer ? { review: 'independent', review_reason: '委派实现或高复杂度/高风险项，使用独立只读审核' }
+    : { review: 'main', review_reason: independent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '局部或紧密耦合工作，由主会话审核' }
+}
 export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   execution?: string; execution_reason?: string; task_boundary?: string; context_need?: string;
   files?: string[]; acceptance?: string[]; depends_on?: string[];
@@ -121,13 +129,9 @@ export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
     reason += `；宿主 ${mode} 不可用，明确回退为主会话执行`
     mode = 'direct'
   }
-  const needsIndependent = state.execution_policy !== 'main_only'
-    && (mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
-  const review = needsIndependent && capabilities.reviewer ? 'independent' : 'main'
   return { requested: requested as ExecutionPlan['requested'], mode, reason,
     boundary: input.task_boundary as ExecutionPlan['boundary'], context, files, acceptance, depends_on,
-    review, review_reason: review === 'independent' ? '委派实现或高复杂度/高风险项，使用独立只读审核'
-      : needsIndependent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '局部或紧密耦合工作，由主会话审核',
+    ...reviewStrategy(state, mode, capabilities),
     capabilities, at: new Date().toISOString() }
 }
 export function executionItemBlockers(state: TaskState, item: TaskItem): string[] {
@@ -143,7 +147,7 @@ export function executionItemBlockers(state: TaskState, item: TaskItem): string[
     const review = item.independent_review
     if (review?.status !== 'completed' || !review.run_id || review.spec !== 'pass' || review.quality !== 'pass'
       || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at
-      || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, plan.files))
+      || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`)
   }
   return blockers

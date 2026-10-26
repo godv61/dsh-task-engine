@@ -106,7 +106,10 @@ test('commit evidence: reject old HEAD, accept verified delivery, refuse later u
   git('update-index', '--no-assume-unchanged', 'a.js')
   git('add', 'a.js'); git('-c', 'core.hooksPath=NUL', 'commit', '-qm', 'new content')
   // An unrelated untracked file must not block delivery.
-  await f.call({ operation: 'commit', hash: git('rev-parse', 'HEAD'), message: 'new content', files: ['a.js'] })
+  const fullOid = git('rev-parse', 'HEAD')
+  await f.call({ operation: 'commit', hash: fullOid.slice(0, 7), message: 'new content', files: ['a.js'] })
+  assert.equal(f.current().commits.at(-1).hash, fullOid)
+  assert.equal(f.current().commits.at(-1).provided_hash, fullOid.slice(0, 7))
   await f.call({ operation: 'advance', target_stage: '完成' })
   await f.call({ operation: 'verify', command: 'node --test --test-reporter=tap check.test.mjs' })
   await f.call({ operation: 'review', outcome: 'pass' })
@@ -116,6 +119,35 @@ test('commit evidence: reject old HEAD, accept verified delivery, refuse later u
   await f.call({ operation: 'complete' })
   assert.ok(f.current().completed)
   console.log('preserved real Git fixture:', root)
+})
+
+test('legacy abbreviated commit is resolved by real Git before accepting a fresh CI Sonar audit', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-engine-legacy-oid-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '-q', '-b', 'main')
+  writeFileSync(join(root, 'a.js'), 'export const n = 2\n')
+  git('add', 'a.js'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=NUL', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
+  const full = git('rev-parse', 'HEAD'), short = full.slice(0, 7)
+  const f = await fixture('standard', {}, root)
+  const state = f.current(); state.stage = '代码审核'; state.commits = [{ label: 'TASK', hash: short }]
+  state.items = [{ id: 'I1', title: 'implementation', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }]
+  state.sonar_policy = { enabled: true, source: 'ci', host_url: 'https://sonar.example.invalid', project_key: 'fixture', mode: 'branch', token_env: 'UNUSED_FIXTURE' }
+  f.save(state)
+  await f.call({ operation: 'verify', command: smokeCommand })
+  const get = f.ctx.get
+  f.ctx.get = name => name === 'credentials' ? { resolve: async () => ({ value: 'controlled-credential' }) } : get(name)
+  const oldFetch = globalThis.fetch
+  globalThis.fetch = async url => new Response(JSON.stringify(url.pathname.endsWith('/ce/task') ? { task: { status: 'SUCCESS', analysisId: 'analysis', componentKey: 'fixture', branch: 'main' } }
+    : url.pathname.endsWith('/project_analyses/search') ? { analyses: [{ key: 'analysis', revision: full }] }
+    : url.pathname.endsWith('/qualitygates/project_status') ? { projectStatus: { status: 'OK' } } : { issues: [], paging: { total: 0 } }))
+  try {
+    await f.call({ operation: 'sonar_check', ce_task_id: 'fixture-ce-task' })
+    assert.equal(f.current().commits.at(-1).hash, full)
+    assert.equal(f.current().commits.at(-1).provided_hash, short)
+    assert.equal(f.current().sonar_audit.commit_hash, full)
+    assert.equal(f.current().sonar_audit.gate, 'OK')
+    await f.call({ operation: 'review', outcome: 'pass' })
+  } finally { globalThis.fetch = oldFetch }
 })
 
 test('new Sonar task captures the real dirty baseline before writing its record', async () => {
