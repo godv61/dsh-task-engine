@@ -97,6 +97,13 @@ function requiredReviewPaths(plan) {
   ])];
 }
 
+// src/reviewer-spec.ts
+var REVIEW_PRESET = "task-engine-review";
+var REVIEW_TOOLS = ["read", "structured_output"];
+function validReviewPolicy(proof, childId, structured = false) {
+  return !!proof && proof.version === 1 && proof.preset === REVIEW_PRESET && !!childId && proof.child_id === childId && Array.isArray(proof.tools) && proof.tools.includes("read") && (!structured || proof.tools.includes("structured_output")) && proof.tools.every((tool) => REVIEW_TOOLS.includes(tool));
+}
+
 // src/execution-plan.ts
 function executionCoverageBlockers(state2) {
   if (!state2.delegation_version) return [];
@@ -121,7 +128,7 @@ function executionItemBlockers(state2, item) {
     blockers.push(`item ${item.id}: item review is missing or failed before done`);
   if (plan.review === "independent") {
     const review = item.independent_review;
-    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
+    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || !validReviewPolicy(review.policy, review.run_id) || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`);
   }
   return blockers;

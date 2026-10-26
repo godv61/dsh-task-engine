@@ -226,6 +226,7 @@ const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spa
   review: z.enum(['main', 'independent']), review_reason: z.string(), at: z.string(),
   capabilities: z.object({ spawn: z.boolean(), fork: z.boolean(), reviewer: z.boolean() }) })
 const independentReviewSchema = z.object({ status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
+  policy: z.object({ version: z.literal(1), preset: z.string(), child_id: z.string(), tools: z.array(z.string()) }).optional(),
   run_id: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), output: z.string().optional(),
   scope_hash: z.string(), plan_key: z.string(), dispatch_at: z.string(), verification_at: z.string(),
   spec: z.enum(['pass', 'fail']).optional(), quality: z.enum(['pass', 'fail']).optional(), notes: z.array(z.string()).optional(), read_files: z.array(z.string()).optional(),

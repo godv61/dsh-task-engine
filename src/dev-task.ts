@@ -67,6 +67,9 @@ import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credent
 import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
+import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
+import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
+import type {} from '@deepseek-ai/dsh-working-directory'
 import { isFullOid, isOidInput } from './git-oid.ts'
 import { requiredReviewPaths, validateDeliveryChanges, type DeliveryChange, type DeliveryChangeInput } from './delivery-changes.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
@@ -1720,9 +1723,10 @@ export function registerDevTask(ctx: Context): void {
     async execute(args: Record<string, unknown>, exec: ToolRunContext): Promise<string> {
       const a = args as unknown as OpArgs
       const fs = ctx.fs
-      // The session workspace drives every relative path; the backend's own base
-      // (its config.cwd) is the harness process directory, never the workspace.
-      const cwd = exec.agent?.session.header.cwd
+      // Task governance stays anchored to the original project. Native-tool cd does
+      // not move its ledger or grant another root; child/check commands use task.root explicitly.
+      const executionDirectory = exec.agent ? await ctx.get('workingDirectory')?.ensure(exec.agent, exec.signal) : undefined
+      const cwd = exec.agent?.session.header.cwd ?? executionDirectory
       const session = exec.agent?.session as unknown as SkillSession | undefined
       const mutationPath = a.task_id ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)) : undefined
       const release = mutationPath && !['status', 'config', 'assess'].includes(a.operation)
@@ -2639,18 +2643,18 @@ export function registerDevTask(ctx: Context): void {
           if (execution !== 'direct') {
             if (!exec.agent) throw new Error('delegation requires the live parent agent')
             const runtime = taskSubagents(ctx)
-            if (!runtime?.start) throw new Error('DSH subagents service is unavailable; no child was started')
+            if (!runtime?.startActivation) throw new Error('DSH subagents service is unavailable; no child was started')
             const mode = await resolveWriteMode(ctx, a, exec)
             item.dispatch.provider = execution
             item.dispatch.parent_session = session?.id ?? ''
             item.dispatch.status = 'starting'
             await writeTask(fs, state, cwd, mode)
             const prompt = `You are the implementation worker, not the workflow controller. Do not call dev_task or delegate further.\nTask ${state.id}: ${state.title}\nItem ${item.id}: ${item.title}\n${a.description ?? ''}\nExecution brief:\n${JSON.stringify(plan ?? {})}\nAllowed delivery paths: ${(plan?.files ?? state.files).join(', ')}\nWork in ${state.root ?? cwd}. Preserve existing worktree changes. Follow the parent task instructions below. Do not change the parent task ledger, commit or archive. Return changed files, actual checks and remaining issues; report BLOCKED if context is insufficient.\nTask artifacts and acceptance context:\n${JSON.stringify(state.artifacts)}\n${await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources)}`
-            let run: Awaited<ReturnType<NonNullable<typeof runtime.start>>> | undefined
+            let run: TaskActivation | undefined
             try {
-              run = await runtime.start(execution, { label: `${state.id}/${item.id}`, parent: exec.agent,
-                prompt: [{ type: 'text', text: prompt }], signal: exec.signal, maxDepth: 3 })
-              item.dispatch.run_id = run.id
+              run = ownActivation(await runtime.startActivation({ provider: execution, label: `${state.id}/${item.id}`, delivery: 'caller', signal: exec.signal,
+                request: { parent: exec.agent, cwd: state.root ?? cwd!, prompt: [{ type: 'text', text: prompt }], maxDepth: 3 } }), exec.signal)
+              item.dispatch.run_id = run.childId
               item.dispatch.status = 'running'
               await writeTask(fs, state, cwd, mode)
               const result = await run.result
@@ -2710,18 +2714,20 @@ export function registerDevTask(ctx: Context): void {
           item.independent_review = review
           const mode = await resolveWriteMode(ctx, a, exec)
           await writeTask(fs, state, cwd, mode)
-          let run: Awaited<ReturnType<NonNullable<typeof runtime.start>>> | undefined
+          let run: TaskActivation | undefined
           try {
-            run = await runtime.start!('spawn', { label: `${state.id}/${item.id}/review`, parent: exec.agent, signal: exec.signal,
+            run = ownActivation(await runtime.startActivation({ provider: 'spawn', label: `${state.id}/${item.id}/review`, delivery: 'caller', signal: exec.signal,
+              request: { parent: exec.agent, cwd: state.root ?? cwd!, agentPreset: REVIEW_PRESET,
               ...structuredReview ? { outputSchema: REVIEW_OUTPUT_SCHEMA } : {},
-              maxDepth: 3, toolFilter: { allow: ['read'] }, prompt: [{ type: 'text', text:
-                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.\nReview ${state.id}/${item.id}: ${item.title}.\nCurrent task risk: ${state.risk_level}. Read every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.\nPlanned changes: for delete/rename, verify the old path is absent and read baseline.git.path (committed old content) and baseline.before.path if present (pre-change worktree content). For rename, also read the new destination. Required complete reads: ${JSON.stringify(requiredReviewPaths(plan))}.\nBrief: ${JSON.stringify(plan)}\nTask artifacts: ${JSON.stringify(state.artifacts)}\nApplicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):\n${reviewConstraints}\nImplementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}\nActual parent test receipts: ${JSON.stringify(state.verification_version ? requiredGroups(state, item.id).map(group => ({ group: group.id, run: latestGroupRun(state, group.id) })) : state.verification.receipt)}\n${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] })
-            review.run_id = run.id
+              maxDepth: 3, prompt: [{ type: 'text', text:
+                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.\nReview ${state.id}/${item.id}: ${item.title}.\nCurrent task risk: ${state.risk_level}. Read every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.\nPlanned changes: for delete/rename, verify the old path is absent and read baseline.git.path (committed old content) and baseline.before.path if present (pre-change worktree content). For rename, also read the new destination. Required complete reads: ${JSON.stringify(requiredReviewPaths(plan))}.\nBrief: ${JSON.stringify(plan)}\nTask artifacts: ${JSON.stringify(state.artifacts)}\nApplicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):\n${reviewConstraints}\nImplementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}\nActual parent test receipts: ${JSON.stringify(state.verification_version ? requiredGroups(state, item.id).map(group => ({ group: group.id, run: latestGroupRun(state, group.id) })) : state.verification.receipt)}\n${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] } }), exec.signal)
+            review.run_id = run.childId
             review.status = 'running'
             await writeTask(fs, state, cwd, mode)
             const result = await run.result
             review.output = result.output.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').slice(0, 24000)
             if (result.stopReason !== 'completed') throw new Error(result.diagnostic ?? result.stopReason)
+            review.policy = reviewerProof(ctx, run.childId, structuredReview)
             const verdict = structuredReview ? validateIndependentReview(result.structured) : parseIndependentReview(review.output)
             const sources = await Promise.all(requiredReviewPaths(plan).map(async file => {
               const content = await readText(fs, file, state.root ?? cwd)
@@ -2729,7 +2735,7 @@ export function registerDevTask(ctx: Context): void {
               return { file, content }
             }))
             const readKey = (path: string): string => process.platform === 'win32' ? resolve(state.root ?? cwd ?? '', path).toLowerCase() : resolve(state.root ?? cwd ?? '', path)
-            review.read_coverage = fullReadCoverage(run.localAgent?.session.snapshotEvents() ?? [], sources, readKey)
+            review.read_coverage = fullReadCoverage(await reviewerEvents(ctx, run.childId, exec.signal), sources, readKey)
             review.read_files = review.read_coverage.map(entry => entry.file)
             if (!hasFullReadCoverage(review, requiredReviewPaths(plan))) throw new Error('reviewer did not successfully read every planned delivery file in full; read missing windows or untruncated lines, then retry; no independent verdict is accepted')
             Object.assign(review, verdict)
@@ -2784,6 +2790,7 @@ export function registerDevTask(ctx: Context): void {
           if (item.execution_plan?.review === 'independent') {
             const review = item.independent_review
             if (review?.status !== 'completed' || !review.run_id
+              || !validReviewPolicy(review.policy, review.run_id)
               || review.plan_key !== executionPlanKey(item.execution_plan) || review.dispatch_at !== item.dispatch?.at
               || !hasFullReadCoverage(review, requiredReviewPaths(item.execution_plan))
               || review.scope_hash !== await scopeFingerprint(fs, { ...state, files: item.execution_plan.files }, cwd))

@@ -21,7 +21,10 @@ async function fixture({ legacy = false, policy = 'auto' } = {}) {
     listDir: async t => readdirSync(t.targetKey, { withFileTypes: true }).map(e => ({ name: e.name, type: e.isFile() ? 'file' : 'directory' })),
     writeText: async (t, text) => { mkdirSync(dirname(t.targetKey), {recursive:true}); writeFileSync(t.targetKey, text) } }
   let execute, runtime
-  const ctx = { fs, tools: { register(tool) { execute = tool.execute } }, get: name => name === 'subagents' ? runtime : name === 'sandboxPolicy' ? { resolve: () => ({mode:'workspace-write',workspaceRoot:cwd}) }
+  const children = new Map()
+  const query = { observeSession: async id => ({header:{id}, events: children.get(id)?.() ?? [], [Symbol.dispose]() {}}) }
+  const reviewerPolicy = {preset:"task-engine-review", proof: id => children.has(id) ? {version:1,preset:"task-engine-review",child_id:id,tools:["read","structured_output"]} : undefined}
+  const ctx = { fs, tools: { register(tool) { execute = tool.execute } }, get: name => name === 'subagents' ? runtime : name === 'sessionQuery' ? query : name === 'taskEngineReviewPolicy' ? reviewerPolicy : name === 'sandboxPolicy' ? { resolve: () => ({mode:'workspace-write',workspaceRoot:cwd}) }
     : name === 'shell' ? { resolve: r => r, run: async spec => {
       const env = {...process.env}; delete env.NODE_TEST_CONTEXT
       const r = spawnSync(process.execPath, ['--test','--experimental-test-isolation=none','--test-reporter=tap','check.test.mjs'], {cwd:spec.workdir,encoding:'utf8',env})
@@ -36,20 +39,23 @@ async function fixture({ legacy = false, policy = 'auto' } = {}) {
   const state = () => JSON.parse(readFileSync(taskPath,'utf8'))
   const save = s => writeFileSync(taskPath,JSON.stringify(s))
   let verdict = {spec:'pass',quality:'pass',notes:['a.mjs:1 returns 2; check.test.mjs:1 pins acceptance']}, disposed=0, calls=[]
-  runtime = { getProvider: name => ({inheritsParentContext:name==='fork',capabilities:{depthLimit:true,toolFilter:true}}),
-    start: async (provider, request) => {
+  runtime = { getProvider: name => ({inheritsParentContext:name==='fork',capabilities:{depthLimit:true,agentPreset:true}}),
+    startActivation: async spec => {
+      const provider=spec.provider, request={...spec.request,label:spec.label,signal:spec.signal}
+      assert.equal(spec.delivery,'caller');assert.equal(spec.request.cwd,cwd)
       const reviewer = request.label.endsWith('/review')
-      calls.push({provider,reviewer,request})
-      if (reviewer) { assert.deepEqual(request.toolFilter,{allow:['read']});assert.match(request.prompt[0].text,/Applicable project Skills and Rules/);assert.match(request.prompt[0].text,/code-development/);assert.match(request.prompt[0].text,/code-review/) }
-      return {id:reviewer?'review-child':'implementation-child',localAgent:{session:{snapshotEvents:()=>reviewer?state().items[0].execution_plan.files.flatMap((file,index)=>{
+      calls.push({provider,reviewer,request,spec})
+      if (reviewer) { assert.equal(request.agentPreset,'task-engine-review');assert.equal(request.toolFilter,undefined);assert.match(request.prompt[0].text,/Applicable project Skills and Rules/);assert.match(request.prompt[0].text,/code-development/);assert.match(request.prompt[0].text,/code-review/) }
+      const childId=reviewer?'review-child':'implementation-child'
+      children.set(childId,()=>reviewer?state().items[0].execution_plan.files.flatMap((file,index)=>{
         const lines=readFileSync(join(cwd,file),'utf8').split('\n');if(lines.at(-1)==='')lines.pop()
         const content=`<path>${join(cwd,file)}</path>\n<type>file</type>\n<content>\n${lines.map((text,i)=>`${i+1}: ${text}`).join('\n')}${lines.length?'\n\n':''}(End of file - total ${lines.length} lines)\n</content>`
         return [{type:'tool/call',data:{name:'read',callId:`read-${index}`,arguments:JSON.stringify({file_path:file})}},
           {type:'tool/result',data:{message:{toolCallId:`read-${index}`,isError:false,content:[{type:'text',text:content}]}}}]
-      }):[]}},
-        result:Promise.resolve({stopReason:'completed',output:[{type:'text',text:reviewer?JSON.stringify(verdict):'a.mjs delivered'}]}),dispose:async()=>{disposed++}}
+      }):[])
+      return {childId, result:Promise.resolve({stopReason:'completed',output:[{type:'text',text:reviewer?JSON.stringify(verdict):'a.mjs delivered'}]}),dispose:async()=>{disposed++}}
     }, listDescendants:async()=>[{id:'review-child',kind:'child',parentId:'parent',depth:1,activity:'inactive'}] }
-  return {cwd,fs,ctx,call,state,save,calls,get runtime(){return runtime},set runtime(v){runtime=v},set verdict(v){verdict=v},get disposed(){return disposed}}
+  return {cwd,fs,ctx,call,state,save,calls,query,children,get runtime(){return runtime},set runtime(v){runtime=v},set verdict(v){verdict=v},get disposed(){return disposed}}
 }
 test('automatic routing uses boundaries, context needs and actual host availability', () => {
   const state = {items:[{id:'I1'}],files:['a.mjs','check.test.mjs'],complexity:'medium',risk_level:'standard'}
@@ -64,22 +70,31 @@ test('automatic routing uses boundaries, context needs and actual host availabil
   assert.throws(()=>makeExecutionPlan(state,item,{...planInput,depends_on:['I1']},all),/earlier/)
   assert.throws(()=>makeExecutionPlan(state,item,{...planInput,files:['outside']},all),/scope/)
 })
+test('native working_directory cd does not relocate the task ledger or delegated delivery root', async () => {
+  const f=await fixture();const get=f.ctx.get
+  f.ctx.get=name=>name==='workingDirectory'?{ensure:async()=>join(f.cwd,'nested')}:get(name)
+  await f.call({operation:'plan_execution',item_id:'I1',...planInput})
+  await f.call({operation:'dispatch',item_id:'I1'})
+  assert.equal(f.state().root,f.cwd)
+  assert.equal(f.calls[0].spec.request.cwd,f.cwd)
+})
 test('capability detection does not mistake a start method for a registered independent provider', () => {
   assert.deepEqual(executionCapabilities({get:()=>({start(){}})},true),none)
-  assert.equal(executionCapabilities({get:()=>({start(){},getProvider(){return {inheritsParentContext:true,capabilities:{toolFilter:true}}}})},true).spawn,false)
-  assert.deepEqual(executionCapabilities({get:()=>({start(){},getProvider(name){return {inheritsParentContext:name==='fork',capabilities:{toolFilter:true}}}})},true),none)
+  assert.equal(executionCapabilities({get:()=>({start(){},getProvider(){return {inheritsParentContext:true,capabilities:{agentPreset:true}}}})},true).spawn,false)
+  assert.deepEqual(executionCapabilities({get:()=>({start(){},getProvider(name){return {inheritsParentContext:name==='fork',capabilities:{agentPreset:true}}}})},true),none)
 })
 test('dispatch rechecks mandatory depth capability before changing item state or starting a child', async () => {
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput})
-  f.runtime.getProvider=name=>({inheritsParentContext:name==='fork',capabilities:{toolFilter:true}})
+  f.runtime.getProvider=name=>({inheritsParentContext:name==='fork',capabilities:{agentPreset:true}})
   await assert.rejects(()=>f.call({operation:'dispatch',item_id:'I1'}),/depthLimit/)
   assert.equal(f.state().items[0].status,'todo');assert.equal(f.state().items[0].dispatch,undefined);assert.equal(f.calls.length,0)
 })
 test('native structured review uses the committed host value, not conflicting assistant text', async () => {
-  const f=await fixture();const getProvider=f.runtime.getProvider;f.runtime.getProvider=name=>({...getProvider(name),capabilities:{depthLimit:true,toolFilter:true,outputSchema:true}})
-  const start=f.runtime.start
-  f.runtime.start=async(provider,request)=>{
-    const run=await start(provider,request)
+  const f=await fixture();const getProvider=f.runtime.getProvider;f.runtime.getProvider=name=>({...getProvider(name),capabilities:{depthLimit:true,agentPreset:true,outputSchema:true}})
+  const start=f.runtime.startActivation
+  f.runtime.startActivation=async spec=>{
+    const request={...spec.request,label:spec.label,signal:spec.signal}
+    const run=await start(spec)
     if(request.label.endsWith('/review')){
       assert.equal(request.outputSchema.additionalProperties,false)
       assert.match(request.prompt[0].text,/Finish by calling the host structured_output/)
@@ -94,11 +109,12 @@ test('native structured review uses the committed host value, not conflicting as
 })
 test('requested native capture cannot fall back to text when missing or invalid; cancellation releases its run', async () => {
   for(const outcome of ['missing','invalid','aborted']){
-    const f=await fixture();const getProvider=f.runtime.getProvider;f.runtime.getProvider=name=>({...getProvider(name),capabilities:{depthLimit:true,toolFilter:true,outputSchema:true}})
-    const start=f.runtime.start
-    f.runtime.start=async(provider,request)=>{
+    const f=await fixture();const getProvider=f.runtime.getProvider;f.runtime.getProvider=name=>({...getProvider(name),capabilities:{depthLimit:true,agentPreset:true,outputSchema:true}})
+    const start=f.runtime.startActivation
+    f.runtime.startActivation=async spec=>{
+      const request={...spec.request,label:spec.label,signal:spec.signal}
       assert.equal(request.signal instanceof AbortSignal,true)
-      const run=await start(provider,request)
+      const run=await start(spec)
       if(request.label.endsWith('/review'))run.result=run.result.then(result=>({...result,...outcome==='aborted'?{stopReason:'aborted'}:outcome==='invalid'?{structured:{spec:'pass',quality:'pass',notes:[]}}:{}}))
       return run
     }
@@ -155,11 +171,11 @@ test('malformed reviewer output and fabricated acceptance metadata do not close 
 test('reviewer must actually read the planned files; disposal failure stays locked until host recovery', async () => {
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput});await f.call({operation:'dispatch',item_id:'I1'})
   await f.call({operation:'verify',command:'node --test check.test.mjs'})
-  const start=f.runtime.start
-  f.runtime.start=async(...args)=>{const run=await start(...args);delete run.localAgent;return run}
+  const start=f.runtime.startActivation
+  f.runtime.startActivation=async(...args)=>{const run=await start(...args);f.children.set(run.childId,()=>[]);return run}
   await f.call({operation:'review_dispatch',item_id:'I1'})
   assert.match(f.state().items[0].independent_review.error,/read every/)
-  f.runtime.start=async(...args)=>{const run=await start(...args);run.dispose=async()=>{throw new Error('cleanup failed')};return run}
+  f.runtime.startActivation=async(...args)=>{const run=await start(...args);run.dispose=async()=>{throw new Error('cleanup failed')};return run}
   await f.call({operation:'review_dispatch',item_id:'I1'})
   assert.equal(f.state().items[0].independent_review.status,'running')
   await assert.rejects(()=>f.call({operation:'items',items:[{id:'I1',status:'done'}]}),/still active/)
@@ -180,16 +196,16 @@ test('orchestration cannot hand off unplanned items and dependencies block early
 test('infrastructure failures do not consume verdict budget and failed re-review reopens acceptance', async () => {
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput});await f.call({operation:'dispatch',item_id:'I1'})
   await f.call({operation:'verify',command:'node --test check.test.mjs'})
-  const start=f.runtime.start
-  f.runtime.start=async()=>{throw new Error('temporary startup failure')}
+  const start=f.runtime.startActivation
+  f.runtime.startActivation=async()=>{throw new Error('temporary startup failure')}
   for(let i=0;i<4;i++)await f.call({operation:'review_dispatch',item_id:'I1'})
   assert.equal(f.state().items[0].independent_review.run_id,undefined)
-  f.runtime.start=start
+  f.runtime.startActivation=start
   await f.call({operation:'review_dispatch',item_id:'I1'});await f.call({operation:'review_item',item_id:'I1',spec_outcome:'pass',quality_outcome:'pass'});await f.call({operation:'items',items:[{id:'I1',status:'done'}]})
-  f.runtime.start=async()=>{throw new Error('temporary startup failure')}
+  f.runtime.startActivation=async()=>{throw new Error('temporary startup failure')}
   await f.call({operation:'review_dispatch',item_id:'I1'})
   assert.equal(f.state().items[0].status,'doing');assert.equal(f.state().items[0].review,undefined)
-  f.runtime.start=start
+  f.runtime.startActivation=start
   await f.call({operation:'review_dispatch',item_id:'I1'});await f.call({operation:'review_item',item_id:'I1',spec_outcome:'pass',quality_outcome:'pass'});await f.call({operation:'items',items:[{id:'I1',status:'done'}]})
 })
 test('three completed verdicts cap only the same code, dispatch, plan and constraint context', async () => {
@@ -218,13 +234,13 @@ test('full read evidence requires all current lines; gaps, stale and truncated t
 test('partial successful reads cannot authorize a real item, and a later full read can recover', async () => {
   const f=await fixture();writeFileSync(join(f.cwd,'a.mjs'),'export const value = () => 2\n'+'// still needs review\n'.repeat(100))
   await f.call({operation:'plan_execution',item_id:'I1',...planInput});await f.call({operation:'dispatch',item_id:'I1'});await f.call({operation:'verify',command:'node --test check.test.mjs'})
-  const start=f.runtime.start
-  f.runtime.start=async(...args)=>{const run=await start(...args);run.localAgent.session.snapshotEvents=()=>[
+  const start=f.runtime.startActivation
+  f.runtime.startActivation=async(...args)=>{const run=await start(...args);f.children.set(run.childId,()=>[
     {type:'tool/call',data:{name:'read',callId:'partial',arguments:JSON.stringify({file_path:'a.mjs',offset:1,limit:1})}},
-    {type:'tool/result',data:{message:{toolCallId:'partial',content:[{type:'text',text:'<path>a.mjs</path>\n<type>file</type>\n<content>\n1: export const value = () => 2\n\n(Showing lines 1-1 of 101.)\n</content>'}]}}}];return run}
+    {type:'tool/result',data:{message:{toolCallId:'partial',content:[{type:'text',text:'<path>a.mjs</path>\n<type>file</type>\n<content>\n1: export const value = () => 2\n\n(Showing lines 1-1 of 101.)\n</content>'}]}}}]);return run}
   await f.call({operation:'review_dispatch',item_id:'I1'});assert.equal(f.state().items[0].independent_review.status,'failed')
   await assert.rejects(()=>f.call({operation:'review_item',item_id:'I1',spec_outcome:'pass',quality_outcome:'pass'}),/independent review/)
-  f.runtime.start=start;await f.call({operation:'review_dispatch',item_id:'I1'});assert.equal(f.state().items[0].independent_review.read_coverage[0].lines,101)
+  f.runtime.startActivation=start;await f.call({operation:'review_dispatch',item_id:'I1'});assert.equal(f.state().items[0].independent_review.read_coverage[0].lines,101)
 })
 test('unowned task files block implementation and adaptive main-session done requires current tests and review', async () => {
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput,files:['a.mjs']})
@@ -240,9 +256,9 @@ test('unowned task files block implementation and adaptive main-session done req
 })
 test('same-task concurrent dispatch admits one child and releases mutation guard on failures', async () => {
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput})
-  const start=f.runtime.start;let entered=0,release
+  const start=f.runtime.startActivation;let entered=0,release
   const wait=new Promise(resolve=>release=resolve)
-  f.runtime.start=async(...args)=>{entered++;const run=await start(...args);run.result=wait.then(()=>({stopReason:'completed',output:[]}));return run}
+  f.runtime.startActivation=async(...args)=>{entered++;const run=await start(...args);run.result=wait.then(()=>({stopReason:'completed',output:[]}));return run}
   const pending=f.call({operation:'dispatch',item_id:'I1'})
   await assert.rejects(()=>f.call({operation:'dispatch',item_id:'I1'}),/mutation is in progress/)
   await f.call({operation:'status'});release();await pending;assert.equal(entered,1)

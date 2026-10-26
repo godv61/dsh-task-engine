@@ -37,7 +37,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         # `master` catches a breaking change as soon as DSH makes it; the pinned
         # release candidate keeps the supported 0.2 baseline pinned.
-        dsh: [master, dsh-v0.2.0-rc.2]
+        dsh: [master, dsh-v0.2.1-rc.3]
     continue-on-error: ${{ matrix.dsh == 'master' }}
     steps:
       - uses: actions/checkout@v4
