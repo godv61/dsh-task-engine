@@ -255,7 +255,7 @@ const deliveryViewSchema = z.object({ version: z.literal(1), intent: z.enum(['an
   created_at: z.string(), requested_at: z.string().optional(), parent_session: z.string().optional(), metrics: runMetricsSchema.optional(),
   references: z.array(z.string()).optional(),
   result: z.object({ conclusion: z.string(), proposal: z.string(), limitations: z.array(z.string()), accepted_at: z.string(),
-    evidence: z.array(sourceClaimSchema.extend({ content_hash: z.string() })) }).optional(),
+    evidence: z.array(sourceClaimSchema.extend({ content_hash: z.string(), range_hash: z.string().optional(), highlight: z.string().optional() })) }).optional(),
   runs: z.array(z.object({ id: z.string(), question: z.object({ id: z.string(), question: z.string(), references: z.array(z.string()).optional(), depends_on: z.array(z.string()).optional() }),
     parent_session: z.string(), status: z.enum(['queued','starting','running','returned','failed']), at: z.string(), run_id: z.string().optional(),
     started_at: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), acceptance: z.string().optional(), metrics: runMetricsSchema.optional(),

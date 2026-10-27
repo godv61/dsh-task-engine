@@ -19,6 +19,16 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run verify:package
+      # Exercise the actual supported preset and real Go events in a required job.
+      - uses: actions/setup-go@v5
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - run: npm run verify:go
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
+      - run: npm run verify:preset
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
 
   # The plugin's Typert Remote contribution must satisfy the strict-codec
   # contract the INSTALLED DSH expects. DSH 0.1.6-alpha.2 changed it from a

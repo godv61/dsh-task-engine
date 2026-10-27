@@ -146,6 +146,39 @@ pnpm dsh web --no-open
 
 ## 执行一个开发任务
 
+### 两个最小调用示例
+
+以下是代理调用 `dev_task` 的参数示例，使用者通常直接用自然语言提出需求。新契约的 `create` 必须带 `task_id`、`title`、`intent`、`intent_reason`；实施任务还应带已评估的 `complexity` 和 `complexity_reason`。`branch` 可省略，宿主会读取 Git；后续针对单个任务的调用每次都携带 `task_id`。示例路径、行号和命令须替换为实际项目内容。
+
+**只查原因、给方案：**
+
+```json
+{"operation":"create","task_id":"TRACE-1","title":"定位产品型号丢失的原因","intent":"analysis","intent_reason":"用户只要求原因和方案，本轮不改代码"}
+```
+
+读取相关源码后直接提交，不需要登记实施项、运行测试或进入代码审核：
+
+```json
+{"operation":"submit_analysis","task_id":"TRACE-1","conclusion":"转换时遗漏了已有字段","proposal":"在转换入口保留字段，并验证下游映射","limitations":["仅核对静态源码，尚未验证运行数据"],"source_evidence":[{"file":"src/adapter.js","start_line":20,"end_line":28}]}
+```
+
+宿主始终保存完整行段及文件/行段指纹；可选 `quote` 只作高亮，不会替代整段源码。成功提交后分析任务归档。
+
+**局部代码修改：**
+
+```json
+{"operation":"create","task_id":"FIX-1","title":"修复字段转换并增加回归测试","intent":"implementation","intent_reason":"用户要求实现修复及测试","complexity":"low","complexity_reason":"边界明确的单模块修复","files":["src/adapter.js","test/adapter.test.js"]}
+```
+
+读取 `status.bindings` 对应技能后，用 `plan` 登记包含实现和必要测试的完整单元，再声明测试组：
+
+```json
+{"operation":"plan","task_id":"FIX-1","plans":[{"id":"I1","title":"保留字段并验证转换结果","files":["src/adapter.js","test/adapter.test.js"],"acceptance":["转换前后的字段值一致，回归覆盖缺失值分支"],"task_boundary":"local","execution_reason":"共享一个局部实现与测试上下文，主会话完成"}]}
+{"operation":"plan_verification","task_id":"FIX-1","verification_group":"unit","command":"npm test","files":["src/adapter.js","test/adapter.test.js"],"item_ids":["I1"]}
+```
+
+完成修改后运行 `verify`，主会话核对验收和代码，再用 `accept_item` 记录逐项结论；按 `status.legal_next`、技能和项目提交条件完成后续阶段及归档。这些示例不跳过真实测试、适用的 Sonar 审核或人工审批。
+
 在项目工作区新建**工程化开发引擎**会话，可以直接这样提出需求：
 
 ```text
@@ -163,11 +196,11 @@ pnpm dsh web --no-open
 3. **按顺序实施。** 高、超高任务先在计划中列稳定实施项 ID，再用 `items` 登记。`items` 默认按 ID 增量合并；例如只补 I5 不会删掉 I1–I4。确需重排或移除未开始的项目，显式使用 `items_mode=replace` 并提供完整列表；实施中、已完成或已有审查记录的项仍受保护。
 4. **记录实现与逐项审查。** 用 `dispatch` 和 `review_item` 留痕。开发者可以在当前会话直接实施，不要求把任务派给其他人。把所有变更文件登记到任务 `files` 范围；代码变动会使旧测试和审核回执失效。
    旧任务没有策略时，`dispatch` 默认 `direct`，也可显式选择 `execution=spawn`（独立上下文）或 `execution=fork`（宿主允许的已完成会话历史）；新任务按下述计划执行。委派按顺序执行，保存真实运行 ID 和输出，主代理仍须验证、逐项审查并将该项设为 `done`。中断或释放失败时先确认宿主运行及其后代停止，再由原父会话执行 `recover_dispatch`；无法确认状态时保持锁定。
-   新自适应任务先用 `plan_execution` 记录每项边界、文件范围、验收、依赖与选择理由，省略执行方式时引擎自动选择。局部或紧密耦合工作由主会话执行，独立交付项默认启动独立上下文子代理；确需已完成会话历史时才选择继承历史。无需在普通需求里提示“使用子代理”。宿主能力不足时记录回退原因；明确指定不可用方式则报错。用户要求全程主会话时创建任务传 `execution_policy=main_only`。
-   委派实现项及高复杂度/高风险项在宿主能力允许时安排 `review_dispatch` 独立只读审核；审核工作仅能读文件，核对模型实际收到的行内容是否覆盖当前计划文件，缺页或截断不能通过。结论绑定本项文件、实施轮次及审核上下文。支持原生结构化输出的 DSH 会通过专用结果工具提交结论，缺少有效提交时不接受文本自报。临时启动失败不消耗有效审核轮次；重审先退回实施中。所有交付文件及对应测试必须归属到实施项；主会话执行也须有当前真实测试与逐项审核才可 done。台账显示计划方式、实际方式、选择原因、审核方式与两个运行 ID；历史路径读取记录会明确标为未核对全文。
+   自适应任务用 `plan` 或 `plan_execution` 记录每项边界、文件范围、验收、依赖与选择理由。新交付契约默认主会话实施，只有明确 `delegation_benefit`（并行、上下文隔离或独立核对收益）才自动委派；独立文件本身不触发子代理。旧契约仍按原计划策略选择。委派默认独立上下文，确需已完成会话历史时才选择继承历史。无需在普通需求里提示“使用子代理”。宿主能力不足时记录回退原因；明确指定不可用方式则报错。用户要求全程主会话时创建任务传 `execution_policy=main_only`。
+   新交付契约仅高风险项在宿主能力允许时要求 `review_dispatch` 独立只读审核；旧契约保留委派实现或高复杂度也需独立审核的策略。审核工作仅能读文件，核对模型实际收到的行内容是否覆盖当前计划文件，缺页或截断不能通过。结论绑定本项文件、实施轮次及审核上下文。支持原生结构化输出的 DSH 会通过专用结果工具提交结论，缺少有效提交时不接受文本自报。临时启动失败不消耗有效审核轮次；重审先退回实施中。所有交付文件及对应测试必须归属到实施项；主会话执行也须有当前真实测试与逐项审核才可 done。台账显示计划方式、实际方式、选择原因、审核方式与两个运行 ID；历史路径读取记录会明确标为未核对全文。
 5. **验证与审核。** `verify` 执行真实命令；进入代码审核后，若启用 Sonar，调用 `sonar_check` 并处理结果，再记录 `review`。门禁通过后按 `status.commit` 提示提交并完成任务。
 
-**测试回执的要求：** 退出码为 0 只是必要条件。Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，以及本次 Gradle `test` 执行新生成的 JUnit XML，必须证明至少执行一个实际通过的测试；全部跳过、没有可识别证据，或仅运行 `true`、编译命令时不能算通过。验证命令不能通过串联、管道、重定向或命令替换掩盖失败。项目使用其他运行器时，先用能输出受支持摘要的测试命令；记录未覆盖项，不能用文字自报通过。Maven 项目的建议命令为 `mvn -B test`，Gradle 项目默认使用 wrapper 的 `test --rerun-tasks`。升级前保存的验证回执若缺少当前要求的测试证据或文件指纹，需重新运行 `verify`。
+**测试回执的要求：** 退出码为 0 只是必要条件。Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，以及本次 Gradle `test` 执行新生成的 JUnit XML，必须证明至少执行一个实际通过的测试；全部跳过、没有可识别证据，或仅运行 `true`、编译命令时不能算通过。验证命令不能通过串联、管道、重定向或命令替换掩盖失败。项目使用其他运行器时，先用能输出受支持摘要的测试命令；记录未覆盖项，不能用文字自报通过。Go 使用 `go test -json ./...`；包级 `ok/pass`、全跳过和无测试包不能冒充测试用例通过。多包运行允许部分包无测试，只要至少有实际通过的测试且没有失败。旧 Go 文本回执须重新验证。Maven 项目的建议命令为 `mvn -B test`，Gradle 项目默认使用 wrapper 的 `test --rerun-tasks`。升级前保存的验证回执若缺少当前要求的测试证据或文件指纹，需重新运行 `verify`。
 
 如需对 `git commit` 启用同一任务门禁，在工程会话调用 `dev_task install_hook`，再调用 `verify_hook`。安装器会登记当前工作区（包括 Git 仓库的子目录）；已有其他团队的 `commit-msg` 或设置了 `core.hooksPath` 时会停止并提示人工组合，更新已有 DSH 钩子前会备份。钩子配置保存在该 Git 工作树的 `.git/hooks/`，不随 Git 提交。提交时钩子要求当前分支能唯一对应一项未完成任务，并核对真实验证回执、任务文件范围与暂存区内容。测试后改过文件、暂存了不同版本，或旧任务只有手写的 `passed=true` 而没有回执时，需要重新运行 `verify`。任务状态仍是工作区内可编辑的 JSON，门禁用来防止误操作和遗漏，**不提供对恶意修改任务文件的防篡改保证**。
 

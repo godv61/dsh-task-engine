@@ -59,6 +59,7 @@ for (const filename of new Set(String(manifestScripts.test ?? '').match(/\.[\w-]
 }
 check('tarball excludes src sources', !listing.some(line => line.startsWith('src/')))
 check('tarball excludes build scripts', !listing.some(line => line.endsWith('build-client.mjs') || line.endsWith('build-hook.mjs')))
+check('tarball contains the native preset probe fixture', listing.includes('scripts/fixtures/preset-probe.mjs'))
 
 // Every `node <file>` script the manifest declares must actually ship, EXCEPT
 // the build-time ones that `prepare` needs in the source tree only. A script
@@ -124,7 +125,7 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs .delivery-kernel-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs .delivery-kernel-test.mjs .evidence-hardening-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
 } catch (error) {
   const lines = String(error.stdout || error.stderr || error).split('\n')

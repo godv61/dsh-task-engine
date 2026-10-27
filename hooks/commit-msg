@@ -29,6 +29,86 @@ var import_node_child_process3 = require("node:child_process");
 var import_node_fs2 = __toESM(require("node:fs"), 1);
 var import_node_path2 = __toESM(require("node:path"), 1);
 
+// src/command-words.ts
+function commandWords(command) {
+  const words = [];
+  let word = "", quote = "", active = false;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote) {
+      if (char === quote) quote = "";
+      else if (quote === '"' && char === "\\" && command[i + 1] === '"') {
+        word += '"';
+        i++;
+      } else word += char;
+      active = true;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      active = true;
+    } else if (/\s/u.test(char)) {
+      if (active) {
+        words.push(word);
+        word = "";
+        active = false;
+      }
+    } else {
+      word += char;
+      active = true;
+    }
+  }
+  if (quote) return void 0;
+  if (active) words.push(word);
+  return words;
+}
+function commandName(word) {
+  const parts = (word ?? "").replace(/\\/gu, "/").split("/");
+  return parts[parts.length - 1].replace(/\.(?:exe|cmd|bat)$/iu, "").toLowerCase();
+}
+
+// src/go-test-evidence.ts
+function goTestEvidence(command, output) {
+  const words = commandWords(command);
+  if (!words || commandName(words[0]) !== "go" || words[1] !== "test") return void 0;
+  const end = words.findIndex((word, i) => i > 1 && (word === "-args" || word === "--"));
+  const args = words.slice(2, end < 0 ? void 0 : end);
+  if (!args.some((word) => word === "-json" || word === "-json=true") || args.includes("-json=false")) return { count: null };
+  const packages = /* @__PURE__ */ new Map();
+  const passed = /* @__PURE__ */ new Map();
+  let seen = false;
+  for (const line of output.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    if (!line.trimStart().startsWith("{")) {
+      if (/^go:/u.test(line)) continue;
+      return { count: null };
+    }
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return { count: null };
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { count: null };
+    const event = value;
+    if (event.Action === "build-output" || event.Action === "build-fail") {
+      if (event.Action === "build-fail") return { count: 0 };
+      continue;
+    }
+    if (typeof event.Package !== "string" || !event.Package.trim() || !["start", "run", "pause", "cont", "pass", "bench", "fail", "output", "skip"].includes(String(event.Action)) || event.Test !== void 0 && typeof event.Test !== "string") return { count: null };
+    seen = true;
+    if (event.Action === "fail") return { count: 0 };
+    if (!packages.has(event.Package)) packages.set(event.Package, "incomplete");
+    if (!event.Test && (event.Action === "pass" || event.Action === "skip")) packages.set(event.Package, event.Action);
+    if (event.Test && event.Action === "pass") passed.set(`${event.Package}\0${event.Test}`, event.Package);
+  }
+  if (!seen || [...packages.values()].some((status) => status === "incomplete")) return { count: null };
+  return { count: [...passed.values()].filter((pkg) => packages.get(pkg) === "pass").length };
+}
+
+// src/skill-command.ts
+var literal = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[+-]?\d+(?:\.\d+)?|true|false|null|undefined|None|True|False)`;
+var literalOnly = new RegExp(`^${literal}$`, "u");
+var printingLiteral = new RegExp(`^(?:console\\.(?:log|info|warn|error)|print)\\(\\s*${literal}(?:\\s*,\\s*${literal})*\\s*\\)$`, "u");
+
 // src/verification-tests.ts
 function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
@@ -55,6 +135,8 @@ function testEvidence(command, output) {
   }
   const maven = mavenTestEvidence(command, output);
   if (maven) return maven;
+  const go = goTestEvidence(command, output);
+  if (go) return go;
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];
@@ -73,9 +155,6 @@ function testEvidence(command, output) {
     if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 };
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
     if (!match && /no tests ran/iu.test(output)) return { count: 0 };
-  } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
-    const successfulPackages = output.split(/\r?\n/u).filter((line) => /^ok\s+\S+/u.test(line) && !/\[no tests to run\]/iu.test(line));
-    return { count: successfulPackages.length > 0 ? 1 : 0 };
   } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map((entry) => Number(entry[1]));
     return { count: counts.length ? Math.max(...counts) : null };
@@ -591,7 +670,7 @@ function isSensitivePath(path2) {
   const normalized = path2.replace(/\\/gu, "/").toLowerCase();
   const parts = normalized.split("/");
   if (DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true;
-  return parts.some((part) => /^\.env(?:\..+)?$/u.test(part) || /^credentials(?:\.[^.]+)?$/u.test(part) || /\.(?:pem|p12|pfx|key)$/u.test(part) || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part));
+  return parts.some((part) => /^\.env(?:\..+)?$|^\.envrc$/u.test(part) || /^\.?credentials(?:\.[^.]+)?$/u.test(part) || /^\.?secrets?(?:\.(?:json|ya?ml|toml|ini|properties))?$/u.test(part) || /\.(?:pem|p12|pfx|key)$/u.test(part) || /^(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$/u.test(part));
 }
 var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
 

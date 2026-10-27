@@ -1,3 +1,6 @@
+import { goTestEvidence } from './go-test-evidence.ts'
+import { skillReceiptProblem } from './skill-command.ts'
+
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
 export function mavenTestEvidence(command: string, output: string): { count: number | null } | null {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command)
@@ -21,10 +24,7 @@ export function validationCommandProblem(command: string): string | undefined {
 export function skillCommandProblem(command: string): string | undefined {
   const syntax = validationCommandProblem(command)
   if (syntax) return syntax
-  if (/^\s*(?:echo|printf|true|:|exit)(?:\s|$)/iu.test(command)) {
-    return '技能命令必须执行实际检查，不能用 echo、printf、true 或 exit 生成通过回执'
-  }
-  return undefined
+  return skillReceiptProblem(command)
 }
 
 /** Recognise a completed test suite, including the default runners for supported project types. */
@@ -40,6 +40,8 @@ export function testEvidence(command: string, output: string): { count: number |
   }
   const maven = mavenTestEvidence(command, output)
   if (maven) return maven
+  const go = goTestEvidence(command, output)
+  if (go) return go
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]
@@ -60,10 +62,6 @@ export function testEvidence(command: string, output: string): { count: number |
     if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 }
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu)
     if (!match && /no tests ran/iu.test(output)) return { count: 0 }
-  } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
-    const successfulPackages = output.split(/\r?\n/u).filter(line => /^ok\s+\S+/u.test(line)
-      && !/\[no tests to run\]/iu.test(line))
-    return { count: successfulPackages.length > 0 ? 1 : 0 }
   } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map(entry => Number(entry[1]))
     return { count: counts.length ? Math.max(...counts) : null }

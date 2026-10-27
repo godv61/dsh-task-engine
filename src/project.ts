@@ -48,7 +48,7 @@ export const DEFAULT_VERIFY_COMMANDS: Record<Exclude<ProjectType, 'unknown'>, st
   node: 'npm test',
   java: 'mvn -B test',
   python: 'python -m pytest',
-  go: 'go test ./...',
+  go: 'go test -json ./...',
   rust: 'cargo test',
 }
 
@@ -88,10 +88,11 @@ export function isSensitivePath(path: string): boolean {
   const normalized = path.replace(/\\/gu, '/').toLowerCase()
   const parts = normalized.split('/')
   if (DEFAULT_RISK_POLICY.sensitive_paths.some(prefix => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true
-  return parts.some(part => /^\.env(?:\..+)?$/u.test(part)
-    || /^credentials(?:\.[^.]+)?$/u.test(part)
+  return parts.some(part => /^\.env(?:\..+)?$|^\.envrc$/u.test(part)
+    || /^\.?credentials(?:\.[^.]+)?$/u.test(part)
+    || /^\.?secrets?(?:\.(?:json|ya?ml|toml|ini|properties))?$/u.test(part)
     || /\.(?:pem|p12|pfx|key)$/u.test(part)
-    || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part))
+    || /^(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$/u.test(part))
 }
 
 /** All marker files across languages, for root discovery. */

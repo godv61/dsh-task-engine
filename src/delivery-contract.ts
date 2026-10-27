@@ -5,7 +5,7 @@ export type DeliveryIntent = 'analysis' | 'implementation'
 export type DelegationBenefit = 'parallel' | 'context_isolation' | 'independent_check'
 export interface SourceClaim { file: string; start_line: number; end_line: number; quote: string }
 export type SourceLocation = Omit<SourceClaim, 'quote'> & { quote?: string }
-export interface SourceEvidence extends SourceClaim { content_hash: string }
+export interface SourceEvidence extends SourceClaim { content_hash: string; range_hash?: string; highlight?: string }
 export interface InvestigationQuestion { id: string; question: string; references?: string[]; depends_on?: string[] }
 export interface InvestigationReport {
   status: 'complete' | 'partial' | 'blocked'
@@ -95,9 +95,9 @@ export function sourceEvidence(claim: SourceLocation, source: string, contentHas
     || claim.start_line < 1 || claim.end_line < claim.start_line || claim.end_line - claim.start_line >= 200) throw new Error('source evidence requires a file and a valid 1-based range of at most 200 lines')
   const lines = source.replace(/\r\n/gu, '\n').split('\n')
   const window = lines.slice(claim.start_line - 1, claim.end_line).join('\n')
-  const quote = claim.quote === undefined ? window : claim.quote.replace(/\r\n/gu, '\n')
-  if (claim.end_line > lines.length || !quote.trim() || !window.includes(quote)) throw new Error(`evidence does not match current source: ${claim.file}:${claim.start_line}; omit quote to capture this exact source range, or correct the range/quote`)
-  return { ...claim, quote, content_hash: contentHash }
+  const highlight = claim.quote?.replace(/\r\n/gu, '\n')
+  if (claim.end_line > lines.length || !window.trim() || (highlight !== undefined && (!highlight.trim() || !window.includes(highlight)))) throw new Error(`evidence does not match current source: ${claim.file}:${claim.start_line}; omit quote to capture this exact source range, or correct the range/quote`)
+  return { ...claim, quote: window, content_hash: contentHash, ...(highlight === undefined ? {} : { highlight }) }
 }
 export function parseInvestigationReport(text: string): InvestigationReport {
   return validateInvestigationReport(JSON.parse(text))
