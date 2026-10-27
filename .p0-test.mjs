@@ -778,7 +778,7 @@ function memProbe(files) {
   await exe({ operation: 'scope', task_id: 'CAS-1', files: ['a'] }, EXEC)
   const r2 = JSON.parse(fs._files.get('.dsh/task-CAS-1.json')).revision
   assert(r1 === 1 && r2 === 2, 'revision increments on every write')
-  const devtask = readFileSync('./lib/dev-task.js', 'utf8')
+  const devtask = readFileSync('./lib/task-store.js', 'utf8')
   assert(devtask.includes('changed concurrently'), 'concurrent-write CAS guard is present')
 }
 

@@ -6,6 +6,12 @@ whenToUse: 在启用工程化交付会话预设后，开始或继续开发任务
 
 # 工程任务编排
 
+先判断交付目标。普通问答直接回答；“查原因、给方案、分析影响”创建 `intent=analysis`（同时写明 `intent_reason`）的调查任务，直接搜索和读取相关源码并及时报告中心发现。用 `submit_analysis` 一次提交 `conclusion`、`proposal`、`limitations`（可为空）及含 `file/start_line/end_line` 的源码位置（行号从 1 开始，由宿主采集原文；若提供 `quote` 则必须精确匹配）；引擎核对当前内容后保存交付，不制造实施项、测试文件或 Sonar 扫描。需要执行命令或修改代码时说明当前分析未覆盖的验证，由用户后续授权的实施任务承接。
+
+分析可以使用项目已有 Skill 和代码索引辅助定位，相关业务结论必须核对源码。只读委派使用 `delegate`，提供具体问题、已知路径、依赖、`delegation_benefit` 和说明事实的 `execution_reason`；默认主会话连续调查。不要把相邻调用链机械拆给多个代理，也不要因复杂度高就委派。引擎返回 `returned` 只表示报告已回，主会话仍核对推理和关键证据，不能把运行完成当作任务通过。遇到模型授权错误保留已有成果，恢复时使用 `recover_analysis`，不重跑已返回的问题。
+
+以下实施规则适用于用户已要求修改/实现的工作；新任务创建时传 `intent=implementation` 和 `intent_reason`。不带 intent 的旧任务继续遵守其原有快照。
+
 项目初始化是可选扩展；六个内置元技能无需项目 Skill 或 Rule 就能执行。若生成 `<项目名>-project-map`，它必须概述整个仓库的模块职责、依赖与通用代码入口，可被后续不同需求复用。当前需求的具体页面、接口调用链和验收条件写入任务产物；若确需长期保存领域地图，另建明确命名的领域 Skill，不把它们塞进项目总地图。`inspect` 只提供目录和清单证据，`propose/apply` 的正文由模型拟定，应用前逐项检查范围。
 
 新需求先按改动范围、实现依赖和架构影响选择 `low`、`medium`、`high` 或 `ultra`，调用 `dev_task assess` 查看相应阶段与有效技能来源。创建时提供 `complexity` 和具体的 `complexity_reason`。低档为局部明确修改；中档先形成需求与验收；高档增加按实现先后顺序的任务编排；超高档适用于完整新模块或大范围重构，增加架构设计。风险等级独立选择。没有 `complexity` 的旧调用继续使用 `.dsh/eng.json`。
@@ -20,7 +26,7 @@ whenToUse: 在启用工程化交付会话预设后，开始或继续开发任务
 2. 读取 `status.bindings`、`skill_obligations`、`artifact_requirements`、`legal_next` 和 `commit`。只加载当前及即将进入的终态实际绑定的技能，遵守本次交互读取的最新规则正文；没有绑定时不自行补上技能或规则。
 3. 技能要求的证据以其配置和 `status.skill_obligations` 为准：仅对 `command_receipts_required` 列出的技能通过带真实命令的 `skill_result` 记录；`manual` 通过人工审批记录；`artifact`、`review` 与 `none` 按对应阶段操作或无需额外回执处理。不要把所有技能都当成命令型技能。技能加载成功不等于要求的证据已经完成。
 4. 需要记录产物时，只使用 `artifact_requirements` 给出的 id 与字段。按当前流程要求完成确认、实施项、验证和审核，再调用 `advance`；被拒绝时按返回的阻塞原因修正，不改任务文件绕过门禁。
-   新自适应任务必须为每项调用 `plan_execution` 记录边界、范围、验收、依赖和选择理由，默认交由引擎自动选择执行方式，无需用户提醒。高/超高档在任务编排时做，低/中档在代码开发开始时做。按计划调用 `dispatch`；需要独立审核时执行 `review_dispatch`，主代理核对后再 `review_item` 和标 done。不要调用原生 subagent 工具制造无法关联台账的委派。
+   新自适应任务必须为每项记录边界、范围、验收、依赖和选择理由，可用 `plan` 原子登记全部计划，或逐项 `plan_execution`。高/超高档在任务编排时做，低/中档在代码开发开始时做。新交付契约的 auto 只有明确 `delegation_benefit` 才委派，独立文件本身不是收益。主会话直接实施可在真实 verify 后用 `accept_item` 原子审核并标 done；需要独立审核时先执行 `review_dispatch`。旧契约继续按计划 `dispatch`、`review_item`、标 done。不要调用原生 subagent 工具制造无法关联台账的委派。
    每项包含实现和必要测试；通过 plan_verification 声明全部必要测试组的 command、files 和 item_ids。verify 按 verification_group 执行，分别保存回执。只有全部组有效，任务整体才验证通过。返工范围明确时用 revise(defect) 的 affected_items；影响未知时完整返工。技能读取记录按当前会话与内容版本复用，执行证据按实际输入重新核对。
    `items` 默认按 ID 增量合并；只有明确重排或删除尚未实施的项目时才传 `items_mode=replace` 和完整目标列表。审核前对照 Git 变更补齐任务文件范围；插件会拒绝漏登的新增审核文件。
    删除/重命名在实施前通过 plan_execution.changes 声明，旧路径与目标保留在 files，审核读取引擎保存的变更前文本快照。需要提高风险时调用 set_risk 并按新状态重新审核被打开项；不手改任务 JSON，也不重复实现未变化的工作。

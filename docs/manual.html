@@ -113,6 +113,9 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="task">
         <h2>执行一个任务</h2>
+        <p>先判断交付目标。只排查原因、解释调用链或给方案时，创建 <code>intent=analysis</code> 并写明 <code>intent_reason</code>，由主会话直接搜索与读取源码，再用 <code>submit_analysis</code> 一次提交结论、方案、未确认项和含文件、行段、原文的证据。分析不会进入代码实施或为取得回执写测试；运行时限制写入和终端工具。业务结论仍须主会话核对，源码匹配不等于语义正确。</p>
+        <p>需要只读委派时，用 <code>delegate</code> 说明问题、引用入口、依赖、明确收益与理由，默认最多两个同时运行。子代理返回与任务接受分别显示，失败前报告保持可见；清理不明时不得交付，原父会话经宿主确认停止后才能 <code>recover_analysis</code>。下面的实施步骤用于用户已要求修改代码的 <code>intent=implementation</code> 任务。</p>
+        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；必要的独立审核和项目门禁继续生效。旧台账继续按原快照操作，不自动转换。</p>
         <ol>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>

@@ -54,6 +54,30 @@ function timeText(at: string): string {
   return formatEastEightTime(at)
 }
 
+function metricsText(m: import('../delivery-contract.ts').RunMetrics): string {
+  return `${Math.round(m.elapsed_ms / 1000)} 秒 · 工具 ${m.tool_calls ?? '未知'} 次 · 错误 ${m.errors ?? '未知'} 次 · 输入 ${m.input_tokens ?? '未知'} / 缓存输入 ${m.cached_input_tokens ?? '未知'} / 输出 ${m.output_tokens ?? '未知'} token`
+}
+
+/** Read-only run status remains visible even if the parent's next model request fails. */
+function deliveryDetails(task: TaskLedgerEntry): ReturnType<typeof createElement> | null {
+  const delivery = task.delivery
+  if (!delivery) return null
+  const labels = { queued: '排队', starting: '启动中', running: '调查中', returned: '已返回', failed: '失败' }
+  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+    createElement('div', { style: metaLine }, delivery.intent === 'analysis' ? '分析与方案 · 业务代码只读' : '代码实施 · 项目门禁生效', ' · ' + delivery.reason),
+    delivery.metrics ? createElement('div', { style: metaLine }, '主会话 · ' + metricsText(delivery.metrics), '（截至接受交付；子代理单列，耗时不相加）') : null,
+    ...delivery.runs.map(run => createElement('details', { key: run.id, style: itemRow },
+      createElement('summary', null, `${run.question.id} · ${labels[run.status]}${run.acceptance === 'pending_parent' ? ' · 待主会话核对' : run.acceptance === 'used_in_delivery' ? ' · 证据已用于交付' : run.acceptance === 'not_used' ? ' · 未用于最终证据' : ''} · ${run.question.question}`),
+      createElement('div', { style: metaLine }, `运行 ${run.run_id ?? run.id} · ${timeText(run.started_at ?? run.at)}`),
+      run.metrics ? createElement('div', { style: metaLine }, metricsText(run.metrics)) : null,
+      run.report ? createElement('div', { style: { whiteSpace: 'pre-wrap', fontSize: 12 } }, run.report.summary, '\n未确认：' + (run.report.limitations.join('；') || '无额外说明')) : null,
+      run.error ? createElement('div', { role: 'alert' }, run.error) : null)),
+    delivery.result ? createElement('details', null, createElement('summary', null, '已交付的分析结论与方案'),
+      createElement('div', { style: { whiteSpace: 'pre-wrap' } }, delivery.result.conclusion, '\n\n', delivery.result.proposal,
+        '\n未确认：' + (delivery.result.limitations.join('；') || '无额外说明')),
+      ...delivery.result.evidence.map((e, i) => createElement('div', { key: i, style: metaLine }, `${e.file}:${e.start_line}–${e.end_line} · 交付时源码证据`))) : null)
+}
+
 /** Render one item's start record and two-stage review (when present). */
 function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
   const lines: Array<ReturnType<typeof createElement>> = []
@@ -73,6 +97,7 @@ function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
     lines.push(createElement('details', { key: 'independent-review' },
       createElement('summary', null, `独立审核 · ${statusLabel(review.status)}${review.spec ? ` · 规格${review.spec === 'pass' ? '通过' : '不通过'}` : ''}${review.quality ? ` · 质量${review.quality === 'pass' ? '通过' : '不通过'}` : ''} · ${review.run_id ?? '等待运行 ID'}`),
       createElement('p', { style: metaLine }, validReviewPolicy(review.policy, review.run_id) ? '只读限制已验证' : '尚无有效只读限制回执'),
+      review.metrics ? createElement('p', { style: metaLine }, metricsText(review.metrics)) : null,
       review.read_files?.length ? createElement('p', { style: metaLine }, `${review.read_coverage ? '全文行内容已核对' : '路径读取记录（未核对全文）'}：${review.read_files.join('、')}`) : null,
       createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, review.output ?? ''),
       review.error ? createElement('p', { role: 'alert' }, review.error) : null))
@@ -83,6 +108,7 @@ function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement> {
   if (item.dispatch !== undefined) {
     if (item.dispatch.run_id) lines.push(createElement('details', { key: 'child' },
       createElement('summary', null, `${executionLabel(item.dispatch.provider ?? 'spawn')} · ${statusLabel(item.dispatch.status)} · ${item.dispatch.run_id}`),
+      item.dispatch.metrics ? createElement('p', { style: metaLine }, metricsText(item.dispatch.metrics)) : null,
       createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, item.dispatch.output ?? ''),
       item.dispatch.error ? createElement('p', { role: 'alert' }, item.dispatch.error) : null))
     lines.push(createElement('div', { key: 'dispatch', style: metaLine },
@@ -250,29 +276,31 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { style: { fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' } }, task.task_id),
               createElement('span', { style: { fontSize: 13, color: 'var(--dsw-alias-label-primary)' } }, task.title),
               createElement('span', { style: badge }, task.stage),
+              task.delivery ? createElement('span', { style: badge }, task.delivery.intent === 'analysis' ? '原因与方案' : '代码实施') : null,
               createElement('span', { style: { ...badge, fontWeight: 600 } }, task.lifecycle === 'archived' ? '已归档' : task.lifecycle === 'ready_to_close' ? '待归档' : '进行中'),
               task.complexity ? createElement('span', { style: badge }, `复杂度：${{ low: '低', medium: '中', high: '高', ultra: '超高' }[task.complexity] ?? task.complexity}`) : null,
               createElement('span', { style: badge }, task.branch),
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
-              createElement('span', { className: 'te-badge' }, task.evidence_status
+              task.delivery?.intent === 'analysis' ? null : createElement('span', { className: 'te-badge' }, task.evidence_status
                 ? ({ valid: '验证通过 · 当前有效', stale: '验证已过期', failed: '验证失败', blocked: '验证受环境阻塞', missing: '待验证', historical: task.verification_passed ? '交付时验证通过' : '交付时未通过验证', unknown: '验证有效性待确认' })[task.evidence_status]
                 : task.verification_passed ? '历史验证通过' : '待验证'),
-              createElement('span', { className: 'te-badge' }, task.review_status
+              task.delivery?.intent === 'analysis' ? null : createElement('span', { className: 'te-badge' }, task.review_status
                 ? ({ valid: '审核通过 · 当前有效', stale: '审核已过期', missing: '待审核', blocked: '审核阻断', historical: `交付时审核：${task.review_outcome ?? 'pending'}` })[task.review_status]
                 : `审核：${task.review_outcome ?? 'pending'}`),
               task.updated_at ? createElement('span', { style: metaLine }, '更新于 ' + timeText(task.updated_at)) : null,
             ),
-            createElement('div', { style: metaLine }, '实施项 ' + task.items_done + '/' + task.items.length + ' · 下一步：' + task.next_action,
+            createElement('div', { style: metaLine }, (task.delivery?.intent === 'analysis' ? '分析交付' : '实施项 ' + task.items_done + '/' + task.items.length) + ' · 下一步：' + task.next_action,
               task.completed_at ? ' · 归档于 ' + timeText(task.completed_at) : '',
               task.related_task ? ' · 关联 ' + task.related_task.kind + '：' + task.related_task.id : ''),
             sonarAudit(task),
+            deliveryDetails(task),
             task.verification_groups?.length ? createElement('details', { style: metaLine },
               createElement('summary', { style: { cursor: 'pointer' } }, `测试分组（${task.verification_groups.length}）`),
               ...task.verification_groups.map(group => createElement('div', { key: group.id, style: itemRow },
                 createElement('span', null, `${group.id} · ${{ passed: '通过', failed: '失败', blocked: '环境阻塞', stale: '证据已过期', missing: '待运行' }[group.status]} · 测试数 ${group.test_count ?? '未识别'}${group.checked_at ? ' · ' + timeText(group.checked_at) : ''}`),
                 createElement('code', null, group.command),
                 ...group.problems.map(problem => createElement('span', { key: problem }, problem))))) : null,
-            createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
+            task.delivery?.intent === 'analysis' && !task.items.length ? null : createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
               createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } }, '实施项与审查记录（' + task.items.length + '）'),
               ...task.items.map(item => createElement('div', { key: item.id, style: itemRow },
                 createElement('div', { style: headerRow },

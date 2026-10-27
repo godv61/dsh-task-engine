@@ -16,9 +16,9 @@
 
 初始化目录发现为确定性广度扫描，默认最多 1024 目录、16 层、20000 项，排除缓存、生成物、隐藏目录与可识别的符号链接；不运行构建或读取业务源码正文。嵌套清单父目录进入模块覆盖清单。`discovery` 表示该限定范围 complete/partial/unavailable；目录或清单不可读、预算耗尽会记明原因。partial/unavailable 或没有模块证据时，项目地图覆盖检查不能成功，其他可选资源仍可生成。
 
-新自适应任务保存 `delegation_version=1`：实施前必须 `plan_execution`；高/超高档离开任务编排前检查每项策略，低/中档在代码开发检查。模型提供边界事实、文件、验收与依赖，引擎按真实 `getProvider` 能力决定执行和审核方式，`dispatch` 读取计划而非默认静默 direct。子代理实现或高复杂度/高风险项优先独立审核，缺能力的回退原因保存到计划。`execution_policy=main_only` 用于用户明确要求全程主会话。旧记录不追溯增加门禁。
+新自适应任务保存 `delegation_version=1`：实施前必须 `plan_execution`；高/超高档离开任务编排前检查每项策略，低/中档在代码开发检查。模型提供边界事实、文件、验收与依赖，引擎按真实 `getProvider` 能力决定执行和审核方式，`dispatch` 读取计划而非默认静默 direct。旧契约的子代理实现或高复杂度项优先独立审核；新契约按具体风险和审核需求选择，不因委派本身再强制启动一名审核代理，缺能力的回退原因保存到计划。`execution_policy=main_only` 用于用户明确要求全程主会话。旧记录不追溯增加门禁。
 
-`review_dispatch` 通过 `startActivation(delivery='caller')` 使用新的 spawn 上下文和 `task-engine-review` 预设。预设在每个 Agent 创建时安装 scoped `tools.restrict({allow:['read']})`，保留继承的 read 并隐藏其余继承工具、以单调执行 guard 拒绝 read/structured_output 之外的所有调用，并在提示词组装时核对实际工具目录；父代理必须取得宿主策略回执；解析成功 read 的模型可见行内容，与当前全部计划文件逐行比较，可合并多个窗口。缺行、行截断或旧内容不接受为全文覆盖；空文件必须收到明确的空文件结果。记录 `read_coverage` 的文件与行数，旧的 `read_files` 路径记录不等于全文核对，升级后的逐项接受须重新审核。单行超过宿主读取上限时须调整宿主配置，不能将截断结果算作全文。宿主声明 `outputSchema` 时使用原生 `structured_output` 捕获及 `result.structured`；捕获缺失或非法时拒绝，不从文本补填。未声明该能力时沿用严格 JSON 文本解析。审核工作工具只保留 read；原生结果提交工具由 DSH 在子作用域注册，不提供写文件或命令能力。
+`review_dispatch` 通过 `startActivation(delivery='caller')` 使用新的 spawn 上下文和 `task-engine-review` 预设。预设在每个 Agent 创建时安装 scoped `tools.restrict({allow:['read','glob','grep']})`，保留可用的只读读取/搜索工具并隐藏其余继承工具、以单调执行 guard 拒绝 read/glob/grep/structured_output 之外的所有调用，并在提示词组装时核对实际工具目录；父代理必须取得宿主策略回执；解析成功 read 的模型可见行内容，与当前全部计划文件逐行比较，可合并多个窗口。缺行、行截断或旧内容不接受为全文覆盖；空文件必须收到明确的空文件结果。记录 `read_coverage` 的文件与行数，旧的 `read_files` 路径记录不等于全文核对，升级后的逐项接受须重新审核。单行超过宿主读取上限时须调整宿主配置，不能将截断结果算作全文。宿主声明 `outputSchema` 时使用原生 `structured_output` 捕获及 `result.structured`；捕获缺失或非法时拒绝，不从文本补填。未声明该能力时沿用严格 JSON 文本解析。审核工作工具仅有 read/glob/grep；原生结果提交工具由 DSH 在子作用域注册，不提供写文件或命令能力。
 
 回执绑定计划、实施轮次、适用规则/产物上下文和文件 SHA-256 指纹，主代理不能覆盖失败结论。同一代码和审核上下文最多三次有效完成结论；启动失败、取消、读取不全及传输错误只记历史，不消耗该额度。重审将实施项退回 doing 并清除旧父接受，成功后须重新 review_item 与 done；不会保留 done 却无当前接受的状态。审核清理失败保持锁定，通过 `recover_dispatch dispatch_role=review` 在确认宿主及后代不活动后恢复。独立审核不是命令验证，也不自动将实施项设为 done。
 
@@ -63,6 +63,12 @@ npm run verify:package
 
 ## 当前质量约束
 
+- 任务保存已抽到 `task-store.ts`，所有入口共用沙箱写策略、逻辑 revision 与宿主原子版本意图。执行等待不得持有只读调查批次的任务锁。
+- `delivery-contract.ts` 区分交付意图、运行记录与接受结果；`investigation-runtime.ts` 复用 DSH activation，`run-scheduler.ts` 管理只读依赖与并发。源文件引用通过当前文本、行段和 SHA-256 绑定；不能把结构匹配当作语义正确的证明。
+- `delivery-access.ts` 约束分析主会话及嵌套调用，恢复时读取其会话所属契约；只读子代理沿用受保护预设。动态缺失的搜索工具不会导致预设加载失败，存在的只读工具仍可使用。实施权限不通过修改分析任务获得。
+- 只读调查成功返回与父任务接受分别记录；API AUTH 失败停止后续派发并保留报告，取消后清理失败保持 running、拒绝交付。观测失败不虚构 token 或工具计数，缺失字段保持未知。
+- `.delivery-kernel-test.mjs` 检查自然交付类型、真正的并发与失败隔离、证据拒绝、原子计划、真实验证后的原子验收。`.rc3-runtime-test.mjs` 使用原生宿主工具注册表检查搜索可用与写入拒绝，行为模拟不冒充真实模型性能结果。
+
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
 - 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
@@ -91,3 +97,9 @@ npm run verify:package
 验证支持标准 Maven 生命周期以及 Surefire/Failsafe 的短目标和完整坐标目标；仍要求真实非零测试摘要，失败或全部跳过的测试不通过。
 
 任务台账和交付路径以所选会话的原始项目根目录为锚点；working_directory 只改变原生工具的当前目录，不搬迁台账或扩大权限。引擎获取宿主当前目录状态，派发及验证则显式使用任务保存的 root，避免父会话 cd 后子代理在另一目录实施。
+
+新工程会话在仓库查阅前通过 status/create 确定交付目标；尚未确定时只展示入口工具，恢复旧任务后沿用旧约束。分析模式隐藏命令工具并保留执行 guard；原生 subagent/workflow 别名在工程预设中关闭，执行 guard 也拒绝后注册的别名。真实运行只能经有台账归属的 delegate/dispatch 发起。普通问答可以直接回答。
+
+submit_analysis 的 source_evidence 使用仓库内相对路径和从 1 开始的行号，每段不超过 200 行；host 采集该段真实原文和内容 SHA-256，不必让模型抄写长代码。可选 quote 必须精确匹配对应行段。子代理的原生结构化结果取 result.structured，失败时不从普通说明文本伪造结果。
+
+run-observation.ts 从宿主会话事件采集主会话、调查/实施/审核运行的耗时、工具数、错误及 token。缓存输入单列；宿主未提供的数值为 null。主会话记录截至接受交付的观察值，包含等待时间；并发子代理耗时不能相加当作用户总耗时。这些采集能力不等于已经完成各类任务的成本对照实验。

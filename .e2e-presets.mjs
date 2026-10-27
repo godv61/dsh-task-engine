@@ -14,7 +14,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve } from 'node:path'
 import { registerDevTask } from './lib/dev-task.js'
-import { newTask } from './lib/engine.js'
 import { adoptRecommendation, resolveFlow, FLOW_PRESETS } from './lib/workflows.js'
 
 /**
@@ -42,12 +41,7 @@ const HASH = 'abcdef1234567890abcdef1234567890abcdef12'
 async function runPreset(preset) {
   const cwd = resolve('e2e-project')
   const config = adoptedFlow(preset)
-  const state = newTask({
-    id: 'E2E-1', title: 'pipeline', branch: 'main', work_size: 'standard',
-    risk_level: 'standard', flow: { flow: preset, version: FLOW_PRESETS[preset].version, config }, root: cwd,
-  })
   const records = new Map([
-    [join(cwd, '.dsh/task-E2E-1.json'), JSON.stringify(state)],
     // `create` reads the project's config from here, so this writes what a real
     // project has after adopting the shipped recommendation: the skeleton plus its
     // recommended skills, commit rule and artifacts. Writing only `{flow}` would

@@ -22,11 +22,17 @@
               prefix: |-
                 You are an engineering-delivery coding agent, powered by the {{model}} model, running on DeepSeek Harness.
 
-                本仓库使用 `dev_task` 管理工程任务。开发请求先加载 `eng-delivery`，读取当前项目和任务状态；新任务按需求复杂度选择低、中、高或超高流程。项目根 `.dsh/meta.json` 保存元技能挂载和可选 SonarQube 配置，`.dsh/eng.json` 保存兼容流程配置。阶段执行时加载实际生效的 Skill 与 Rule，记录产物、实施项、测试和审核证据。
+                本仓库使用 `dev_task` 管理工程交付。在仓库查阅前先 status 或 create 选择交付目标，避免查完才登记；普通问答直接回答。调查原因、解释链路或给出方案时，用 create intent=analysis 和具体 intent_reason；直接查阅源码并尽早报告已确认原因，最终 submit_analysis 提交结论、方案、源码位置与未确认项。source_evidence 使用文件及从 1 开始的起止行，引擎读取原文并保存 hash，无需抄写代码；若提供 quote 则必须与该范围一致。分析模式仅使用 read/glob/grep 静态取证，不调用终端、执行项目代码或写测试；需要动态复现时在方案中说明待验证事项。先追踪核心字段的入口、转换、落库和查询；有依据后报告结论，补充与结论有关的分支，不扩展成全仓普查。复杂调查仍然可以在主会话完成。
 
-                阶段流转、验证、评审、任务完成及受控提交通过 `dev_task`；工具拒绝时按返回条件修正，不绕过。项目 Skill 优先于同名用户或内置 Skill。SonarQube 只在配置启用后的代码审核阶段执行；远程操作或发布由用户明确决定。
+                用户要求实施时，先加载 `eng-delivery` 并读取任务归属，创建 intent=implementation 的任务；新需求按复杂度（低 / 中 / 高 / 超高）调用 assess，记录 complexity_reason。四档选择阶段顺序，风险等级单独判断。分析完成后的实施新建关联任务，引用有效结论；不要静默转换旧台账或重做已有有效调查。
 
-                实施前为每项调用 plan_execution 判断边界、允许修改的文件、验收和依赖，默认由引擎自动选择主会话或子代理，无需用户提醒。按计划 dispatch；需要独立审核时 review_dispatch，再由主会话核对、review_item 并完成实施项。所有委派都经 dev_task 关联台账。
+                `.dsh/meta.json` 只挂载元技能的附加项目技能；同名技能按项目级、用户级、内置级解析，任务创建时冻结实际来源。已有任务继续使用原快照；没有传入 `complexity` 的旧调用仍按 `.dsh/eng.json` 兼容执行。
+
+                阶段流转、确认、验证、评审、任务完成及受控提交通过 `dev_task`；它拒绝时按返回的条件修正，不绕过。按 `source:name` 使用 `load_skill` 读取当前绑定的技能和规则。SonarQube 只有在项目启用时于代码审核阶段检查，不在开发过程中反复扫描。远程操作或发布由用户明确决定。
+
+                委派必须有具体收益：真正并行、上下文隔离或独立核对；文件可独立不等于需要启动子代理。只读调查需要委派时用 delegate 提供问题、已知路径、依赖和 delegation_benefit/execution_reason，真实运行由引擎管理。子代理返回后主会话核对证据并综合交付，不自动再派一轮审核代理。
+
+                实施前可用 plan 原子登记全部实施/必要测试单元，或兼容 plan_execution。默认主会话执行；只有明确 delegation_benefit 才让 auto 委派。主会话直接实施不必额外 dispatch；真实 verify 后用 accept_item 一次记录审核与完成；独立审核要求仍须 review_dispatch。风险、项目规则、测试及最终审核门禁照常生效。运行失败时检查已有报告与宿主状态，恢复未完成部分，不清空重来。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
@@ -98,30 +104,33 @@
               workflowEngine: true
             config:
               - id: tool-subagent-control
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent-control'
               - id: tool-subagent-list-agents
                 name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
               - id: tool-subagent
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: spawn
                   toolName: subagent
                   modelSelectionSettings: true
               - id: tool-subagent-fork
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config:
                   provider: fork
                   toolName: subagent_fork
               - id: tool-subagent-codex
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
                 config:
                   provider: codex
                   toolName: subagent_codex
                   maxDepth: provider-managed
               - id: tool-subagent-claude-code
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent'
-                disabled: true
                 config:
                   provider: claude-code
                   toolName: subagent_claude_code
@@ -131,6 +140,7 @@
                 config:
                   provider: spawn
               - id: tool-workflow
+                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-workflow'
               - id: tool-ralph
                 name: '@deepseek-ai/dsh-tool-ralph'
@@ -157,19 +167,19 @@
           - id: task-engine-agent
             name: '@godv61/dsh-task-engine/agent'
 
-# Fresh-context reviewer: only local read plus the host result-capture tool.
+# Shared read-only evidence capability; the job prompt/schema supplies investigation or review semantics.
 - insert:
     - id: preset-task-engine-review
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: task-engine-review
-        name: 工程只读审核
-        description: 由任务引擎调用，读取交付证据并提交结构化审核结论。
+        name: 工程只读取证
+        description: 由任务引擎调用，调查源码或审核交付证据，按任务约定提供结构化结果。
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are a read-only code reviewer. Follow the supplied acceptance criteria and inspect the evidence. Never edit, execute commands or delegate.
+              prefix: You are a read-only evidence analyst. Follow the supplied investigation question or review criteria and inspect source evidence. Never edit, execute commands or delegate.
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
             config:
@@ -177,5 +187,9 @@
               readImage: false
               write: false
               edit: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
           - id: task-engine-reviewer
             name: '@godv61/dsh-task-engine/reviewer'

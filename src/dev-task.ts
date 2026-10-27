@@ -1,3 +1,4 @@
+import { readText, writeText, loadTask, writeTask, taskPath, type WriteFs } from './task-store.ts'
 /**
  * The model-facing `dev_task` tool: the hard engineering-delivery gate.
  *
@@ -68,6 +69,10 @@ import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTarget
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
 import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
+import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, sourceEvidence, type DelegationBenefit, type DeliveryIntent, type InvestigationQuestion } from './delivery-contract.ts'
+import { investigate } from './investigation-runtime.ts'
+import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
+import { bindDeliveryIntent, installDeliveryAccess } from './delivery-access.ts'
 import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { isFullOid, isOidInput } from './git-oid.ts'
@@ -104,14 +109,6 @@ type Fs = Context['fs']
  * calling session's workspace (`exec.agent.session.header.cwd`); without it the
  * backend falls back to its own base, which is NOT the session workspace.
  */
-async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string | undefined> {
-  try {
-    const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
-    return await (fs as unknown as { readText(target: unknown): Promise<string> }).readText(target)
-  } catch {
-    return undefined
-  }
-}
 
 /**
  * Per-call sandbox policy every dev_task write must carry. DSH's filesystem
@@ -121,30 +118,6 @@ async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string |
  * misjudged as out-of-root and denied. Narrowed like `ApprovalAsk` so this
  * bundle stays free of the dsh-sandbox package's dependency tree.
  */
-interface WritePolicy {
-  mode: 'workspace-write' | 'danger-full-access'
-  workspaceRoot: string
-}
-
-type WriteFs = {
-  resolve(relPath: string, opts?: { cwd?: string }): Promise<unknown>
-  writeText(target: unknown, content: string, expected?: unknown, signal?: unknown, sandboxPolicy?: WritePolicy): Promise<unknown>
-  lstat(path: string, opts?: { cwd?: string }, signal?: unknown): Promise<{ version: unknown } | undefined>
-}
-
-async function writeText(
-  fs: Fs,
-  relPath: string,
-  content: string,
-  cwd?: string,
-  mode: 'workspace-write' | 'danger-full-access' = 'workspace-write',
-  expected?: unknown,
-): Promise<void> {
-  const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
-  const policy: WritePolicy = { mode, workspaceRoot: cwd !== undefined ? cwd : process.cwd() }
-  await (fs as unknown as WriteFs).writeText(target, content, expected, undefined, policy)
-}
-
 /** Project-adapter probe over the sandboxed filesystem. */
 function projectProbe(fs: Fs): FileProbe {
   if (typeof fs.listDir !== 'function') return { read: (dir, rel) => readText(fs, rel, dir) }
@@ -467,7 +440,7 @@ function sanitize(id: string): string {
   return id.replace(/[^0-9a-zA-Z_-]/g, '-')
 }
 
-const taskPath = (id: string): string => `.dsh/task-${sanitize(id)}.json`
+
 
 /** Hard line cap for the `init`-generated `AGENTS.md` (injected into every session). */
 const INIT_MAX_LINES = 200
@@ -622,65 +595,7 @@ async function installCommitHook(fs: Fs, cwd: string | undefined, mode: 'workspa
   await writeText(fs, rootsPath, JSON.stringify({ roots }, null, 2) + '\n', repoRoot, mode)
 }
 
-async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
-  const raw = await readText(fs, taskPath(id), cwd)
-  if (raw === undefined) throw new Error(`no task "${id}" under ${taskPath(id)}`)
-  const state = JSON.parse(raw) as TaskState
-  if (state.id !== id) throw new Error(`task id collision: ${taskPath(id)} contains "${state.id}" rather than "${id}"`)
-  // Tasks recorded before these features lack the fields; treat them as empty
-  // so every engine gate reads complete state instead of crashing on absence.
-  state.artifacts = state.artifacts ?? {}
-  state.files = state.files ?? []
-  state.items = state.items ?? []
-  state.commits = state.commits ?? []
-  state.verification = state.verification ?? { passed: false, evidence: [] }
-  state.review = state.review ?? { outcome: 'pending' }
-  if (!state.completed && state.review.outcome === 'pass' && !state.review.scope_hash) state.review = { outcome: 'pending' }
-  state.revision = state.revision ?? 0 // pre-0.23 records carry no revision; CAS treats them as 0
-  if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
-    throw new Error(
-      `task "${id}" snapshot hash mismatch — the frozen workflow config was edited after creation. ` +
-      'Restore the original record or recreate the task; the gate refuses to run on a tampered snapshot.',
-    )
-  }
-  return state
-}
 
-async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
-  const path = taskPath(state.id)
-  // Friendly fast-fail first: the logical revision must still be the one loaded.
-  const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
-  const onDiskRaw = await readText(fs, path, cwd)
-  if (onDiskRaw === undefined) {
-    state.revision = state.revision ?? 1 // first write of a fresh record keeps the factory revision
-  } else {
-    const onDisk = JSON.parse(onDiskRaw) as TaskState
-    if ((onDisk.revision ?? 0) !== (state.revision ?? 0)) {
-      throw new Error(
-        `task "${state.id}" changed concurrently (record revision ${onDisk.revision ?? 0} vs the loaded revision ${state.revision ?? 0}) — reload status and retry this operation`,
-      )
-    }
-    state.revision = (state.revision ?? 0) + 1
-  }
-  // Atomic guard: the write carries the file's current version as a
-  // replace-if-version intent, so a concurrent write between our read and our
-  // write fails with FS_STALE_VERSION instead of silently overwriting.
-  const intent = info === undefined
-    ? { kind: 'createIfAbsent' }
-    : { kind: 'replaceIfVersion', version: info.version }
-  try {
-    state.updated_at = new Date().toISOString()
-    await writeText(fs, path, JSON.stringify(state, null, 2), cwd, mode, intent)
-  } catch (error) {
-    const code = (error as { code?: unknown })?.code
-    if (code === 'FS_STALE_VERSION' || code === 'FS_NOT_OBSERVED') {
-      throw new Error(
-        `task "${state.id}" changed concurrently (file version moved) — reload status and retry this operation`,
-      )
-    }
-    throw error
-  }
-}
 
 /**
  * Resolve the sandbox mode before this call's writes or verification command. No escalation args:
@@ -1214,6 +1129,16 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
 interface OpArgs {
   operation: string
+  intent?: DeliveryIntent
+  intent_reason?: string
+  delegation_benefit?: DelegationBenefit
+  questions?: InvestigationQuestion[]
+  concurrency?: number
+  conclusion?: string
+  proposal?: string
+  limitations?: string[]
+  source_evidence?: import('./delivery-contract.ts').SourceLocation[]
+  plans?: { id: string; title: string; files: string[]; acceptance: string[]; task_boundary: 'local' | 'independent' | 'coupled'; execution_reason: string; delegation_benefit?: DelegationBenefit; depends_on?: string[] }[]
   task_id?: string
   related_task_id?: string
   relation_kind?: 'defect' | 'enhancement' | 'follow_up'
@@ -1605,9 +1530,11 @@ export async function approveAdvance(
   return assertAdvance(state, target, workflow)
 }
 
-const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
+  'First select the user deliverable: diagnosis/proposal creates intent=analysis with task_id, title, intent_reason (branch optional), investigates directly, then submit_analysis accepts exact source_evidence and a conclusion/proposal/limitations in one transaction. ' +
+  'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Legacy calls below remain supported. ' +
   'Track engineering delivery in a workspace task record and enforce configured stage guards. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
   'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
@@ -1627,16 +1554,50 @@ const TOOL_DESCRIPTION =
  * @param ctx - a scoped context whose `tools` and `fs` resolve to the host registries.
  */
 export function registerDevTask(ctx: Context): void {
+  installDeliveryAccess(ctx, async agent => {
+    const cwd = agent.session.header.cwd
+    if (!cwd) return undefined
+    const names = await projectProbe(ctx.fs).list?.(cwd, '.dsh') ?? []
+    const candidates: TaskState[] = []
+    for (const name of names.filter(name => /^task-.+\.json$/u.test(name))) {
+      const raw = await readText(ctx.fs, `.dsh/${name}`, cwd)
+      if (!raw) continue
+      try {
+        const task = JSON.parse(raw) as TaskState
+        if (task.delivery?.parent_session === agent.session.id) candidates.push(task)
+      } catch { /* A bad unrelated record is reported by the ledger, never treated as this session's policy. */ }
+    }
+    return candidates.sort((a, b) => b.delivery!.created_at.localeCompare(a.delivery!.created_at))[0]
+  })
   ctx.tools.register(defineTool({
     name: 'dev_task',
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
+      intent: { type: 'string', enum: ['analysis', 'implementation'], description: 'create/assess: select what the user asked to receive, before complexity. analysis is a read-only diagnosis/proposal; implementation uses project engineering gates. Omission preserves legacy contracts.' },
+      intent_reason: { type: 'string', description: 'Concrete user goal supporting intent (required when intent is supplied).' },
+      delegation_benefit: { type: 'string', enum: ['parallel', 'context_isolation', 'independent_check'], description: 'Concrete delegation benefit; independent boundaries alone do not spawn under the new delivery contract.' },
+      concurrency: { type: 'integer', description: 'delegate: bounded read-only concurrency 1–4, default 2; code writes remain serial.' },
+      plans: { type: 'array', description: 'plan: atomically register implementation units and their execution choices; exact file ownership, dependencies and acceptance. Delete/rename plans use plan_execution.changes.', items: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true }, title: { type: 'string', required: true }, files: { type: 'array', items: { type: 'string' }, required: true },
+        acceptance: { type: 'array', items: { type: 'string' }, required: true }, task_boundary: { type: 'string', enum: ['local', 'independent', 'coupled'], required: true },
+        execution_reason: { type: 'string', required: true }, delegation_benefit: { type: 'string', enum: ['parallel', 'context_isolation', 'independent_check'] },
+        depends_on: { type: 'array', items: { type: 'string' } },
+      } } },
+      questions: { type: 'array', description: 'delegate: concrete independent investigation questions, not implementation tasks.', items: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true }, question: { type: 'string', required: true }, references: { type: 'array', items: { type: 'string' } }, depends_on: { type: 'array', items: { type: 'string' } },
+      } } },
+      conclusion: { type: 'string', description: 'submit_analysis: confirmed causes and their reasoning; report central findings early in conversation.' },
+      proposal: { type: 'string', description: 'submit_analysis: actionable proposal; does not authorize implementation.' },
+      limitations: { type: 'array', items: { type: 'string' }, description: 'submit_analysis: explicitly unknown or unverified aspects.' },
+      source_evidence: { type: 'array', description: 'submit_analysis: relevant current-source locations. Use 1-based ranges, at most 200 lines each. Host captures exact text and hash; optional quote must match the range.', items: { type: 'object', additionalProperties: false, properties: {
+        file: { type: 'string', required: true }, start_line: { type: 'integer', required: true }, end_line: { type: 'integer', required: true }, quote: { type: 'string', description: 'Optional exact substring, without line-number prefixes; omit to capture the source range.' },
+      } } },
       task_id: { type: 'string', description: 'Required on create and every task operation except assess/status. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
       related_task_id: { type: 'string', description: 'Archived source task for a new defect, enhancement or follow-up. New work always gets a new task_id.' },
       relation_kind: { type: 'string', enum: ['defect', 'enhancement', 'follow_up'], description: 'How a newly created task relates to related_task_id.' },
       skill_name: { type: 'string', description: 'Bound skill to load or record. For a codex-project skill, pass codex-project:name to load_skill and skill_result. Command evidence needs a real validation command; manual evidence needs human approval.' },
-      branch: { type: 'string', description: 'Current git branch (recorded on create).' },
+      branch: { type: 'string', description: 'Current git branch. New intent contracts can omit it; the engine reads Git HEAD or records unversioned. Required only for legacy create.' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Optional workload tier (create), default standard. This is separate from complexity; do not pass low/medium/high here.' },
       complexity: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Task-level complexity (assess/create). Select from requirement scope and implementation dependencies; independent of risk_level. Passing this on create selects the adaptive meta-skill flow.' },
@@ -1672,7 +1633,7 @@ export function registerDevTask(ctx: Context): void {
       description: { type: 'string', description: 'Implementation intent (dispatch); the current agent may execute it directly.' },
       execution: { type: 'string', enum: ['direct', 'spawn', 'fork'], description: 'plan_execution: omit for automatic routing; use direct with a concrete cost/benefit reason for very small independent work. dispatch reads the recorded mode; legacy dispatch defaults to direct. Children still need parent verification and review.' },
       execution_policy: { type: 'string', enum: ['auto', 'main_only'], description: 'create: auto (default) chooses from task boundaries and real host capabilities; main_only honors a request to keep work and review in the main session.' },
-      execution_reason: { type: 'string', description: 'plan_execution: concrete reason for the task boundary and execution choice. Omit execution for automatic routing; no user reminder is required.' },
+      execution_reason: { type: 'string', description: 'Required with delegate: explain the concrete benefit of delegating these questions. Also used by plan_execution to explain the task boundary and execution choice. No user reminder is required.' },
       task_boundary: { type: 'string', enum: ['local', 'independent', 'coupled'], description: 'plan_execution: local small change, independent deliverable with explicit acceptance, or tightly coupled work. Do not split work merely to spawn children.' },
       context_need: { type: 'string', enum: ['brief', 'history'], description: 'plan_execution: brief (default) gives a fresh child only its task context; history requests fork only when completed parent history is needed.' },
       acceptance: { type: 'array', items: { type: 'string' }, description: 'plan_execution: concrete acceptance conditions for this item.' },
@@ -1728,8 +1689,8 @@ export function registerDevTask(ctx: Context): void {
       const executionDirectory = exec.agent ? await ctx.get('workingDirectory')?.ensure(exec.agent, exec.signal) : undefined
       const cwd = exec.agent?.session.header.cwd ?? executionDirectory
       const session = exec.agent?.session as unknown as SkillSession | undefined
-      const mutationPath = a.task_id ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)) : undefined
-      const release = mutationPath && !['status', 'config', 'assess'].includes(a.operation)
+      const mutationPath = a.task_id ? (process.platform === 'win32' ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)).toLowerCase() : resolve(cwd ?? process.cwd(), taskPath(a.task_id))) : undefined
+      const release = mutationPath && !['status', 'config', 'assess', 'delegate'].includes(a.operation)
         ? acquireTaskMutation(process.platform === 'win32' ? mutationPath.toLowerCase() : mutationPath) : undefined
       try {
 
@@ -1760,6 +1721,8 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'assess') {
+        if (a.intent === 'analysis') return JSON.stringify({ intent: 'analysis', stages: analysisWorkflow().stages,
+          instruction: 'Investigate directly; no implementation items, synthetic tests or Sonar required. Create with intent=analysis and intent_reason. Delegate read-only questions only when it has a concrete benefit.' })
         if (a.complexity === undefined) {
           return JSON.stringify({ grades: COMPLEXITY_OPTIONS,
             instruction: 'Analyze the requirement, choose one grade, then call assess with complexity to preview its stages and effective Skill sources. Record the reason on create. Risk is assessed separately.' }, null, 2)
@@ -1959,12 +1922,13 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'create') {
-        if (!a.task_id || !a.title || !a.branch) {
+        if (!a.task_id || !a.title || (!a.intent && !a.branch)) {
           throw new Error('create requires task_id, title, and branch')
         }
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(a.task_id)) {
           throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
         }
+        if (await fs.lstat(taskPath(a.task_id), cwd === undefined ? undefined : { cwd }) !== undefined) throw new Error('task_id already exists; inspect status and continue it, or use a new task_id. Existing records are never replaced by create.')
         if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
         if ((a.related_task_id === undefined) !== (a.relation_kind === undefined)) throw new Error('related_task_id and relation_kind must be provided together')
         if (a.related_task_id === a.task_id) throw new Error('a follow-up task needs its own task_id')
@@ -1976,7 +1940,9 @@ export function registerDevTask(ctx: Context): void {
           throw new Error('adaptive create requires complexity_reason explaining the requirement evidence for this grade')
         }
         const adaptiveConfig = a.complexity === undefined ? undefined : await readAdaptiveConfig(fs, cwd)
-        const resolved = a.complexity !== undefined
+        const resolved = a.intent === 'analysis'
+          ? { flow: 'analysis-v1', version: 1, config: analysisWorkflow(), problems: [] }
+          : a.complexity !== undefined
           ? { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
               config: await resolveAdaptiveWorkflow(a.complexity, fs, cwd, adaptiveConfig), problems: [] }
           : await resolveWorkflow(fs, cwd)
@@ -1984,13 +1950,13 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
         const risk = a.risk_level ?? 'standard'
-        if (risk === 'high_risk' && !workflowSatisfies(resolved.config, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+        if (a.intent !== 'analysis' && risk === 'high_risk' && !workflowSatisfies(resolved.config, HIGH_RISK_REQUIRED_CAPABILITIES)) {
           throw new Error(
             `high_risk task cannot run on flow "${resolved.flow}" — it lacks the required capabilities ` +
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
-        const sonarPolicy = adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
+        const sonarPolicy = a.intent === 'analysis' || adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
         if (sonarPolicy?.source === 'ide-local' && resolved.config.stages.includes('代码审核')) {
           resolved.config.commit = { ...resolved.config.commit, checkpoints: ['代码审核'] }
         }
@@ -2009,10 +1975,20 @@ export function registerDevTask(ctx: Context): void {
             resources: frozen.resources,
         }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
+        let branch = a.branch?.trim()
+        if (!branch) {
+          let head = await readText(fs, '.git/HEAD', root)
+          if (head === undefined) {
+            const gitDir = (await readText(fs, '.git', root))?.match(/^gitdir:\s*(.+)\s*$/u)?.[1]?.trim()
+            if (gitDir) head = await readText(fs, resolve(root, gitDir, 'HEAD'), root)
+          }
+          branch = head?.trim().match(/^ref:\s*refs\/heads\/(\S+)$/u)?.[1]
+            ?? (head && /^[a-f0-9]{40,64}$/iu.test(head.trim()) ? `detached@${head.trim().slice(0,12)}` : 'unversioned')
+        }
         const state = newTask({
           id: a.task_id,
           title: a.title,
-          branch: a.branch,
+          branch,
           work_size: a.work_size ?? 'standard',
           risk_level: risk,
           ...(a.complexity !== undefined ? { complexity: a.complexity, complexity_reason: a.complexity_reason!.trim() } : {}),
@@ -2022,10 +1998,22 @@ export function registerDevTask(ctx: Context): void {
           project_type: await detectType(projectProbe(fs), root),
         })
         if (a.related_task_id !== undefined) state.related_task = { id: a.related_task_id, kind: a.relation_kind! }
+        if (a.intent !== undefined) {
+          state.delivery = deliveryContract(a.intent, a.intent_reason ?? '')
+          if (session?.id) state.delivery.parent_session = session.id
+          const events = (session?.snapshotEvents() ?? []) as readonly { type: string; time?: number; data: { source?: { kind?: string } } }[]
+          const request = [...events].reverse().find(event => event.type === 'user/message' && event.data.source?.kind === 'user' && typeof event.time === 'number')
+          if (request?.time !== undefined) state.delivery.requested_at = new Date(request.time).toISOString()
+        }
         state.items = normalizeItems(a.items)
         state.execution_version = 1
-        if (state.complexity !== undefined) { state.delegation_version = 1; state.verification_version = 1; state.execution_policy = a.execution_policy ?? 'auto' }
-        state.files = a.files ?? []
+        if (state.complexity !== undefined && !isAnalysis(state)) { state.delegation_version = 1; state.verification_version = 1; state.execution_policy = a.execution_policy ?? 'auto' }
+        if (isAnalysis(state)) {
+          if (state.items.length) throw new Error('analysis does not use implementation items; create without items, then investigate directly or delegate questions')
+          if (a.files?.length) state.delivery!.references = a.files
+          state.execution_policy = a.execution_policy ?? 'auto'
+        }
+        state.files = isAnalysis(state) ? [] : a.files ?? []
         let baselineNotice = ''
         if (sonarPolicy?.source === 'ide-local') {
           try { state.sonar_baseline = await captureLocalAuditBaseline(root, sonarPolicy.reference_branch ?? 'HEAD') }
@@ -2033,17 +2021,95 @@ export function registerDevTask(ctx: Context): void {
         }
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+        bindDeliveryIntent(exec.agent, state.delivery?.intent)
+        if (isAnalysis(state)) return JSON.stringify({ created: state.id, delivery: deliveryView(state),
+          instruction: 'Read source and return findings early. Finish with submit_analysis; no synthetic implementation items, tests or commits. Project Skills are available as relevant investigation context.' })
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
       const state = await loadTask(fs, a.task_id, cwd)
+      bindDeliveryIntent(exec.agent, state.delivery?.intent)
       const workflow = await workflowFor(state, fs, cwd)
       if (state.completed !== undefined && a.operation === 'complete') {
         return `task already completed at ${state.completed.at}`
       }
       if (state.completed !== undefined && a.operation !== 'status') {
         throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
+      }
+
+      if (isAnalysis(state) && a.operation !== 'status') {
+        if (!['delegate', 'recover_analysis', 'submit_analysis', 'complete'].includes(a.operation)) throw new Error('analysis is read-only: use delegate for questions or submit_analysis for the conclusion; implementation needs a separate task')
+        if (a.operation === 'delegate') {
+          if (!a.delegation_benefit || !a.execution_reason?.trim()) throw new Error('delegate requires delegation_benefit and execution_reason demonstrating why a child is useful; otherwise investigate directly')
+          const mode = await resolveWriteMode(ctx, a, exec)
+          // Serialize only state transactions. Never hold this lock across an LLM activation.
+          let updates = Promise.resolve()
+          const update = (change: (fresh: TaskState) => void): Promise<void> => {
+            const next = updates.then(async () => {
+              const unlock = acquireTaskMutation(mutationPath!)
+              try {
+                const fresh = await loadTask(fs, state.id, cwd)
+                if (fresh.completed || !isAnalysis(fresh)) throw new Error('analysis task is no longer active')
+                change(fresh)
+                await writeTask(fs, fresh, cwd, mode)
+              } finally { unlock() }
+            })
+            updates = next.catch(() => {})
+            return next
+          }
+          await investigate(ctx, exec, { read: () => loadTask(fs, state.id, cwd), update }, a.questions ?? [], a.concurrency ?? 2)
+          return JSON.stringify({ delivery: deliveryView(await loadTask(fs, state.id, cwd)), instruction: 'Inspect returned reports, verify key claims and report findings to the user. Returned is not accepted. Preserve successful reports if other questions failed.' })
+        }
+        if (a.operation === 'recover_analysis') {
+          if (!session?.id) throw new Error('recovery requires the original parent session')
+          const active = state.delivery!.runs.filter(run => ['queued', 'starting', 'running'].includes(run.status))
+          const runtime = taskSubagents(ctx)
+          if (!runtime?.listDescendants) throw new Error('host cannot establish child liveness; recovery is blocked')
+          const descendants = await runtime.listDescendants(session.id as never, exec.signal)
+          for (const run of active) {
+            if (run.parent_session !== session.id) throw new Error('recovery requires the original parent session')
+            const childId = run.run_id ?? run.id
+            const index = descendants.findIndex(child => child.id === childId)
+            if (index < 0 && run.status !== 'queued') throw new Error('child identity is absent from host catalog; recovery cannot prove it stopped')
+            const depth = index < 0 ? Infinity : descendants[index]!.depth
+            const end = index < 0 ? -1 : descendants.findIndex((child, i) => i > index && child.depth <= depth)
+            const tail = index < 0 ? [] : descendants.slice(index, end < 0 ? undefined : end)
+            if (tail.some(child => child.kind !== 'child' || child.activity !== 'inactive')) throw new Error('child or descendant is still active; stop it through host controls before recovery')
+          }
+          for (const run of active) { run.status = 'failed'; run.finished_at = new Date().toISOString(); run.error = 'Interrupted run recovered after host liveness check. Existing reports remain available; retry only unreturned questions.' }
+          await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+          return JSON.stringify(deliveryView(state))
+        }
+        if (state.delivery!.runs.some(run => ['queued', 'starting', 'running'].includes(run.status))) throw new Error('investigation children are active; wait or recover before accepting')
+        if (a.operation === 'submit_analysis') {
+          if (!a.conclusion?.trim() || !a.proposal?.trim() || !a.source_evidence?.length || !Array.isArray(a.limitations)) throw new Error('submit_analysis requires conclusion, proposal, limitations (possibly empty) and exact source_evidence')
+          const evidence = []
+          for (const claim of a.source_evidence) {
+            if (isAbsolute(claim.file) || win32.isAbsolute(claim.file)) throw new Error('evidence paths must be project-relative')
+            assertInsideRoot(state.root!, state.root!, claim.file)
+            const canonical = relative(state.root!, resolve(state.root!, claim.file)).replace(/\\/gu, '/')
+            if (/^\.dsh\//u.test(canonical) || isSensitivePath(canonical)) throw new Error('task metadata and credentials are not source evidence')
+            const info = await fs.lstat(claim.file, { cwd: state.root! })
+            if (info?.type !== 'file') throw new Error(`evidence must be a regular source file: ${claim.file}`)
+            assertInsideRoot(realpathSync.native(state.root!), realpathSync.native(state.root!), realpathSync.native(resolve(state.root!, claim.file)))
+            const source = await readText(fs, claim.file, state.root)
+            if (source === undefined) throw new Error(`cannot read source evidence: ${claim.file}`)
+            evidence.push(sourceEvidence(claim, source, hashText(source)))
+          }
+          // Acceptance is one transaction, not record + review + done + advance + complete.
+          state.delivery!.result = { conclusion: a.conclusion.trim(), proposal: a.proposal.trim(), limitations: a.limitations, evidence, accepted_at: new Date().toISOString() }
+          const since = Date.parse(state.delivery!.requested_at ?? state.delivery!.created_at)
+          state.delivery!.metrics = parentMetrics(session, since)
+          state.artifacts.analysis = { conclusion: a.conclusion, proposal: a.proposal, limitations: a.limitations.join('\n') || 'No additional limitations reported.' }
+          state.stage = '完成'
+          state.completed = { at: new Date().toISOString() }
+          await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+          return JSON.stringify({ accepted: true, task: state.id, archived: true,
+            evidence: evidence.map(({ file, start_line, end_line, content_hash }) => ({ file, start_line, end_line, content_hash })),
+            instruction: 'Deliver the conclusion and proposal to the user. Source matching proves provenance, not semantic correctness. Exact source snapshots are saved in the task record; no need to repeat source reads. No business code was implemented or tested by this operation.' })
+        }
+        throw new Error('analysis needs submit_analysis; do not bypass source acceptance with complete')
       }
       if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? '')))
         && a.operation !== 'status' && a.operation !== 'recover_dispatch') {
@@ -2083,6 +2149,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'status') {
+        if (isAnalysis(state)) return JSON.stringify({ id: state.id, stage: state.stage, lifecycle: state.completed ? 'archived' : 'active', delivery: deliveryView(state) })
         const binding = bindingsForStage(state.stage, workflow)
         const {
           resolved: rules,
@@ -2111,6 +2178,7 @@ export function registerDevTask(ctx: Context): void {
           id: state.id,
           stage: state.stage,
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
+          ...(state.delivery ? { delivery: deliveryView(state) } : {}),
           risk_level: state.risk_level,
           complexity: state.complexity ?? null,
           complexity_reason: state.complexity_reason ?? null,
@@ -2469,6 +2537,7 @@ export function registerDevTask(ctx: Context): void {
           state.completed = hash === undefined
             ? { at: new Date().toISOString() }
             : { at: new Date().toISOString(), commit_hash: hash }
+          if (state.delivery) state.delivery.metrics = parentMetrics(session, Date.parse(state.delivery.requested_at ?? state.delivery.created_at))
           await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
           return hash === undefined
             ? `task archived at "${state.stage}"; the record is now read-only`
@@ -2536,6 +2605,25 @@ export function registerDevTask(ctx: Context): void {
       let note: string | undefined
       let approvedWriteMode: 'workspace-write' | 'danger-full-access' | undefined
       switch (a.operation) {
+        case 'plan': {
+          if (!state.delivery || !['任务编排', '代码开发', '开发'].includes(state.stage)) throw new Error('plan requires a new implementation contract in orchestration or development')
+          if (!a.plans?.length) throw new Error('plan requires complete plans')
+          state.items = normalizeItems(a.plans.map(plan => ({ id: plan.id, title: plan.title })), state.items)
+          for (const plan of a.plans) for (const file of plan.files) {
+            assertInsideRoot(state.root!, state.root!, file)
+            if (isSensitivePath(file)) throw new Error(`sensitive delivery path: ${file}`)
+            const info = await fs.lstat(file, { cwd: state.root! })
+            if (info && info.type !== 'file') throw new Error(`plan contains a non-regular file: ${file}`)
+          }
+          state.files = [...new Set([...state.files, ...a.plans.flatMap(plan => plan.files)])]
+          for (const input of a.plans) {
+            const item = requireItem(state, input.id)
+            if (item.dispatch || item.review) throw new Error('plan cannot replace started work; revise/replan the affected item explicitly')
+            item.execution_plan = makeExecutionPlan(state, item, input, executionCapabilities(ctx, !!exec.agent))
+          }
+          note = JSON.stringify({ items: state.items.map(item => ({ id: item.id, plan: item.execution_plan })), next_action: 'Declare necessary verification groups, record the required task-plan artifact if in orchestration, then advance. Direct items need no child; accept_item performs review and done atomically after genuine verification.' })
+          break
+        }
         case 'record': {
           if (!a.artifact) throw new Error('record requires artifact (the artifact id)')
           const def = workflow.artifacts.find(artifact => artifact.id === a.artifact)
@@ -2665,7 +2753,9 @@ export function registerDevTask(ctx: Context): void {
               item.dispatch.status = 'failed'
               item.dispatch.error = error instanceof Error ? error.message : String(error)
             } finally {
+              item.dispatch.metrics = unknownMetrics(Date.parse(item.dispatch.at))
               if (run) {
+                try { item.dispatch.metrics = runMetrics(await reviewerEvents(ctx, run.childId, exec.signal), Date.parse(item.dispatch.at)) } catch {}
                 try { await run.dispose() }
                 catch (error) { item.dispatch.status = 'running'; item.dispatch.error = `child disposal failed; inspect host state and recover_dispatch before retrying: ${String(error)}` }
               }
@@ -2745,6 +2835,8 @@ export function registerDevTask(ctx: Context): void {
             review.status = 'completed'
           } catch (error) { review.status = 'failed'; review.error = error instanceof Error ? error.message : String(error) }
           finally {
+            review.metrics = unknownMetrics(Date.parse(review.at))
+            if (run) try { review.metrics = runMetrics(await reviewerEvents(ctx, run.childId, exec.signal), Date.parse(review.at)) } catch {}
             if (run) try { await run.dispose() }
             catch (error) { review.status = 'running'; review.error = `reviewer disposal failed; inspect host and recover_dispatch dispatch_role=review: ${String(error)}` }
           }
@@ -2780,8 +2872,14 @@ export function registerDevTask(ctx: Context): void {
           note = dispatch.error
           break
         }
+        case 'accept_item':
         case 'review_item': {
           const item = requireItem(state, a.item_id)
+          if (a.operation === 'accept_item') {
+            if (!state.delivery || !item.execution_plan) throw new Error('accept_item requires a new implementation contract and execution plan')
+            if (item.execution_plan.depends_on.some(id => state.items.find(other => other.id === id)?.status !== 'done')) throw new Error('item dependencies are not accepted')
+            if (!item.dispatch && item.execution_plan.mode === 'direct') item.dispatch = { execution: 'direct', description: 'Main-session delivery submitted for acceptance', at: new Date().toISOString() }
+          }
           if (!['开发', '代码开发'].includes(state.stage)) throw new Error('review_item runs only in implementation stage')
           if (item.dispatch?.status && item.dispatch.status !== 'completed') throw new Error('delegated item has not completed successfully')
           if (a.spec_outcome !== 'pass' && a.spec_outcome !== 'fail') throw new Error('review_item requires spec_outcome: pass|fail')
@@ -2814,6 +2912,11 @@ export function registerDevTask(ctx: Context): void {
             ...(item.execution_plan?.review === 'independent' ? { independent_run_id: item.independent_review!.run_id } : {}),
             spec: { outcome: a.spec_outcome, ...auditNotes },
             quality: { outcome: a.quality_outcome, ...auditNotes },
+          }
+          if (a.operation === 'accept_item') {
+            const blockers = executionItemBlockers(state, item)
+            if (blockers.length) throw new Error(blockers.join('; '))
+            item.status = 'done'
           }
           note = `reviewed item "${item.id}": spec=${a.spec_outcome}, quality=${a.quality_outcome}; item status remains ${item.status}. ${a.spec_outcome === 'pass' && a.quality_outcome === 'pass' ? 'If implementation is complete, use items with this id and status=done before dispatching another item.' : 'Fix the findings before marking this item done.'}`
           break

@@ -12,6 +12,7 @@
 
 import type { ProjectType } from './project.ts'
 import type { Complexity } from './adaptive.ts'
+import { analysisBlockers } from './delivery-contract.ts'
 import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
@@ -284,6 +285,7 @@ export interface ItemDispatch {
   output?: string
   error?: string
   finished_at?: string
+  metrics?: import('./delivery-contract.ts').RunMetrics
   parent_session?: string
 }
 
@@ -405,6 +407,8 @@ export interface VerificationReceipt {
 
 export interface TaskState {
   schema: 1
+  /** Absent on legacy snapshots; never inferred or migrated implicitly. */
+  delivery?: import('./delivery-contract.ts').DeliveryContract
   id: string
   title: string
   branch: string
@@ -991,7 +995,7 @@ export function terminalRequirements(config: WorkflowConfig): GuardName[] {
 }
 
 export function completionBlockers(state: TaskState, config: WorkflowConfig): string[] {
-  const blockers: string[] = []
+  const blockers: string[] = [...analysisBlockers(state)]
   if (state.completed !== undefined) return []
   if (!isTerminalStage(state.stage, config)) {
     blockers.push(`task is at "${state.stage}", which is not a final stage; advance to one of: ${config.stages.filter(s => isTerminalStage(s, config)).join(', ')}`)

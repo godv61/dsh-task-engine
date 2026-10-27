@@ -124,9 +124,13 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs .delivery-kernel-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
-} catch (error) { check('in-package resource, workflow and hook behavior', false, String(error.stdout || error.stderr || error).slice(-16000)) }
+} catch (error) {
+  const lines = String(error.stdout || error.stderr || error).split('\n')
+  const failures = lines.flatMap((line, index) => /^not ok /u.test(line) ? lines.slice(index, index + 32) : [])
+  check('in-package resource, workflow and hook behavior', false, failures.length ? failures.join('\n') : lines.slice(-80).join('\n'))
+}
 
 // 7. CLI parses
 try {

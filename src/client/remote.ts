@@ -214,10 +214,14 @@ const deleteRuleRequestSchema = z.object({
   path: z.string().optional(),
 })
 
+const runMetricsSchema = z.object({ elapsed_ms: z.number(), tool_calls: z.number().nullable(), errors: z.number().nullable(),
+  input_tokens: z.number().nullable(), cached_input_tokens: z.number().nullable(), output_tokens: z.number().nullable() })
+
 /** Browser-safe shape of one task ledger item's dispatch/review audit. */
-const taskDispatchSchema = z.object({ description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
+const taskDispatchSchema = z.object({ metrics: runMetricsSchema.optional(), description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
   status: z.string().optional(), execution: z.string().optional(), output: z.string().optional(), error: z.string().optional(), finished_at: z.string().optional() })
 const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spawn', 'fork']), mode: z.enum(['direct', 'spawn', 'fork']),
+  delegation_benefit: z.enum(['parallel','context_isolation','independent_check']).optional(),
   reason: z.string(), boundary: z.enum(['local', 'independent', 'coupled']), context: z.enum(['brief', 'history']),
   files: z.array(z.string()), acceptance: z.array(z.string()), depends_on: z.array(z.string()),
   changes: z.array(z.object({ path: z.string(), kind: z.enum(['delete', 'rename']), to: z.string().optional(),
@@ -225,7 +229,7 @@ const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spa
       before: z.object({ path: z.string(), sha256: z.string() }).optional() }) })).optional(),
   review: z.enum(['main', 'independent']), review_reason: z.string(), at: z.string(),
   capabilities: z.object({ spawn: z.boolean(), fork: z.boolean(), reviewer: z.boolean() }) })
-const independentReviewSchema = z.object({ status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
+const independentReviewSchema = z.object({ metrics: runMetricsSchema.optional(), status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
   policy: z.object({ version: z.literal(1), preset: z.string(), child_id: z.string(), tools: z.array(z.string()) }).optional(),
   run_id: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), output: z.string().optional(),
   scope_hash: z.string(), plan_key: z.string(), dispatch_at: z.string(), verification_at: z.string(),
@@ -246,10 +250,24 @@ const taskLedgerItemSchema = z.object({
 })
 
 /** `readTasks` result: every task record under the workspace's `.dsh/`. */
+const sourceClaimSchema = z.object({ file: z.string(), start_line: z.number(), end_line: z.number(), quote: z.string() })
+const deliveryViewSchema = z.object({ version: z.literal(1), intent: z.enum(['analysis','implementation']), reason: z.string(),
+  created_at: z.string(), requested_at: z.string().optional(), parent_session: z.string().optional(), metrics: runMetricsSchema.optional(),
+  references: z.array(z.string()).optional(),
+  result: z.object({ conclusion: z.string(), proposal: z.string(), limitations: z.array(z.string()), accepted_at: z.string(),
+    evidence: z.array(sourceClaimSchema.extend({ content_hash: z.string() })) }).optional(),
+  runs: z.array(z.object({ id: z.string(), question: z.object({ id: z.string(), question: z.string(), references: z.array(z.string()).optional(), depends_on: z.array(z.string()).optional() }),
+    parent_session: z.string(), status: z.enum(['queued','starting','running','returned','failed']), at: z.string(), run_id: z.string().optional(),
+    started_at: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), acceptance: z.string().optional(), metrics: runMetricsSchema.optional(),
+    report: z.object({ status: z.enum(['complete','partial','blocked']), summary: z.string(), evidence: z.array(sourceClaimSchema), limitations: z.array(z.string()) }).optional(),
+  })), next_actions: z.array(z.string()), instruction: z.string(),
+})
+
 const taskLedgerViewSchema = z.object({
   next_cursor: z.string().optional(), total_count: z.number().optional(),
   errors: z.array(z.object({ file: z.string(), message: z.string() })).optional(),
   tasks: z.array(z.object({
+    delivery: deliveryViewSchema.optional(),
     evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
     verification_groups: z.array(z.object({ id: z.string(), command: z.string(),
       status: z.enum(['passed', 'failed', 'blocked', 'stale', 'missing']), test_count: z.number().nullable(),

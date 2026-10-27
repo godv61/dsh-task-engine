@@ -99,7 +99,7 @@ function requiredReviewPaths(plan) {
 
 // src/reviewer-spec.ts
 var REVIEW_PRESET = "task-engine-review";
-var REVIEW_TOOLS = ["read", "structured_output"];
+var REVIEW_TOOLS = ["read", "glob", "grep", "structured_output"];
 function validReviewPolicy(proof, childId, structured = false) {
   return !!proof && proof.version === 1 && proof.preset === REVIEW_PRESET && !!childId && proof.child_id === childId && Array.isArray(proof.tools) && proof.tools.includes("read") && (!structured || proof.tools.includes("structured_output")) && proof.tools.every((tool) => REVIEW_TOOLS.includes(tool));
 }
