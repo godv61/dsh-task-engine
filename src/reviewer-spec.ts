@@ -1,6 +1,8 @@
 /** Browser-safe reviewer policy identity shared by task gates and host receipts. */
 export const REVIEW_PRESET = 'task-engine-review'
-export const REVIEW_TOOLS = ['read', 'structured_output'] as const
+/** Stable legacy preset ID now represents shared read-only evidence capability, not a forced second review. */
+export const READONLY_PRESET = REVIEW_PRESET
+export const REVIEW_TOOLS = ['read', 'glob', 'grep', 'structured_output'] as const
 export interface ReviewPolicyProof { version: 1; preset: string; child_id: string; tools: string[] }
 export function validReviewPolicy(proof: ReviewPolicyProof | undefined, childId?: string, structured = false): boolean {
   return !!proof && proof.version === 1 && proof.preset === REVIEW_PRESET && !!childId && proof.child_id === childId

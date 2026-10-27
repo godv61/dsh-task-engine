@@ -11,6 +11,7 @@
 
 import { constants, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
 import { authorizedWorkspace } from './workspace-access.ts'
+import { deliveryView, type DeliveryView } from './delivery-contract.ts'
 import { assertRealPath, prepareImport, commitImport } from './resource-import.ts'
 import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 import { homedir } from 'node:os'
@@ -310,7 +311,7 @@ export interface TaskLedgerItem {
   execution_plan?: import('./execution-plan.ts').ExecutionPlan
   independent_review?: import('./execution-plan.ts').IndependentReview
   /** Subagent dispatch audit; absent until the item has been dispatched. */
-  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string }
+  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string; metrics?: import('./delivery-contract.ts').RunMetrics }
   dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]
   /** Two-stage review audit; absent until the item has been reviewed. */
   review?: {
@@ -322,6 +323,7 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and the per-item audit trail. */
 export interface TaskLedgerEntry {
+  delivery?: DeliveryView
   evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
   verification_groups?: VerificationGroupView[]
   review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'
@@ -1091,6 +1093,7 @@ export default class TaskEngineController extends TypertRemoteService {
           && state.flow?.config.transitions.some(edge => edge.from === state.stage
             && assertAdvance(state, edge.to, state.flow!.config).errors?.some(error => error.startsWith('commit required before leaving')))
         tasks.push({
+          ...(state.delivery ? { delivery: deliveryView(state)! } : {}),
           evidence_status: evidenceStatus,
             ...(groupViews.length ? { verification_groups: groupViews } : {}),
           review_status: reviewStatus,
@@ -1101,7 +1104,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.completed ? { completed_at: state.completed.at } : {}),
           ...(state.related_task ? { related_task: state.related_task } : {}),
           items_done: (state.items ?? []).filter(item => item.status === "done").length,
-          next_action: state.completed ? "已归档；后续改动请新建关联任务" : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接",
+          next_action: state.completed ? "已归档；后续改动请新建关联任务" : state.delivery?.intent === 'analysis' ? '主会话查证并及时交付结论；submit_analysis 接受证据与方案' : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接",
           verification_passed: state.completed ? state.verification?.passed ?? false : evidenceStatus === 'valid',
           review_outcome: state.review?.outcome ?? 'pending',
           ...(state.sonar_policy ? { sonar: {

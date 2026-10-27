@@ -10,8 +10,9 @@ export const inject = ['tools', 'systemPrompt', 'taskEngineReviewPolicy']
 /** Install restrictions on the Agent, where preset tools are inherited and result capture is local. */
 function installGuard(ctx: Context, agent: Agent): void {
   ctx.tools.presentAs('native')
-  ctx.tools.restrict({ allow: ['read'] })
-  ctx.tools.guard(exec => (REVIEW_TOOLS as readonly string[]).includes(exec.name) ? undefined : 'Task reviewer is read-only; only read and structured_output are permitted')
+  const available = new Set(ctx.tools.schemas(agent).map(tool => tool.name))
+  ctx.tools.restrict({ allow: ['read', 'glob', 'grep'].filter(name => available.has(name)) })
+  ctx.tools.guard(exec => (REVIEW_TOOLS as readonly string[]).includes(exec.name) ? undefined : 'Task reviewer is read-only; only read, glob, grep and structured_output are permitted')
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const assembly = await next()
     if (context.scope !== agent && context.agent !== agent) return assembly

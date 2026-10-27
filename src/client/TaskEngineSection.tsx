@@ -147,7 +147,7 @@ export interface TaskLedgerItem {
   status: string
   execution_plan?: import('../execution-plan.ts').ExecutionPlan
   independent_review?: import('../execution-plan.ts').IndependentReview
-  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string }
+  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string; metrics?: import('../delivery-contract.ts').RunMetrics }
   dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]
   review?: {
     independent_run_id?: string
@@ -158,6 +158,7 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and per-item audit trail. */
 export interface TaskLedgerEntry {
+  delivery?: import('../delivery-contract.ts').DeliveryView
   evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
   verification_groups?: VerificationGroupView[]
   review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'

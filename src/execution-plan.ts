@@ -13,6 +13,7 @@ export interface ExecutionPlan {
   reason: string
   boundary: 'local' | 'independent' | 'coupled'
   context: 'brief' | 'history'
+  delegation_benefit?: import('./delivery-contract.ts').DelegationBenefit
   files: string[]
   changes?: DeliveryChange[]
   acceptance: string[]
@@ -28,6 +29,7 @@ export interface IndependentReview {
   parent_session: string
   run_id?: string
   finished_at?: string
+  metrics?: import('./delivery-contract.ts').RunMetrics
   error?: string
   output?: string
   scope_hash: string
@@ -90,15 +92,16 @@ export function executionCapabilities(ctx: Context, liveParent: boolean): Execut
 export function executionPlanKey(plan: ExecutionPlan): string {
   return JSON.stringify(plan)
 }
-export function reviewStrategy(state: Pick<TaskState, 'execution_policy' | 'complexity' | 'risk_level'>, mode: ExecutionMode, capabilities: ExecutionPlan['capabilities']): Pick<ExecutionPlan, 'review' | 'review_reason'> {
+export function reviewStrategy(state: Pick<TaskState, 'execution_policy' | 'complexity' | 'risk_level' | 'delivery'>, mode: ExecutionMode, capabilities: ExecutionPlan['capabilities']): Pick<ExecutionPlan, 'review' | 'review_reason'> {
   const independent = state.execution_policy !== 'main_only'
-    && (mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
+    && (state.delivery ? state.risk_level === 'high_risk' : mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
   return independent && capabilities.reviewer ? { review: 'independent', review_reason: '委派实现或高复杂度/高风险项，使用独立只读审核' }
     : { review: 'main', review_reason: independent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '局部或紧密耦合工作，由主会话审核' }
 }
 export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   execution?: string; execution_reason?: string; task_boundary?: string; context_need?: string;
   files?: string[]; acceptance?: string[]; depends_on?: string[];
+  delegation_benefit?: import('./delivery-contract.ts').DelegationBenefit;
 }, capabilities: ExecutionPlan['capabilities']): ExecutionPlan {
   if (!input.execution_reason?.trim()) throw new Error('plan_execution requires execution_reason with concrete task facts')
   if (!['local', 'independent', 'coupled'].includes(input.task_boundary ?? '')) throw new Error('plan_execution requires task_boundary: local|independent|coupled')
@@ -115,8 +118,9 @@ export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   if (!['auto', 'direct', 'spawn', 'fork'].includes(requested)) throw new Error('invalid execution mode')
   if (input.context_need !== undefined && !['brief', 'history'].includes(input.context_need)) throw new Error('context_need must be brief|history')
   const context = input.context_need === 'history' ? 'history' : 'brief'
+  if (input.delegation_benefit !== undefined && !['parallel', 'context_isolation', 'independent_check'].includes(input.delegation_benefit)) throw new Error('invalid delegation_benefit')
   const desired = requested === 'auto'
-    ? state.execution_policy === 'main_only' || input.task_boundary !== 'independent' ? 'direct' : context === 'history' ? 'fork' : 'spawn'
+    ? state.execution_policy === 'main_only' || input.task_boundary !== 'independent' || (state.delivery && !input.delegation_benefit) ? 'direct' : context === 'history' ? 'fork' : 'spawn'
     : requested as ExecutionMode
   if (state.execution_policy === 'main_only' && desired !== 'direct') throw new Error('task execution_policy is main_only; child implementation is disabled')
   let mode = desired
@@ -127,6 +131,7 @@ export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
     mode = 'direct'
   }
   return { requested: requested as ExecutionPlan['requested'], mode, reason,
+    ...(input.delegation_benefit ? { delegation_benefit: input.delegation_benefit } : {}),
     boundary: input.task_boundary as ExecutionPlan['boundary'], context, files, acceptance, depends_on,
     ...reviewStrategy(state, mode, capabilities),
     capabilities, at: new Date().toISOString() }
