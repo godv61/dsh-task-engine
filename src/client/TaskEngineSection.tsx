@@ -276,7 +276,7 @@ export interface CodeGraphState {
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
   projectInitJob(request: { path: string; job_id?: string; generation?: {
-    target: string; prior_resources: InitResource[]; system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; generation_id?: string
+    target: string; prior_resources: InitResource[]; system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; generation_id?: string; timeout_minutes?: number
   } }): Promise<RemoteResult<InitJobView>>
   resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
@@ -317,7 +317,7 @@ export interface TaskEngineRemote {
   prepareCodeGraph(request: { path: string; install: boolean }): Promise<RemoteResult<CodeGraphState>>
   generateProjectInit(request: { path: string; system_prompt?: string; user_prompt?: string }): Promise<RemoteResult<ProjectInitPreview>>
   generateProjectInitStep(request: { path: string; target: string; prior_resources: InitResource[];
-    system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string }): Promise<RemoteResult<ProjectInitStepResult>>
+    system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; timeout_minutes?: number }): Promise<RemoteResult<ProjectInitStepResult>>
   previewProjectInit(request: { path: string; resources: InitResource[] }): Promise<RemoteResult<ProjectInitPreview>>
   applyProjectInit(request: { path: string; resources: InitResource[]; expected_hash: string; existing_hash: string }): Promise<RemoteResult<{ ok: boolean; created: string[]; error?: string }>>
 }

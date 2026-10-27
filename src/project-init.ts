@@ -104,13 +104,19 @@ export function projectMapCoveragePaths(inventory: ProjectInventory): string[] {
   return [...paths].sort()
 }
 
-/** Reject a feature-only map that omits independently discovered project modules. */
+/** Known path omissions are actionable; an unfinished discovery is a scope warning, not a missing path. */
 export function projectMapCoverageGaps(content: string, inventory: ProjectInventory): string[] {
   const normalized = content.replace(/\\/gu, '/').toLowerCase()
   const gaps = projectMapCoveragePaths(inventory).filter(path => !normalized.includes(path.toLowerCase()))
-  if (inventory.discovery && inventory.discovery.status !== 'complete') gaps.push(`[inventory ${inventory.discovery.status}: ${inventory.discovery.warnings.join('; ')}]`)
   if (!projectMapCoveragePaths(inventory).length) gaps.push('[no module or manifest evidence discovered; repository coverage is unproven]')
   return gaps
+}
+
+/** Keep the discovery boundary visible in generated maps without claiming source/business completeness. */
+export function projectMapScopeNote(inventory: ProjectInventory): string {
+  const discovery = inventory.discovery
+  if (!discovery || discovery.status === 'complete') return ''
+  return `> 发现范围：目录发现尚未完成（已列出 ${discovery.directories} 个目录、${discovery.entries} 个条目）。本地图依据已发现路径与实际查阅文件整理；未发现或未查阅的部分仍待核对，不代表不存在。后续需求可继续通过源码及可用的 CodeGraph 索引定位。\n\n`
 }
 
 const MANIFESTS = ['pom.xml', 'build.gradle', 'build.gradle.kts', 'package.json', 'go.mod', 'pyproject.toml', 'Cargo.toml']

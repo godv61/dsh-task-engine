@@ -209,7 +209,9 @@ test('inventory budgets, denied listing, unavailable listing and empty evidence 
   mkdirSync(join(f.root, 'apps/api'), { recursive: true }); writeFileSync(join(f.root, 'apps/api/package.json'), '{}')
   for (const limits of [{ directories: 1, depth: 16, entries: 1000 }, { directories: 1000, depth: 0, entries: 1000 }, { directories: 1000, depth: 16, entries: 1 }]) {
     const inventory = await scanProject(probe, f.root, limits)
-    assert.equal(inventory.discovery.status, 'partial'); assert.ok(projectMapCoverageGaps('apps/api', inventory).some(g => g.includes('inventory partial')))
+    assert.equal(inventory.discovery.status, 'partial')
+    assert.ok(!projectMapCoverageGaps('apps/api', inventory).some(g => g.includes('inventory partial')),
+      'incomplete discovery is a scope warning, not a nonexistent path the model must cover')
   }
   const denied = await scanProject({ ...probe, list: async () => { throw new Error('permission denied') } }, f.root)
   assert.equal(denied.discovery.status, 'partial'); assert.match(denied.discovery.warnings.join(), /permission denied/)

@@ -2,7 +2,7 @@
 // Delivery checks additionally use real Git, real files and real node:test processes.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, lstatSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, lstatSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -294,7 +294,7 @@ test('subagent absence does not record a fake delegation', async () => {
   assert.equal(f.current().items[0].dispatch, undefined)
 })
 
-test('durable initialization jobs deduplicate, survive module restart and reclaim only expired leases', async () => {
+test('memory initialization jobs deduplicate and read legacy records without creating or updating files', async () => {
   const { initJob } = await import('./lib/init-jobs.js')
   const f = await fixture()
   const id = 'a'.repeat(64)
@@ -308,14 +308,107 @@ test('durable initialization jobs deduplicate, survive module restart and reclai
   await new Promise(setImmediate)
   assert.equal((await initJob(f.fs, f.cwd, id)).status, 'completed')
   const restarted = (await import('./lib/init-jobs.js?restart-test')).initJob
-  assert.equal((await restarted(f.fs, f.cwd, id, worker)).status, 'completed')
+  await assert.rejects(restarted(f.fs, f.cwd, id), /已过期或 DSH 已重启/)
   assert.equal(runs, 1)
+  assert.equal(f.records.has(join(f.cwd, `.dsh/init-jobs/${id}.json`)), false)
+  const legacyDone = 'f'.repeat(64)
+  f.records.set(join(f.cwd, `.dsh/init-jobs/${legacyDone}.json`), JSON.stringify({ job_id: legacyDone, status: 'completed', updated_at: new Date().toISOString(), result: { resource: null, reason: 'legacy draft' } }))
+  assert.equal((await restarted(f.fs, f.cwd, legacyDone)).result.reason, 'legacy draft')
   const expired = 'b'.repeat(64)
   f.records.set(join(f.cwd, `.dsh/init-jobs/${expired}.json`), JSON.stringify({ job_id: expired, status: 'running', updated_at: '2000-01-01T00:00:00.000Z', owner: 'old-process' }))
   assert.equal((await restarted(f.fs, f.cwd, expired)).status, 'failed')
   await restarted(f.fs, f.cwd, expired, async () => ({ resource: null, reason: 'restarted' }))
   await new Promise(setImmediate)
   assert.equal((await restarted(f.fs, f.cwd, expired)).status, 'completed')
+  assert.equal(JSON.parse(f.records.get(join(f.cwd, `.dsh/init-jobs/${expired}.json`))).status, 'running', 'legacy record is read-only')
+})
+
+test('initialization watchdog records failure in memory even when the worker ignores its deadline', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = await fixture(), id = 'c'.repeat(64)
+  let finish
+  await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finish = resolve }))
+  await new Promise(setImmediate)
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS)
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+  assert.ok((await initJob(f.fs, f.cwd, id)).error.includes(`${INIT_JOB_TIMEOUT_MS / 1000}秒`))
+  assert.equal(f.records.has(join(f.cwd, `.dsh/init-jobs/${id}.json`)), false)
+  finish({ resource: null, reason: 'late result' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+})
+
+test('expired active jobs can be reclaimed and an old same-process worker cannot overwrite the new attempt', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const f = await fixture(), id = 'd'.repeat(64), path = join(f.cwd, `.dsh/init-jobs/${id}.json`)
+  let finishOld, finishNew
+  const old = await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finishOld = resolve }))
+  await new Promise(setImmediate)
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS + 1)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+  assert.equal(f.records.has(path), false, 'expiry does not write a project cache')
+  const fresh = await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finishNew = resolve }))
+  await new Promise(setImmediate)
+  assert.notEqual(old.owner, fresh.owner)
+  finishOld({ resource: null, reason: 'obsolete worker' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'running')
+  finishNew({ resource: null, reason: 'new worker' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).result.reason, 'new worker')
+})
+
+test('memory job results expire automatically and are bounded across projects', async t => {
+  // Keep the fake clock's timer handles separate from real timers created by earlier tests.
+  const { initJob, INIT_JOB_RETENTION_MS, INIT_JOB_MAX_ENTRIES } = await import('./lib/init-jobs.js?memory-budget-test')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = await fixture(), root = join(f.cwd, 'memory-expiry'), id = '1'.repeat(64)
+  await initJob(f.fs, root, id, async () => ({ resource: null, reason: 'temporary' }))
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, root, id)).status, 'completed')
+  t.mock.timers.tick(INIT_JOB_RETENTION_MS)
+  await assert.rejects(initJob(f.fs, root, id), /已过期或 DSH 已重启/)
+  for (let index = 0; index <= INIT_JOB_MAX_ENTRIES; index++) {
+    const jobId = index.toString(16).padStart(64, '0')
+    await initJob(f.fs, root, jobId, async () => ({ resource: null, reason: String(index) }))
+    await new Promise(setImmediate)
+  }
+  await assert.rejects(initJob(f.fs, root, '0'.repeat(64)), /已过期或 DSH 已重启/)
+  assert.equal((await initJob(f.fs, root, INIT_JOB_MAX_ENTRIES.toString(16).padStart(64, '0'))).status, 'completed')
+  assert.ok(![...f.records.keys()].some(path => path.includes('init-jobs')))
+  const liveRoot = join(f.cwd, 'memory-capacity')
+  for (let index = 0; index < INIT_JOB_MAX_ENTRIES; index++) {
+    await initJob(f.fs, liveRoot, index.toString(16).padStart(64, '0'), () => new Promise(() => {}))
+  }
+  await assert.rejects(initJob(f.fs, liveRoot, '9'.repeat(64), async () => ({ resource: null, reason: 'must not start' })), /数量已达上限/)
+  assert.equal((await initJob(f.fs, liveRoot, '0'.repeat(64))).status, 'running', 'running work is never evicted to admit another request')
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS)
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, liveRoot, '0'.repeat(64))).status, 'failed')
+})
+
+test('concurrent requests reuse a memory worker and initialization leaves a real project empty', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const root = mkdtempSync(join(tmpdir(), 'task-engine-no-init-cache-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const fs = { resolve: async (p, o) => join(o.cwd, p), readText: async p => { try { return readFileSync(p, 'utf8') } catch (e) { if (e.code !== 'ENOENT') throw e } },
+    writeText: async () => { throw new Error('initialization must not write cache files') } }
+  let runs = 0, finish
+  const start = () => { runs++; return new Promise(resolve => { finish = resolve }) }
+  const id = '2'.repeat(64)
+  const requests = await Promise.all([initJob(fs, root, id, start), initJob(fs, root, id, start)])
+  assert.equal(runs, 1)
+  assert.equal(requests[0].owner, requests[1].owner)
+  finish({ resource: null, reason: 'done' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(fs, root, id)).status, 'completed')
+  assert.deepEqual(readdirSync(root), [])
 })
 
 test('interrupted dispatch recovery refuses live children and allows a fresh attempt after inactivity', async () => {
@@ -468,6 +561,24 @@ test('initialization RPC reuses a resumed attempt and starts a fresh job after a
   assert.notEqual(reset.job_id, first.job_id)
   await new Promise(setImmediate)
   assert.equal(runs, 2)
+})
+
+test('initialization RPC forwards a custom generation budget to the worker and its outer deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const f = await fixture()
+  let finish, minutes
+  const receiver = { projectInitRoot: async p => p, fs: () => f.fs,
+    inspectProjectInit: async () => ({ inventory: { project_name: 'fixture' } }),
+    generateProjectInitStep: async request => { minutes = request.timeout_minutes; return new Promise(resolve => { finish = resolve }) } }
+  const started = await Controller.prototype.projectInitJob.call(receiver, { path: f.cwd,
+    generation: { target: 'fixture-project-map', prior_resources: [], generation_id: 'custom-budget', timeout_minutes: 5 } })
+  await new Promise(setImmediate)
+  assert.equal(minutes, 5)
+  t.mock.timers.tick(330_001)
+  const ended = await Controller.prototype.projectInitJob.call(receiver, { path: f.cwd, job_id: started.job_id })
+  assert.equal(ended.status, 'failed', '5-minute generation budget has a 5-minute-30-second outer deadline')
+  finish({ resource: null, reason: 'late' })
+  await new Promise(setImmediate)
 })
 
 test('ledger cannot use a task-supplied root to inspect an unregistered workspace', async () => {
