@@ -5,6 +5,7 @@ import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { runInNewContext } from 'node:vm'
+import { createHash } from 'node:crypto'
 import { registerDevTask } from './lib/dev-task.js'
 import { analysisAccessProblem, bindDeliveryIntent, untrackedDelegationProblem } from './lib/delivery-access.js'
 import { validateQuestions, sourceEvidence, deliveryView } from './lib/delivery-contract.js'
@@ -24,6 +25,7 @@ test('shipped ledger codec retains delivery evidence and separate parent/child c
     id:'run',run_id:'actual-child',parent_session:'parent',question:{id:'A',question:'trace mapping'},at,status:'returned',metrics:metric,
     report:{status:'complete',summary:'model omitted',evidence:[{file:'chain.py',start_line:1,end_line:2,quote:'source'}],limitations:[]},acceptance:'pending_parent',
   }],next_actions:['submit_analysis'],instruction:'inspect source'}
+  delivery.result={conclusion:'mapping omitted',proposal:'copy model',limitations:[],accepted_at:at,evidence:[{file:'chain.py',start_line:1,end_line:2,quote:'full source range',highlight:'source',content_hash:'file-sha256',range_hash:'range-sha256'}]}
   const view={tasks:[{task_id:'A',title:'trace',stage:'调查分析',branch:'fixture',items:[{id:'I',title:'unit',status:'doing',
     dispatch:{description:'work',at,status:'completed',metrics:metric},independent_review:{status:'completed',at,parent_session:'parent',
       scope_hash:'scope',plan_key:'plan',dispatch_at:at,verification_at:at,metrics:metric}}],delivery}]}
@@ -53,11 +55,25 @@ function fixture() {
     }}:undefined}
   registerDevTask(ctx)
   const agent={id:'parent',session:{id:'parent',header:{cwd},snapshotEvents:()=>[]}}
-  const call=args=>execute({task_id:'KERNEL',...args},{agent,signal:new AbortController().signal})
+  const callRaw=args=>execute(args,{agent,signal:new AbortController().signal})
+  const call=args=>callRaw({task_id:'KERNEL',...args})
   const state=()=>JSON.parse(readFileSync(join(cwd,'.dsh/task-KERNEL.json'),'utf8'))
-  return {cwd,ctx,agent,guards,call,state,children,set runtime(value){runtime=value}}
+  return {cwd,ctx,agent,guards,call,callRaw,state,children,set runtime(value){runtime=value}}
 }
 const claim={file:'chain.py',start_line:1,end_line:2,quote:'return {"batch": data["batch"]}'}
+test('create reports missing contract fields before writing a task and allows a corrected retry',async()=>{
+  const f=fixture()
+  await assert.rejects(()=>f.callRaw({operation:'create',intent:'analysis'}),error=>{
+    assert.match(error.message,/missing: task_id, title, intent_reason/)
+    assert.match(error.message,/New-contract example:/)
+    assert.match(error.message,/Branch is optional/)
+    return true
+  })
+  assert.ok(!readdirSync(f.cwd).includes('.dsh'))
+  await f.call({operation:'create',title:'Find a field mapping',intent:'analysis',intent_reason:'Diagnosis and proposal only'})
+  assert.equal(f.state().delivery.intent,'analysis')
+})
+
 test('read-only analysis completes with source evidence and zero synthetic implementation/test gates',async()=>{
   const f=fixture()
   assert.match(f.guards[0]({agent:f.agent,name:'subagent',arguments:{}}),/Engineering delegation must be tracked/)
@@ -72,13 +88,16 @@ test('read-only analysis completes with source evidence and zero synthetic imple
   await assert.rejects(()=>f.call({operation:'verify'}),/analysis is read-only/)
   await assert.rejects(()=>f.call({operation:'submit_analysis',conclusion:'lost at conversion',proposal:'copy model',limitations:[],source_evidence:[{...claim,quote:'made up source'}]}),/does not match/)
   assert.equal(f.state().delivery.result,undefined)
-  const {quote:unusedQuote,...location}=claim
-  const accepted=JSON.parse(await f.call({operation:'submit_analysis',conclusion:'conversion only copies batch',proposal:'copy model from upstream and verify downstream',limitations:['runtime database not checked'],source_evidence:[location]}))
+  const accepted=JSON.parse(await f.call({operation:'submit_analysis',conclusion:'conversion only copies batch',proposal:'copy model from upstream and verify downstream',limitations:['runtime database not checked'],source_evidence:[claim]}))
   assert.equal(accepted.accepted,true);assert.equal(accepted.archived,true);assert.equal(accepted.delivery,undefined)
   assert.equal(accepted.evidence[0].quote,undefined);assert.match(f.state().delivery.result.evidence[0].quote,/return/)
   assert.ok(f.state().completed);assert.equal(f.state().files.length,0);assert.equal(f.state().items.length,0)
   assert.equal(f.state().verification.passed,false)
   assert.equal(f.state().delivery.result.evidence[0].content_hash.length,64)
+  const snapshot=f.state().delivery.result.evidence[0]
+  assert.equal(snapshot.quote,readFileSync(join(f.cwd,'chain.py'),'utf8').trimEnd())
+  assert.equal(snapshot.highlight,claim.quote)
+  assert.equal(snapshot.range_hash,createHash('sha256').update(snapshot.quote).digest('hex'))
   await assert.rejects(()=>f.call({operation:'submit_analysis'}),/archived/)
 })
 test('new implementation plans default direct, accept atomically only after a real test receipt',async()=>{

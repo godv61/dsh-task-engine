@@ -471,7 +471,7 @@ function memProbe(files) {
 {
   assert(project.defaultVerifyCommand('node') === 'npm test', 'node default verify command')
   assert(project.defaultVerifyCommand('java') === 'mvn -B test', 'java default verify command')
-  assert(project.defaultVerifyCommand('go') === 'go test ./...', 'go default verify command')
+  assert(project.defaultVerifyCommand('go') === 'go test -json ./...', 'go default verify command')
   assert(project.defaultVerifyCommand('unknown') === undefined, 'unknown type has no default command')
 }
 {

@@ -103,3 +103,15 @@ npm run verify:package
 submit_analysis 的 source_evidence 使用仓库内相对路径和从 1 开始的行号，每段不超过 200 行；host 采集该段真实原文和内容 SHA-256，不必让模型抄写长代码。可选 quote 必须精确匹配对应行段。子代理的原生结构化结果取 result.structured，失败时不从普通说明文本伪造结果。
 
 run-observation.ts 从宿主会话事件采集主会话、调查/实施/审核运行的耗时、工具数、错误及 token。缓存输入单列；宿主未提供的数值为 null。主会话记录截至接受交付的观察值，包含等待时间；并发子代理耗时不能相加当作用户总耗时。这些采集能力不等于已经完成各类任务的成本对照实验。
+
+## 证据与用例层边界
+
+`analysis-commands.ts` 承担分析委派、恢复与提交用例；入口仍负责参数、审批/沙箱模式和外层事务。事务内返回异步处理器须 await，再释放变更锁。`path-guard.ts` 统一路径包含关系，原工具导出保持兼容，不新增任务代际旗标。
+
+Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分测试与包级完成，跳过、输出内容和基准数据不计作通过；任一失败拒绝，未完成/损坏事件不可证明通过。默认命令同步切换到 JSON，旧文本回执不会继续跨当前门禁。格式依据 https://pkg.go.dev/cmd/test2json 。
+
+分析 evidence.quote 始终是规范化换行后的完整行段，highlight 仅保存可选短引文，range_hash 为该行段 SHA-256；content_hash 继续表示原始文件。旧记录没有 range_hash，按历史引文展示，不伪造或覆盖旧快照。
+
+技能回执证明所记录命令实际执行并成功退出，不证明检查覆盖了 Skill 或需求。拒绝明显的固定输出/直接成功退出及常见外壳转发，保留内联断言、lint 与类型检查；任意脚本的有效性仍由可信项目定义和主会话核对，不宣称拒绝名单能证明程序语义。
+
+`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 安装指定 rc.3 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性及执行限制，零模型调用。它们位于必过的 Ubuntu/Node 22 CI 路径，旧 seeder 的可选实文件探针不代替当前宿主验收。

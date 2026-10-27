@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve, win32 } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -69,8 +69,9 @@ import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTarget
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
 import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
-import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, sourceEvidence, type DelegationBenefit, type DeliveryIntent, type InvestigationQuestion } from './delivery-contract.ts'
-import { investigate } from './investigation-runtime.ts'
+import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type DelegationBenefit, type DeliveryIntent, type InvestigationQuestion } from './delivery-contract.ts'
+import { executeAnalysisCommand } from './analysis-commands.ts'
+import { assertInsideRoot } from './path-guard.ts'
 import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
 import { bindDeliveryIntent, installDeliveryAccess } from './delivery-access.ts'
 import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
@@ -139,23 +140,7 @@ function projectProbe(fs: Fs): FileProbe {
   }
 }
 
-/**
- * Reject a workspace-relative write whose resolved target escapes the project
- * root. `cwd` is the session workspace (always inside `root`, since `root` is
- * discovered from it upward); this guards the reverse case: a mis-resolved root
- * or a `..`-carrying target must never write outside the project.
- */
-export function assertInsideRoot(root: string, cwd: string, relPath: string): void {
-  if (!isAbsolute(relPath) && win32.isAbsolute(relPath)) {
-    throw new Error(`write target ${relPath} escapes the project root ${root}`)
-  }
-  const target = resolve(cwd, relPath)
-  const rootDir = resolve(root)
-  const inside = relative(rootDir, target)
-  if (inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`write target ${target} escapes the project root ${rootDir}`)
-  }
-}
+export { assertInsideRoot } from './path-guard.ts'
 
 /**
  * The verification command a bare `verify` should run: the project's
@@ -1127,7 +1112,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
-interface OpArgs {
+export interface OpArgs {
   operation: string
   intent?: DeliveryIntent
   intent_reason?: string
@@ -1534,6 +1519,7 @@ const OPERATIONS = ['status', 'assess', 'create', 'plan', 'delegate', 'submit_an
 
 const TOOL_DESCRIPTION =
   'First select the user deliverable: diagnosis/proposal creates intent=analysis with task_id, title, intent_reason (branch optional), investigates directly, then submit_analysis accepts exact source_evidence and a conclusion/proposal/limitations in one transaction. ' +
+  'Minimal analysis create: {"operation":"create","task_id":"TRACE-1","title":"Trace a missing field","intent":"analysis","intent_reason":"User requested cause and proposal only"}. ' +
   'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Legacy calls below remain supported. ' +
   'Track engineering delivery in a workspace task record and enforce configured stage guards. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
@@ -1590,8 +1576,8 @@ export function registerDevTask(ctx: Context): void {
       conclusion: { type: 'string', description: 'submit_analysis: confirmed causes and their reasoning; report central findings early in conversation.' },
       proposal: { type: 'string', description: 'submit_analysis: actionable proposal; does not authorize implementation.' },
       limitations: { type: 'array', items: { type: 'string' }, description: 'submit_analysis: explicitly unknown or unverified aspects.' },
-      source_evidence: { type: 'array', description: 'submit_analysis: relevant current-source locations. Use 1-based ranges, at most 200 lines each. Host captures exact text and hash; optional quote must match the range.', items: { type: 'object', additionalProperties: false, properties: {
-        file: { type: 'string', required: true }, start_line: { type: 'integer', required: true }, end_line: { type: 'integer', required: true }, quote: { type: 'string', description: 'Optional exact substring, without line-number prefixes; omit to capture the source range.' },
+      source_evidence: { type: 'array', description: 'submit_analysis: relevant current-source locations. Use 1-based ranges, at most 200 lines each. Host always captures the full range and hashes; optional quote only highlights an exact matching substring.', items: { type: 'object', additionalProperties: false, properties: {
+        file: { type: 'string', required: true }, start_line: { type: 'integer', required: true }, end_line: { type: 'integer', required: true }, quote: { type: 'string', description: 'Optional exact substring to highlight, without line-number prefixes. The complete source range is saved whether quote is supplied or omitted.' },
       } } },
       task_id: { type: 'string', description: 'Required on create and every task operation except assess/status. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
       related_task_id: { type: 'string', description: 'Archived source task for a new defect, enhancement or follow-up. New work always gets a new task_id.' },
@@ -1706,7 +1692,7 @@ export function registerDevTask(ctx: Context): void {
             ...(task.completed ? { completed_at: task.completed.at } : {}),
             ...(task.complexity !== undefined ? { complexity: task.complexity } : {}) })
         }
-        return JSON.stringify({ tasks, next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
+        return JSON.stringify({ tasks, required_create_fields: ['task_id', 'title', 'intent', 'intent_reason'], next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Create with task_id, title, intent=analysis|implementation and intent_reason. New contracts read the Git branch automatically; implementation should include the assessed complexity and complexity_reason.' }, null, 2)
       }
 
       if (a.operation === 'config') {
@@ -1922,8 +1908,10 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'create') {
-        if (!a.task_id || !a.title || (!a.intent && !a.branch)) {
-          throw new Error('create requires task_id, title, and branch')
+        const required: ('task_id' | 'title' | 'branch' | 'intent_reason')[] = a.intent ? ['task_id', 'title', 'intent_reason'] : ['task_id', 'title', 'branch']
+        const missing = required.filter(field => !a[field]?.trim())
+        if (!a.task_id || !a.title || missing.length) {
+          throw new Error(`create requires ${required.join(', ')}; missing: ${missing.join(', ')}. New-contract example: ${JSON.stringify({ operation: 'create', task_id: 'TASK-1', title: 'Concrete user goal', intent: a.intent === 'analysis' ? 'analysis' : 'implementation', intent_reason: 'What the user asked to receive' })}. Branch is optional when intent is supplied.`)
         }
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(a.task_id)) {
           throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
@@ -2038,79 +2026,9 @@ export function registerDevTask(ctx: Context): void {
         throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
       }
 
-      if (isAnalysis(state) && a.operation !== 'status') {
-        if (!['delegate', 'recover_analysis', 'submit_analysis', 'complete'].includes(a.operation)) throw new Error('analysis is read-only: use delegate for questions or submit_analysis for the conclusion; implementation needs a separate task')
-        if (a.operation === 'delegate') {
-          if (!a.delegation_benefit || !a.execution_reason?.trim()) throw new Error('delegate requires delegation_benefit and execution_reason demonstrating why a child is useful; otherwise investigate directly')
-          const mode = await resolveWriteMode(ctx, a, exec)
-          // Serialize only state transactions. Never hold this lock across an LLM activation.
-          let updates = Promise.resolve()
-          const update = (change: (fresh: TaskState) => void): Promise<void> => {
-            const next = updates.then(async () => {
-              const unlock = acquireTaskMutation(mutationPath!)
-              try {
-                const fresh = await loadTask(fs, state.id, cwd)
-                if (fresh.completed || !isAnalysis(fresh)) throw new Error('analysis task is no longer active')
-                change(fresh)
-                await writeTask(fs, fresh, cwd, mode)
-              } finally { unlock() }
-            })
-            updates = next.catch(() => {})
-            return next
-          }
-          await investigate(ctx, exec, { read: () => loadTask(fs, state.id, cwd), update }, a.questions ?? [], a.concurrency ?? 2)
-          return JSON.stringify({ delivery: deliveryView(await loadTask(fs, state.id, cwd)), instruction: 'Inspect returned reports, verify key claims and report findings to the user. Returned is not accepted. Preserve successful reports if other questions failed.' })
-        }
-        if (a.operation === 'recover_analysis') {
-          if (!session?.id) throw new Error('recovery requires the original parent session')
-          const active = state.delivery!.runs.filter(run => ['queued', 'starting', 'running'].includes(run.status))
-          const runtime = taskSubagents(ctx)
-          if (!runtime?.listDescendants) throw new Error('host cannot establish child liveness; recovery is blocked')
-          const descendants = await runtime.listDescendants(session.id as never, exec.signal)
-          for (const run of active) {
-            if (run.parent_session !== session.id) throw new Error('recovery requires the original parent session')
-            const childId = run.run_id ?? run.id
-            const index = descendants.findIndex(child => child.id === childId)
-            if (index < 0 && run.status !== 'queued') throw new Error('child identity is absent from host catalog; recovery cannot prove it stopped')
-            const depth = index < 0 ? Infinity : descendants[index]!.depth
-            const end = index < 0 ? -1 : descendants.findIndex((child, i) => i > index && child.depth <= depth)
-            const tail = index < 0 ? [] : descendants.slice(index, end < 0 ? undefined : end)
-            if (tail.some(child => child.kind !== 'child' || child.activity !== 'inactive')) throw new Error('child or descendant is still active; stop it through host controls before recovery')
-          }
-          for (const run of active) { run.status = 'failed'; run.finished_at = new Date().toISOString(); run.error = 'Interrupted run recovered after host liveness check. Existing reports remain available; retry only unreturned questions.' }
-          await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-          return JSON.stringify(deliveryView(state))
-        }
-        if (state.delivery!.runs.some(run => ['queued', 'starting', 'running'].includes(run.status))) throw new Error('investigation children are active; wait or recover before accepting')
-        if (a.operation === 'submit_analysis') {
-          if (!a.conclusion?.trim() || !a.proposal?.trim() || !a.source_evidence?.length || !Array.isArray(a.limitations)) throw new Error('submit_analysis requires conclusion, proposal, limitations (possibly empty) and exact source_evidence')
-          const evidence = []
-          for (const claim of a.source_evidence) {
-            if (isAbsolute(claim.file) || win32.isAbsolute(claim.file)) throw new Error('evidence paths must be project-relative')
-            assertInsideRoot(state.root!, state.root!, claim.file)
-            const canonical = relative(state.root!, resolve(state.root!, claim.file)).replace(/\\/gu, '/')
-            if (/^\.dsh\//u.test(canonical) || isSensitivePath(canonical)) throw new Error('task metadata and credentials are not source evidence')
-            const info = await fs.lstat(claim.file, { cwd: state.root! })
-            if (info?.type !== 'file') throw new Error(`evidence must be a regular source file: ${claim.file}`)
-            assertInsideRoot(realpathSync.native(state.root!), realpathSync.native(state.root!), realpathSync.native(resolve(state.root!, claim.file)))
-            const source = await readText(fs, claim.file, state.root)
-            if (source === undefined) throw new Error(`cannot read source evidence: ${claim.file}`)
-            evidence.push(sourceEvidence(claim, source, hashText(source)))
-          }
-          // Acceptance is one transaction, not record + review + done + advance + complete.
-          state.delivery!.result = { conclusion: a.conclusion.trim(), proposal: a.proposal.trim(), limitations: a.limitations, evidence, accepted_at: new Date().toISOString() }
-          const since = Date.parse(state.delivery!.requested_at ?? state.delivery!.created_at)
-          state.delivery!.metrics = parentMetrics(session, since)
-          state.artifacts.analysis = { conclusion: a.conclusion, proposal: a.proposal, limitations: a.limitations.join('\n') || 'No additional limitations reported.' }
-          state.stage = '完成'
-          state.completed = { at: new Date().toISOString() }
-          await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-          return JSON.stringify({ accepted: true, task: state.id, archived: true,
-            evidence: evidence.map(({ file, start_line, end_line, content_hash }) => ({ file, start_line, end_line, content_hash })),
-            instruction: 'Deliver the conclusion and proposal to the user. Source matching proves provenance, not semantic correctness. Exact source snapshots are saved in the task record; no need to repeat source reads. No business code was implemented or tested by this operation.' })
-        }
-        throw new Error('analysis needs submit_analysis; do not bypass source acceptance with complete')
-      }
+      if (isAnalysis(state) && a.operation !== 'status') return await executeAnalysisCommand(a, {
+        ctx, exec, fs, state, cwd, session, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
+      })
       if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? '')))
         && a.operation !== 'status' && a.operation !== 'recover_dispatch') {
         throw new Error('a child dispatch is still active; wait or recover it before changing the parent task')

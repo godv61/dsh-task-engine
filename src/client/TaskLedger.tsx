@@ -75,7 +75,11 @@ function deliveryDetails(task: TaskLedgerEntry): ReturnType<typeof createElement
     delivery.result ? createElement('details', null, createElement('summary', null, '已交付的分析结论与方案'),
       createElement('div', { style: { whiteSpace: 'pre-wrap' } }, delivery.result.conclusion, '\n\n', delivery.result.proposal,
         '\n未确认：' + (delivery.result.limitations.join('；') || '无额外说明')),
-      ...delivery.result.evidence.map((e, i) => createElement('div', { key: i, style: metaLine }, `${e.file}:${e.start_line}–${e.end_line} · 交付时源码证据`))) : null)
+      ...delivery.result.evidence.map((e, i) => createElement('details', { key: i, style: { fontSize: 12, overflowWrap: 'anywhere' } },
+        createElement('summary', null, `${e.file}:${e.start_line}–${e.end_line} · ${e.range_hash ? '交付时行段快照' : '历史源码引文'}`),
+        createElement('pre', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, e.quote),
+        e.highlight ? createElement('div', null, '引用高亮：', e.highlight) : null,
+        createElement('div', { style: metaLine }, `文件 SHA-256：${e.content_hash}`, e.range_hash ? `行段 SHA-256：${e.range_hash}` : '')))) : null)
 }
 
 /** Render one item's start record and two-stage review (when present). */
@@ -282,8 +286,8 @@ export function TaskLedger({ workspace, remote }: {
               createElement('span', { style: badge }, task.branch),
               createElement('span', { className: 'te-badge', style: task.risk_level === 'high_risk' ? { color: 'var(--dsw-alias-state-error-primary)' } : {} }, task.risk_level === 'high_risk' ? '高风险' : '标准'),
               task.delivery?.intent === 'analysis' ? null : createElement('span', { className: 'te-badge' }, task.evidence_status
-                ? ({ valid: '验证通过 · 当前有效', stale: '验证已过期', failed: '验证失败', blocked: '验证受环境阻塞', missing: '待验证', historical: task.verification_passed ? '交付时验证通过' : '交付时未通过验证', unknown: '验证有效性待确认' })[task.evidence_status]
-                : task.verification_passed ? '历史验证通过' : '待验证'),
+                ? ({ valid: '测试回执有效', stale: '测试回执已过期', failed: '测试执行失败', blocked: '测试受环境阻塞', missing: '待运行测试', historical: task.verification_passed ? '交付时测试回执有效' : '交付时测试回执未通过', unknown: '测试回执有效性待确认' })[task.evidence_status]
+                : task.verification_passed ? '历史测试回执通过' : '待运行测试'),
               task.delivery?.intent === 'analysis' ? null : createElement('span', { className: 'te-badge' }, task.review_status
                 ? ({ valid: '审核通过 · 当前有效', stale: '审核已过期', missing: '待审核', blocked: '审核阻断', historical: `交付时审核：${task.review_outcome ?? 'pending'}` })[task.review_status]
                 : `审核：${task.review_outcome ?? 'pending'}`),
@@ -296,6 +300,7 @@ export function TaskLedger({ workspace, remote }: {
             deliveryDetails(task),
             task.verification_groups?.length ? createElement('details', { style: metaLine },
               createElement('summary', { style: { cursor: 'pointer' } }, `测试分组（${task.verification_groups.length}）`),
+              createElement('span', null, '回执证明测试程序已执行并产生通过结果；需求覆盖与验收结论见逐项审核。'),
               ...task.verification_groups.map(group => createElement('div', { key: group.id, style: itemRow },
                 createElement('span', null, `${group.id} · ${{ passed: '通过', failed: '失败', blocked: '环境阻塞', stale: '证据已过期', missing: '待运行' }[group.status]} · 测试数 ${group.test_count ?? '未识别'}${group.checked_at ? ' · ' + timeText(group.checked_at) : ''}`),
                 createElement('code', null, group.command),

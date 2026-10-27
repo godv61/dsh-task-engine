@@ -18,8 +18,8 @@ test('verification needs a visible nonzero test result for common runners', () =
     ['npm test', '# tests 4\n# pass 4', 4],
     ['python -m pytest', '==== 3 passed in 0.2s ====', 3],
     ['python -m pytest', '=== 2 passed, 1 error in 0.12s ===', 0],
-    ['go test ./...', 'ok  example.com/app  0.02s', 1],
-    ['go test ./...', 'ok  example.com/app  0.02s [no tests to run]', 0],
+    ['go test ./...', 'ok  example.com/app  0.02s', null],
+    ['go test ./...', 'ok  example.com/app  0.02s [no tests to run]', null],
     ['cargo test', 'test result: ok. 5 passed; 0 failed', 5],
     ['./gradlew test --info', '4 tests completed\nBUILD SUCCESSFUL', 4],
     ['gradlew.bat test --info', '4 tests completed, 4 skipped\nBUILD SUCCESSFUL', 0],
@@ -32,7 +32,7 @@ test('verification needs a visible nonzero test result for common runners', () =
     ['npm test || true', '# tests 4\n# pass 4', null],
     ['npm test && echo Tests: 1 passed', 'Tests: 1 passed', null],
     ['mvn test & echo Tests run: 1, Failures: 0, Errors: 0, Skipped: 0', 'Tests run: 1, Failures: 0, Errors: 0, Skipped: 0', null],
-    ['go test ./...', '? example.com/app [no test files]', 0],
+    ['go test ./...', '? example.com/app [no test files]', null],
     ['true', '', null],
   ]
   for (const [command, stdout, expected] of cases) {

@@ -1,5 +1,5 @@
 /**
- * Tests for the `eng` preset derivation.
+ * Legacy seeder derivation tests. Current rc.3 declarative presets are booted by verify:preset.
  *
  * The preset must track the RUNNING harness's `standard`, because a copy that
  * freezes once goes stale the moment DSH edits its own composition, and a stale
@@ -32,7 +32,7 @@ import { derivedEngComposition, wasSeeded, applyPersona, personaFieldOf } from '
  */
 const derived = derivedEngComposition()
 const liveSource = derived !== undefined
-const live = { skip: liveSource ? false : 'no resolvable @deepseek-ai/dsh-agent-presets in this install' }
+const live = { skip: liveSource ? false : 'legacy seeder package absent; current rc.3 runtime is checked by npm run verify:preset' }
 
 test('the derivation reads a readable standard composition', live, () => {
   assert.ok(derived !== undefined, 'standard must be resolvable when a peer provides it')

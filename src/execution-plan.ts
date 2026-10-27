@@ -95,8 +95,8 @@ export function executionPlanKey(plan: ExecutionPlan): string {
 export function reviewStrategy(state: Pick<TaskState, 'execution_policy' | 'complexity' | 'risk_level' | 'delivery'>, mode: ExecutionMode, capabilities: ExecutionPlan['capabilities']): Pick<ExecutionPlan, 'review' | 'review_reason'> {
   const independent = state.execution_policy !== 'main_only'
     && (state.delivery ? state.risk_level === 'high_risk' : mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
-  return independent && capabilities.reviewer ? { review: 'independent', review_reason: '委派实现或高复杂度/高风险项，使用独立只读审核' }
-    : { review: 'main', review_reason: independent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '局部或紧密耦合工作，由主会话审核' }
+  return independent && capabilities.reviewer ? { review: 'independent', review_reason: state.delivery ? '高风险项，使用独立只读审核' : '旧任务策略：委派实现或高复杂度/高风险项，使用独立只读审核' }
+    : { review: 'main', review_reason: independent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '本项由主会话核对验收与代码质量，不额外派发审核代理' }
 }
 export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   execution?: string; execution_reason?: string; task_boundary?: string; context_need?: string;

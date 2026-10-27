@@ -115,7 +115,7 @@ pnpm dsh web --no-open</code></pre>
         <h2>执行一个任务</h2>
         <p>先判断交付目标。只排查原因、解释调用链或给方案时，创建 <code>intent=analysis</code> 并写明 <code>intent_reason</code>，由主会话直接搜索与读取源码，再用 <code>submit_analysis</code> 一次提交结论、方案、未确认项和含文件、行段、原文的证据。分析不会进入代码实施或为取得回执写测试；运行时限制写入和终端工具。业务结论仍须主会话核对，源码匹配不等于语义正确。</p>
         <p>需要只读委派时，用 <code>delegate</code> 说明问题、引用入口、依赖、明确收益与理由，默认最多两个同时运行。子代理返回与任务接受分别显示，失败前报告保持可见；清理不明时不得交付，原父会话经宿主确认停止后才能 <code>recover_analysis</code>。下面的实施步骤用于用户已要求修改代码的 <code>intent=implementation</code> 任务。</p>
-        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；必要的独立审核和项目门禁继续生效。旧台账继续按原快照操作，不自动转换。</p>
+        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；高风险项在宿主能力允许时要求独立审核，标准风险不会仅因复杂度或委派实施增加审核代理。旧台账继续按原快照操作，不自动转换。</p>
         <ol>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
@@ -135,10 +135,16 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="tests">
         <h2>测试和证据</h2>
-        <p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
+        <h3>最小 create 调用</h3>
+<p>新契约必填 <code>task_id</code>、<code>title</code>、<code>intent</code> 和 <code>intent_reason</code>；分支可由宿主读取。除 status/assess 外，针对单个任务的后续操作须携带 task_id。</p>
+<pre>{"operation":"create","task_id":"TRACE-1","title":"定位字段丢失原因","intent":"analysis","intent_reason":"仅查原因并给方案"}</pre>
+<p>读取源码后使用 submit_analysis 提交结论、方案、未确认项及 source_evidence 文件/行号；宿主保存完整行段，quote 仅作高亮。</p>
+<pre>{"operation":"create","task_id":"FIX-1","title":"修复字段转换并补回归","intent":"implementation","intent_reason":"用户要求实现修复","complexity":"low","complexity_reason":"边界明确的局部修复","files":["src/adapter.js","test/adapter.test.js"]}</pre>
+<p>实施按当前绑定技能、plan、真实 verify、accept_item 和后续阶段推进；完整参数示例见 README，不绕过项目提交及审核要求。</p>
+<p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
         <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。旧活动任务可以显式规划测试组升级，旧全局回执保留为历史，不直接认作分组通过；归档任务始终只读。</p>
         <p>开发阶段也支持原地缺陷返工。执行计划登记允许修改的交付文件，测试计划还登记只读配置等输入；共同配置未修改时不必列为共同交付。测试结果中的 <code>group_result</code> 表示本组状态，<code>task_verified</code> 和兼容字段 <code>ok</code> 表示任务整体状态，本组通过后可以先验收对应实施项。</p>
-        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Go 使用 <code>go test -json ./...</code>，只统计真实通过的测试用例；部分包无测试不影响其它包的有效结果，全跳过和只有包级成功不能通过。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
 
