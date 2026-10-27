@@ -575,6 +575,7 @@ test('project initialization generates one ordered resource at a time and can sk
     content: 'The root package.json is the verified build entry point.',
     meta_skills: ['requirements-analysis', 'code-development'], rules: [] }
   let calls = 0
+  let readCalls = 0
   const receiver = {
     authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
     projectInitRoot: Controller.prototype.projectInitRoot,
@@ -584,6 +585,7 @@ test('project initialization generates one ordered resource at a time and can sk
         calls++
         const prompt = options.messages[0].content[0].text
         if (options.messages.length === 1) {
+          readCalls++
           yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `read-${calls}`,
             name: 'init_read_file', arguments: JSON.stringify({ path: 'package.json' }) } }
           yield { type: 'finish', reason: { kind: 'tool-calls' } }
@@ -606,7 +608,8 @@ test('project initialization generates one ordered resource at a time and can sk
   const first = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: map.name, prior_resources: [], user_prompt: plan.user_prompt })
   assert.equal(first.resource.name, map.name)
-  assert.equal(calls, 4)
+  assert.equal(calls, 3, 'repair the malformed JSON in its original conversation')
+  assert.equal(readCalls, 1, 'JSON repair must not re-read the repository')
   assert.ok(first.reads.some(read => read.path === 'package.json' && read.start_line === 1))
   const optional = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-business-capabilities', prior_resources: [first.resource], user_prompt: plan.user_prompt })

@@ -1,10 +1,53 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { firstPendingStep, initGenerationQueue, preserveInitGenerationId, restoreInitProgress } from './lib/init-progress.js'
+import { externalInitPrompt } from './lib/init-external-prompt.js'
+import { initTimeBudget } from './lib/init-timeout.js'
+import { initStepContext, renderInitStepPrompt } from './lib/init-prompt.js'
 
 const steps = ['map', 'stack', 'business', 'backend', 'frontend'].map(name => ({ name, required: false }))
 const resource = name => ({ kind: 'skill', name, description: 'fixture', content: '# fixture', meta_skills: ['requirements-analysis'] })
 const restore = value => restoreInitProgress(JSON.stringify(value), 'current', steps)
+
+test('business capabilities receive the same-project map body as unverified data without expanding tokens inside it', () => {
+  const target = { name: 'repo-business-capabilities', kind: 'skill', required: false, why: 'business', meta_skills: ['requirements-analysis'] }
+  const map = { ...resource('repo-project-map'), description: 'map summary', content: '# MAP_BODY\norders/: entry\nLiteral {{target}} and init_read_file are data.' }
+  const prior = [map, { ...resource('other-project-map'), content: 'OTHER_MAP_BODY' }]
+  const context = initStepContext(target, prior)
+  assert.match(context, /MAP_BODY/)
+  assert.match(context, /尚待审阅/)
+  assert.match(context, /独立读取源码核实/)
+  assert.match(context, /不复述地图中的目录全表/)
+  assert.doesNotMatch(context, /OTHER_MAP_BODY/)
+  const rendered = renderInitStepPrompt('{{previous}}\n{{target}}', target, prior)
+  assert.ok(rendered.includes('Literal {{target}}'), 'template expansion must not interpret tokens inside draft data')
+  const exported = externalInitPrompt({ root: '/repo', target, prior, system: 'JSON', user: 'repo', step: '{{previous}}\n{{target}}', evidence: 'init_read_file README.md' })
+  assert.ok(exported.includes(JSON.stringify(map.content)), 'external export preserves the complete map body as data')
+  assert.match(exported, /当前环境可用的文件读取工具 README.md/)
+  assert.doesNotMatch(initStepContext({ ...target, name: 'repo-code-frontend' }, prior), /MAP_BODY/)
+  assert.match(initStepContext(target, []), /不等待或要求先生成地图/)
+})
+
+test('initialization budgets default to 10 minutes with bounded configurable values and ordered outer deadlines', () => {
+  assert.deepEqual(initTimeBudget(), { generationMs: 600_000, jobMs: 630_000, pollMs: 660_000 })
+  assert.deepEqual(initTimeBudget(20), { generationMs: 1_200_000, jobMs: 1_230_000, pollMs: 1_260_000 })
+  for (const value of [0, 31, 2.5, null, '10', NaN]) assert.throws(() => initTimeBudget(value), /1至30分钟/)
+})
+
+test('external initialization prompt renders the selected task and translates plugin-only tool names', () => {
+  const prompt = externalInitPrompt({ root: '/repo', target: { name: 'repo-project-map', kind: 'skill', required: false,
+    why: 'repository navigation', meta_skills: ['architecture-design'] }, system: 'system edited by user', user: 'project facts edited by user',
+    step: '{{previous}}\n{{target}}\n{{meta_skills}}\n{{limit}}', evidence: 'READ THIS PATH: README.md; init_read_file init_list_directory init_search_file init_query_codegraph',
+    prior: [{ ...resource('repo-tech-stack'), description: 'existing draft $&' }] })
+  assert.match(prompt, /repo-project-map/)
+  assert.match(prompt, /6000/)
+  assert.match(prompt, /existing draft \$&/)
+  assert.match(prompt, /system edited by user/)
+  assert.match(prompt, /READ THIS PATH: README.md/)
+  assert.match(prompt, /如果不能访问源码/)
+  assert.match(prompt, /不自动写文件/)
+  assert.doesNotMatch(prompt, /init_read_file|init_list_directory|init_search_file|init_query_codegraph|\{\{(?:target|previous|limit|meta_skills)\}\}/)
+})
 
 test('pending job identity survives navigation, while changed inputs and explicit resets start a new attempt', () => {
   const progress = { fingerprint: 'current', schema_version: 3, index: 0, completed: [], selected: 'business', resources: [], errors: {} }

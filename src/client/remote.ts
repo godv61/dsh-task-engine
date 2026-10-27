@@ -346,6 +346,7 @@ const projectInitGenerateRequestSchema = initGenerateRequestSchema.extend({
 const projectInitStepRequestSchema = projectInitGenerateRequestSchema.extend({
   target: z.string(), prior_resources: z.array(projectInitResourceSchema), step_prompt: z.string().optional(),
   evidence_prompt: z.string().optional(),
+  timeout_minutes: z.number().int().min(1).max(30).optional(),
 })
 const projectInitStepInspectRequestSchema = initGenerateRequestSchema.extend({ target: z.string() })
 const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string(),
