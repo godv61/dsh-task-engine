@@ -284,7 +284,7 @@ await assertThrows(
   })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'T9', title: 'x', branch: 'main' }, EXEC)
-  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T9' }, EXEC))
+  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T9', detail: true }, EXEC))
   const sec = status.bindings.rules.find(r => r.name === 'security-redlines')
   assert(sec !== undefined, 'the bound project rule is disclosed at the start stage')
   assert(sec.source === 'project', 'the disclosed rule reports the layer it was resolved from')

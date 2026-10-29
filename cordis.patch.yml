@@ -33,6 +33,8 @@
                 委派必须有具体收益：真正并行、上下文隔离或独立核对；文件可独立不等于需要启动子代理。只读调查需要委派时用 delegate 提供问题、已知路径、依赖和 delegation_benefit/execution_reason，真实运行由引擎管理。子代理返回后主会话核对证据并综合交付，不自动再派一轮审核代理。
 
                 实施前可用 plan 原子登记全部实施/必要测试单元，或兼容 plan_execution。默认主会话执行；只有明确 delegation_benefit 才让 auto 委派。主会话直接实施不必额外 dispatch；真实 verify 后用 accept_item 一次记录审核与完成；独立审核要求仍须 review_dispatch。风险、项目规则、测试及最终审核门禁照常生效。运行失败时检查已有报告与宿主状态，恢复未完成部分，不清空重来。
+
+                当前任务的流程协议以 dev_task 的交付契约和 recovery 为准；项目 Skill 中的旧版操作示例不能覆盖新契约，但其代码约束仍须遵守。status 默认提供摘要，完整计划或日志通过 status detail=true 读取，不为获取日志重复运行 verify。Sonar 问题先按消息与报告定位，不扫描 DSH 安装包或整个用户运行目录猜规则。长任务在关键发现、阻塞、返工和验证完成时主动给简短进度，正常工作中避免超过约一分钟没有说明。跟踪本次启动的后台作业，结束前收齐相关作业终态并取消已无用途的作业。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

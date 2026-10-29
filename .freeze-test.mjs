@@ -153,7 +153,7 @@ async function atDevelopmentWithProjectRule() {
     cwd,
     rule: () => join(cwd, '.dsh/rules/mine.md'),
     disclosed: async () => {
-      const status = JSON.parse(await call({ operation: 'status' }))
+      const status = JSON.parse(await call({ operation: 'status', detail: true }))
       return { status, mine: status.bindings.rules.find(r => r.name === 'mine') }
     },
   }

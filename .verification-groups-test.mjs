@@ -8,6 +8,7 @@ import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
 import { registerDevTask, verificationInputHashes } from './lib/dev-task.js'
 import { groupEvidenceBlockers, latestGroupRun, receiptProblems, verificationKey } from './lib/verification-state.js'
+import { hashConfig, hashText } from './lib/snapshot.js'
 
 const command = side => `node --test --experimental-test-isolation=none --test-reporter=tap ${side}.test.mjs`
 
@@ -84,6 +85,16 @@ test('complete units require declared test groups before dispatch and verificati
   await assert.rejects(f.call({ operation: 'dispatch', item_id: 'BE' }), /plan_verification/)
   await assert.rejects(f.call({ operation: 'verify', command: command('be') }), /plan_verification/)
   assert.equal(f.commands.length, 0)
+})
+
+test('a known Maven compile-only or skip-tests plan fails before any command or plan mutation', async () => {
+  const f = await fixture(), key = f.state().verification_groups.be.key
+  for (const command of ['mvn -o -pl app -am -DskipTests compile', 'mvn test -DskipTests=true', 'mvnw.cmd verify -Dmaven.test.skip=true']) {
+    await assert.rejects(f.call({ operation: 'plan_verification', verification_group: 'be', item_ids: ['BE'],
+      files: ['be.mjs', 'be.test.mjs'], command }), /TEST_PLAN_REQUIRES_TESTS/)
+  }
+  assert.equal(f.commands.length, 0)
+  assert.equal(f.state().verification_groups.be.key, key)
 })
 
 test('required checks cannot wait on a test delivery whose item depends on the current unit being done', async () => {
@@ -204,7 +215,52 @@ test('an accepted implementation can register a same-stage defect without losing
   assert.equal(f.state().items[1].status, 'todo')
   await assert.rejects(f.call({ operation: 'revise', revision_kind: 'requirement', revision_reason: 'changed requirement', target_stage: '代码开发' }), /same-stage/)
   const response = JSON.parse(await f.verify('be'))
-  assert.ok(response.diagnostics.some(entry => entry.group_id === 'fe' && entry.code === 'VERIFICATION_STALE'))
+  assert.ok(!response.diagnostics.some(entry => entry.group_id === 'fe' && entry.code === 'VERIFICATION_STALE'))
+  assert.equal(f.state().items[1].review, undefined, 'fresh test reuse never preserves the affected review')
+})
+
+test('selective defect recovery reuses the latest passing current-input receipt after the fix was already tested', async () => {
+  const f = await fixture(); await f.verify('be'); await f.finish('BE'); await f.verify('fe'); await f.finish('FE')
+  f.edit('fe.mjs', 'export const value = 2\n// repaired implementation\n')
+  await f.verify('fe')
+  const before = f.state(), fresh = structuredClone(latestGroupRun(before, 'fe'))
+  before.stage = '代码审核'; f.save(before)
+  const commands = f.commands.length
+  const result = await f.call({ operation: 'revise', revision_kind: 'defect', revision_reason: 'Sonar repair already tested', target_stage: '代码开发', affected_items: ['FE'] })
+  assert.deepEqual(latestGroupRun(f.state(), 'fe'), fresh)
+  assert.equal(f.commands.length, commands)
+  assert.equal(f.state().verification.passed, true)
+  assert.equal(f.state().items[1].review, undefined)
+  assert.match(result, /valid_verification_groups: be, fe/)
+  await f.finish('FE')
+})
+
+test('selective defect recovery never falls back to an older passing run after the latest run failed', async () => {
+  const f = await fixture(); await f.verify('be'); await f.verify('fe')
+  f.failNext(); await f.verify('fe')
+  const before = f.state(); before.stage = '代码审核'; f.save(before)
+  await f.call({ operation: 'revise', revision_kind: 'defect', revision_reason: 'latest run failed', target_stage: '代码开发', affected_items: ['FE'] })
+  assert.equal(f.state().verification.passed, false)
+  assert.ok(groupEvidenceBlockers(f.state(), await f.hashes()).some(message => message.includes('fe')))
+  assert.ok(latestGroupRun(f.state(), 'fe').invalidated_reason)
+})
+
+test('a changed bound Rule prevents same-input receipt reuse and reopens every affected implementation', async () => {
+  const f = await fixture(), initial = f.state()
+  mkdirSync(join(f.root, '.dsh/rules'), { recursive: true })
+  f.edit('.dsh/rules/guard.md', 'original required rule')
+  const ref = { source: 'project', name: 'guard' }
+  initial.flow.config.stage_bindings['代码开发'].skills[0].rules.push(ref)
+  initial.flow.hash = hashConfig(initial.flow.config)
+  initial.flow.resources.push({ kind: 'rule', ref, content: 'original required rule', hash: hashText('original required rule') })
+  f.save(initial)
+  await f.verify('be'); await f.finish('BE'); await f.verify('fe'); await f.finish('FE')
+  f.edit('.dsh/rules/guard.md', 'changed required rule')
+  const before = f.state(); before.stage = '代码审核'; f.save(before)
+  await f.call({ operation: 'revise', revision_kind: 'defect', revision_reason: 'Rule changed', target_stage: '代码开发', affected_items: ['FE'] })
+  assert.ok(f.state().items.every(item => item.status === 'todo'))
+  assert.ok(f.state().verification_runs.every(run => run.invalidated_reason))
+  assert.equal(f.state().verification.passed, false)
 })
 
 test('negative-path test names do not turn a passing suite into an environment blocker', () => {

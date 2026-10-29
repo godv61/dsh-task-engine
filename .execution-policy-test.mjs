@@ -45,6 +45,10 @@ async function fixture({ legacy = false, policy = 'auto' } = {}) {
       assert.equal(spec.delivery,'caller');assert.equal(spec.request.cwd,cwd)
       const reviewer = request.label.endsWith('/review')
       calls.push({provider,reviewer,request,spec})
+      if (!legacy) {
+        assert.match(request.prompt[0].text, /current skill instructions for this task/)
+        assert.match(request.prompt[0].text, /# 代码开发元技能/)
+      }
       if (reviewer) { assert.equal(request.agentPreset,'task-engine-review');assert.equal(request.toolFilter,undefined);assert.match(request.prompt[0].text,/Applicable project Skills and Rules/);assert.match(request.prompt[0].text,/code-development/);assert.match(request.prompt[0].text,/code-review/) }
       const childId=reviewer?'review-child':'implementation-child'
       children.set(childId,()=>reviewer?state().items[0].execution_plan.files.flatMap((file,index)=>{
