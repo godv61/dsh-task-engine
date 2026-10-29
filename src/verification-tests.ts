@@ -20,6 +20,17 @@ export function validationCommandProblem(command: string): string | undefined {
   return undefined
 }
 
+/** Fail early for known Maven build-only/skip-test plans instead of compiling before rejecting the receipt. */
+export function verificationPlanProblem(command: string): string | undefined {
+  const syntax = validationCommandProblem(command)
+  if (syntax) return syntax
+  const maven = /(?:^|[\s"'])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command)
+  if (maven && (/(?:^|\s)["']?-D(?:skipTests|maven\.test\.skip)(?:=(?:true|1))?["']?(?=\s|$)/iu.test(command)
+    || /(?:^|\s)(?:compile|test-compile|validate|process-resources|clean)(?=\s|$)/u.test(command) && mavenTestEvidence(command, '') === null))
+    return 'TEST_PLAN_REQUIRES_TESTS: this test group cannot use a build-only or skip-tests command. Plan a real test goal such as mvn test -DskipTests=false; run optional compile checks separately.'
+  return undefined
+}
+
 /** Reject commands that only manufacture a successful receipt. */
 export function skillCommandProblem(command: string): string | undefined {
   const syntax = validationCommandProblem(command)

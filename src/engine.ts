@@ -16,7 +16,7 @@ import { analysisBlockers } from './delivery-contract.ts'
 import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
-import { affectedItems, groupEvidenceBlockers, preserveVerification } from './verification-state.ts'
+import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -1087,11 +1087,20 @@ export interface RevisionOutcome {
  * @param revision - the rework to apply.
  * @returns the stage reached and the conclusions cleared.
  */
-export function applyRevision(state: TaskState, revision: TaskRevision): RevisionOutcome {
+export function applyRevision(state: TaskState, revision: TaskRevision, currentVerificationHashes?: Record<string, string>): RevisionOutcome {
   if (state.completed !== undefined) throw new Error(`task "${state.id}" is archived; create a new related task`)
   const selective = revision.kind === 'defect' && state.verification_version && revision.affected_items?.length
   const affected = selective ? affectedItems(state, revision.affected_items) : state.items.map(item => item.id)
   preserveVerification(state)
+  // Only the host can supply current input fingerprints. Never revive an older
+  // pass after a newer failure, or accept a receipt under another test plan.
+  const reusableRuns = new Set<string>()
+  if (selective && currentVerificationHashes) for (const group of Object.values(state.verification_groups ?? {})) {
+    const run = latestGroupRun(state, group.id)
+    if (run && !run.invalidated_reason && run.passed && run.plan_key === group.key
+      && currentVerificationHashes[group.id] !== undefined
+      && run.receipt.scope_hash === currentVerificationHashes[group.id] && receiptProblems(run.receipt).length === 0) reusableRuns.add(run.id)
+  }
   const cleared = invalidatedBy(revision.kind)
   if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
   if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
@@ -1126,7 +1135,8 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
   }
   for (const run of state.verification_runs ?? []) {
     const group = run.group_id ? state.verification_groups?.[run.group_id] : undefined
-    if (!selective || !group || group.item_ids.some(id => affected.includes(id))) run.invalidated_reason = `${revision.kind} revision: ${revision.reason}`
+    if ((!selective || !group || group.item_ids.some(id => affected.includes(id))) && !reusableRuns.has(run.id))
+      run.invalidated_reason = `${revision.kind} revision: ${revision.reason}`
   }
   if (cleared.includes('commits')) state.commits = []
   state.stage = revision.to

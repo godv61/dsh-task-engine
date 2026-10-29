@@ -8,6 +8,7 @@ import { newTask, validateWorkflow, verificationBlockers } from './lib/engine.js
 import { adoptRecommendation, resolveFlow, retainStageBindings } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
+import { receiptView } from './lib/task-output.js'
 
 test('switching to minimal drops only stages outside its graph', () => {
   const requirement = { skills: [{ skill: { source: 'project', name: 'requirements' }, rules: [] }] }
@@ -140,13 +141,13 @@ test('same-named skill and rule freeze separately and disclose the rule body', a
   await f.call({ operation: 'create', title: 'collision', branch: 'main', files: ['app.js'] })
   const resources = f.state().flow.resources.filter(resource => resource.ref.name === 'custom')
   assert.deepEqual(resources.map(resource => resource.kind).sort(), ['rule', 'skill'])
-  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+  assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'CHANGED SKILL')
-  const status = JSON.parse(await f.call({ operation: 'status' }))
+  const status = JSON.parse(await f.call({ operation: 'status', detail: true }))
   assert.equal(status.bindings.skill_contents[0].content, 'CHANGED SKILL')
   assert.ok(status.changed_source_skills.some(ref => ref.includes('project:custom')))
   f.records.delete(join(f.cwd, '.dsh/skills/custom/SKILL.md'))
-  const missing = JSON.parse(await f.call({ operation: 'status' }))
+  const missing = JSON.parse(await f.call({ operation: 'status', detail: true }))
   assert.ok(missing.missing_skills.includes('project:custom'))
   assert.equal(missing.bindings.skill_contents.length, 0)
 })
@@ -170,7 +171,7 @@ test('task creation applies skill_profiles rules even when legacy inline binding
   assert.deepEqual(f.state().flow.config.stage_bindings['开发'].skills[0].rules, [rule])
   assert.deepEqual(f.state().flow.config.stage_bindings['交付'].skills[0].rules, [rule])
   assert.equal(f.state().flow.resources.find(resource => resource.kind === 'rule')?.content, 'RULE BODY')
-  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+  assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
 })
 
 test('task creation rejects an unavailable skill or rule before writing a record', async () => {
@@ -181,6 +182,67 @@ test('task creation rejects an unavailable skill or rule before writing a record
   } }))
   await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /unreadable bound resources/)
   assert.equal(f.records.has(join(f.cwd, '.dsh/task-LIVE-1.json')), false)
+})
+
+test('stage prompts and default status use an index, while load_skill retains every bound rule body', async () => {
+  const f = fixture()
+  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
+  } }))
+  const skill = 'UNIQUE_SKILL_BODY\n' + 'detailed instructions\n'.repeat(1000)
+  const rule = 'UNIQUE_RULE_BODY\n' + 'required constraints\n'.repeat(1000)
+  f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), skill)
+  f.records.set(join(f.cwd, '.dsh/rules/custom.md'), rule)
+  const created = await f.call({ operation: 'create', title: 'compact disclosure', branch: 'main', files: ['app.js'] })
+  assert.ok(!created.includes('UNIQUE_SKILL_BODY'))
+  assert.ok(!created.includes('UNIQUE_RULE_BODY'))
+  const raw = await f.call({ operation: 'status' }), compact = JSON.parse(raw)
+  assert.ok(!raw.includes('UNIQUE_RULE_BODY'))
+  assert.ok(raw.length < 12000)
+  assert.equal(compact.bindings.skill_index[0].name, 'custom')
+  assert.match(compact.bindings.rules[0].hash, /^[a-f0-9]{64}$/)
+  const body = await f.call({ operation: 'load_skill', skill_name: 'project:custom' })
+  assert.ok(body.includes(skill) && body.includes(rule))
+  const detailed = JSON.parse(await f.call({ operation: 'status', detail: true }))
+  assert.equal(detailed.bindings.rules[0].content, rule)
+})
+
+test('large command logs stay in persisted evidence and can be explicitly requested without rerunning a command', async () => {
+  const receipt = { command: 'node --test checks.mjs', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-10-28T00:00:00Z', finished_at: '2026-10-28T00:00:01Z',
+    stdout: 'FULL_TEST_OUTPUT'.repeat(10000), stderr: '', scope_hash: 'scope', test_summary: { count: 2 } }
+  const f = fixture('开发', { verification: { passed: true, evidence: [], receipt } })
+  const summary = JSON.parse(await f.call({ operation: 'status' }))
+  assert.equal(summary.verification.receipt.stdout, undefined)
+  assert.equal(summary.verification.receipt.output.stdout_characters, receipt.stdout.length)
+  assert.equal(summary.verification.receipt.test_summary.count, 2)
+  const detail = JSON.parse(await f.call({ operation: 'status', detail: true }))
+  assert.equal(detail.verification.receipt.stdout, receipt.stdout)
+  assert.equal(f.state().verification.receipt.stdout, receipt.stdout)
+  assert.equal(f.runs.length, 0)
+  const logs = JSON.parse(await f.call({ operation: 'status', detail: true, section: 'verification' }))
+  assert.equal(logs.verification.receipt.stdout, receipt.stdout)
+  assert.equal(logs.bindings, undefined)
+  await assert.rejects(f.call({ operation: 'status', detail: true, section: 'verification', verification_group: 'missing' }), /unknown verification group/)
+  const failure = receiptView({ ...receipt, exit_code: 1, stderr: 'important test failure' }, true)
+  assert.equal(failure.output.stderr_tail, 'important test failure')
+  assert.ok(failure.output.stdout_tail.length <= 1800)
+})
+
+test('review-stage recovery returns a complete legal revise action instead of an impossible review_item retry', async () => {
+  const f = fixture('代码审核', { items: [{ id: 'A', title: 'repair unit', status: 'done' }] })
+  let action
+  await assert.rejects(f.call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' }), error => {
+    const match = /Recovery: call dev_task (\{[^\n]+\}) before/u.exec(error.message)
+    assert.ok(match)
+    action = JSON.parse(match[1])
+    assert.equal(action.target_stage, '开发')
+    assert.deepEqual(action.affected_items, ['A'])
+    return true
+  })
+  await f.call(action)
+  assert.equal(f.state().stage, '开发')
 })
 
 test('审查通过后更新状态并激活下一项，保留已完成项的审计', async () => {
