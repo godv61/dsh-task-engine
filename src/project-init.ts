@@ -6,6 +6,8 @@ export interface InitResource {
   kind: 'skill' | 'rule'
   name: string
   description?: string
+  /** Short task/scope condition for on-demand selection; absent in older drafts. */
+  whenToUse?: string
   content: string
   meta_skills?: MetaSkill[]
   rules?: string[]
@@ -29,6 +31,7 @@ export function validateInitResources(resources: InitResource[] | undefined): In
     names.add(key)
     if (resource.kind === 'skill') {
       if (typeof resource.description !== 'string' || !resource.description.trim()) throw new Error(`Skill ${resource.name} needs a description`)
+      if (resource.whenToUse !== undefined && typeof resource.whenToUse !== 'string') throw new Error(`Skill ${resource.name} whenToUse must be a string`)
       if (!Array.isArray(resource.meta_skills) || resource.meta_skills.length === 0 ||
         !resource.meta_skills.every(meta => typeof meta === 'string' && meta in META_STAGES)) throw new Error(`Skill ${resource.name} needs valid meta_skills`)
       if (resource.rules !== undefined && (!Array.isArray(resource.rules) || !resource.rules.every(rule => typeof rule === 'string' && RESOURCE_NAME.test(rule)))) {
@@ -37,6 +40,14 @@ export function validateInitResources(resources: InitResource[] | undefined): In
     }
   }
   return resources
+}
+
+/** Identical reviewed bytes for both initialization writers and conflict checking. */
+export function renderInitSkill(resource: InitResource): string {
+  const line = (value: string) => value.replace(/[\r\n]+/gu, ' ').trim()
+  const head = [`name: ${resource.name}`, `description: ${line(resource.description ?? '')}`]
+  if (resource.whenToUse?.trim()) head.push(`whenToUse: ${line(resource.whenToUse)}`)
+  return `---\n${head.join('\n')}\n---\n\n${resource.content.trimEnd()}\n`
 }
 
 export interface ProjectInventory {

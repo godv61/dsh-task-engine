@@ -582,7 +582,12 @@ function applyProjectConfig(base, project) {
             problems.push(`skill profile "${key}" must declare a rules array`);
             return [];
           }
-          return [{ skill: ref, rules: profile.rules, ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {} }];
+          return [{
+            skill: { source: ref.source, name: ref.name },
+            rules: profile.rules,
+            ...ref.loading !== void 0 ? { loading: ref.loading } : {},
+            ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
+          }];
         });
       } else if (binding.skills !== void 0) {
         if (!Array.isArray(binding.skills)) {
@@ -603,6 +608,7 @@ function applyProjectConfig(base, project) {
             return [{
               skill: skill.skill,
               rules: profile.rules,
+              ...skill.loading !== void 0 ? { loading: skill.loading } : {},
               ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
             }];
           }

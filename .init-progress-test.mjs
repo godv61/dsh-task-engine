@@ -4,10 +4,46 @@ import { firstPendingStep, initGenerationQueue, preserveInitGenerationId, restor
 import { externalInitPrompt } from './lib/init-external-prompt.js'
 import { initTimeBudget } from './lib/init-timeout.js'
 import { initStepContext, renderInitStepPrompt } from './lib/init-prompt.js'
+import { validateInitResources, renderInitSkill } from './lib/project-init.js'
 
 const steps = ['map', 'stack', 'business', 'backend', 'frontend'].map(name => ({ name, required: false }))
 const resource = name => ({ kind: 'skill', name, description: 'fixture', content: '# fixture', meta_skills: ['requirements-analysis'] })
 const restore = value => restoreInitProgress(JSON.stringify(value), 'current', steps)
+
+test('initialization usage is optional for older drafts and preserved through progress and frontmatter', () => {
+  const old = resource('backend')
+  assert.doesNotThrow(() => validateInitResources([old]))
+  const draft = { ...old, whenToUse: 'Backend implementation only\nincluding API changes' }
+  const progress = restore({ schema_version: 3, fingerprint: 'current', index: 0, completed: ['backend'], resources: [draft], errors: {} })
+  assert.equal(progress.resources[0].whenToUse, draft.whenToUse)
+  assert.match(renderInitSkill(draft), /whenToUse: Backend implementation only including API changes\n---/)
+  assert.doesNotMatch(renderInitSkill(old), /whenToUse:/)
+  assert.throws(() => validateInitResources([{ ...old, whenToUse: { invalid: true } }]), /whenToUse must be a string/)
+})
+
+test('shipping browser codecs preserve usage in generation, jobs, preview and apply', async t => {
+  const previousWindow = globalThis.window
+  t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow })
+  let registration, remote
+  globalThis.window = { __ModuleLoader__: { load(value) { registration = value } } }
+  await import('./lib/client.js?init-usage-codecs')
+  const client = registration.factory(name => name === '@deepseek-ai/dsh-client-store' ? { defineStore: () => ({}) } : {})
+  const dispose = await client.apply({ remote: { $mount: async contribution => { remote = contribution; return async () => {} } },
+    get: () => ({}), slots: { inject() {}, register() {} } })
+  const descriptor = method => remote.descriptors.find(entry => entry.method === method)
+  const draft = { ...resource('backend'), whenToUse: 'Only for backend changes' }
+  const generated = descriptor('generateProjectInitStep').result.create().parse({ resource: draft, reason: 'verified' })
+  assert.equal(generated.resource.whenToUse, draft.whenToUse)
+  const prior = descriptor('generateProjectInitStep').parameters[0].codec.create().parse({ path: 'fixture', target: 'backend', prior_resources: [draft] })
+  assert.equal(prior.prior_resources[0].whenToUse, draft.whenToUse)
+  const job = descriptor('projectInitJob').result.create().parse({ job_id: 'job', status: 'completed', updated_at: 'now', result: generated })
+  assert.equal(job.result.resource.whenToUse, draft.whenToUse)
+  for (const method of ['previewProjectInit', 'applyProjectInit']) {
+    const request = descriptor(method).parameters[0].codec.create().parse({ path: 'fixture', resources: [draft], expected_hash: 'reviewed', existing_hash: 'before' })
+    assert.equal(request.resources[0].whenToUse, draft.whenToUse)
+  }
+  await dispose()
+})
 
 test('business capabilities receive the same-project map body as unverified data without expanding tokens inside it', () => {
   const target = { name: 'repo-business-capabilities', kind: 'skill', required: false, why: 'business', meta_skills: ['requirements-analysis'] }

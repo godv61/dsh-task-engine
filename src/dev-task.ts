@@ -65,7 +65,7 @@ import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlocke
 import { captureLocalAuditBaseline, inspectLocalRules, lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
-import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, type InitResource } from './project-init.ts'
+import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, renderInitSkill, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
 import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
@@ -83,7 +83,8 @@ import { withUserSkillProfiles } from './user-skill-profiles.ts'
 import { isGradleTestCommand, skillCommandProblem, testEvidence, validationCommandProblem, verificationPlanProblem } from './verification-tests.ts'
 import { freshGradleReportSummary, snapshotGradleReports } from './gradle-reports.ts'
 import { affectedItems, groupEvidenceBlockers, groupInputs, groupKey, groupPlanningBlockers, latestGroupRun, preserveVerification, receiptProblems, refreshVerification, requiredGroups, verificationGroupViews, verificationKey, verificationTime } from './verification-state.ts'
-import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
+import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, skillLoadForSession, type SkillSession } from './skill-audit.ts'
+import { appendInitMount, appendMount, mountLoading, mountName, requiredSkill, skillMetadata, validMetaMount, type MetaSkillMount } from './skill-loading.ts'
 import { statusView, verificationView } from './task-output.ts'
 import { implementationRecovery, reviewRecoveryMessage } from './task-recovery.ts'
 import {
@@ -722,7 +723,7 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
 const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 interface AdaptiveConfig {
   /** Additional logical Skill names per meta-skill. A same-named project Skill replaces the user/bundled Skill. */
-  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  meta_bindings?: Partial<Record<MetaSkill, MetaSkillMount[]>>
   sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
     source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
@@ -740,9 +741,11 @@ async function readAdaptiveConfig(fs: Fs, cwd?: string): Promise<AdaptiveConfig>
     }
     for (const [meta, names] of Object.entries(config.meta_bindings)) {
       if (!(meta in META_STAGES)) throw new Error(`unknown meta-skill "${meta}" in .dsh/meta.json`)
-      if (!Array.isArray(names) || !names.every(name => typeof name === 'string' && RESOURCE_NAME.test(name))) {
-        throw new Error(`meta_bindings.${meta} must be an array of simple Skill names`)
+      if (!Array.isArray(names) || !names.every(validMetaMount)) {
+        throw new Error(`meta_bindings.${meta} must contain Skill names or {name, loading: required|on-demand}`)
       }
+      if (new Set(names.map(mountName)).size !== names.length) throw new Error(`meta_bindings.${meta} has duplicate Skill names`)
+      if (names.some(entry => mountName(entry) === meta && mountLoading(entry) !== 'required')) throw new Error(`core Skill ${meta} must use required loading`)
     }
   }
   if (config.sonar !== undefined) {
@@ -831,15 +834,20 @@ async function resolveAdaptiveWorkflow(grade: Complexity, fs: Fs, cwd?: string, 
   for (const stage of config.stages) {
     const meta = metaForStage(stage)
     if (meta === undefined) continue
-    const names = [...new Set([meta, ...(project.meta_bindings?.[meta] ?? [])])]
+    const mounts = (project.meta_bindings?.[meta] ?? []).reduce((all, mount) => appendMount(all, mount), [meta] as MetaSkillMount[])
     const skills = []
-    for (const name of names) {
-      const ref = await resolveLogicalSkill(name, fs, cwd)
+    for (const mount of mounts) {
+      const name = mountName(mount)
+      const loading = name === meta ? 'required' : mountLoading(mount)
+      let ref: ResourceRef
+      try { ref = await resolveLogicalSkill(name, fs, cwd) }
+      catch (error) { if (loading !== 'on-demand') throw error; ref = { source: 'project', name } }
       const profile = await profileFor(ref, fs, cwd) ?? {
         rules: [], evidence: name === meta ? META_EVIDENCE[meta] : 'none',
       }
       skill_profiles[formatResourceRef(ref)] = profile
       skills.push({ skill: ref, rules: profile.rules,
+        ...(typeof mount !== 'string' ? { loading } : {}),
         evidence: profile.evidence ?? (name === meta ? META_EVIDENCE[meta] : 'none') })
     }
     stage_bindings[stage] = { skills }
@@ -874,14 +882,14 @@ async function freezeResources(
       const skillKey = 'skill:' + formatResourceRef(entry.skill)
       if (!seen.has(skillKey)) {
         const body = await readSkillAt(entry.skill, fs, cwd)
-        if (body === undefined) unreadable.push(skillKey)
+        if (body === undefined) { if (requiredSkill(entry)) unreadable.push(skillKey) }
         else { seen.add(skillKey); resources.push({ kind: 'skill', ref: entry.skill, hash: hashText(body), content: body }) }
       }
       for (const rule of entry.rules) {
         const key = 'rule:' + formatResourceRef(rule)
         if (seen.has(key)) continue
         const body = await readRuleAt(rule.source, rule.name, fs, cwd)
-        if (body === undefined) { unreadable.push(key); continue }
+        if (body === undefined) { if (requiredSkill(entry)) unreadable.push(key); continue }
         seen.add(key)
         resources.push({ kind: 'rule', ref: rule, hash: hashText(body), content: body })
       }
@@ -988,6 +996,7 @@ async function rulesForBinding(
   // disclosed once, because it is one constraint being followed.
   const seen = new Set<string>()
   for (const skill of binding?.skills ?? []) {
+    if (!requiredSkill(skill)) continue
     for (const rule of skill.rules) {
       const key = formatResourceRef(rule)
       if (seen.has(key)) continue
@@ -1031,11 +1040,30 @@ async function skillBodiesForBinding(
   return result
 }
 
-/** Missing live skill files cannot be satisfied by the creation-time archive. */
+function instructionPath(ref: ResourceRef, kind: 'skill' | 'rule'): string {
+  const relative = kind === 'skill' ? `skills/${ref.name}/SKILL.md` : `rules/${ref.name}.md`
+  if (ref.source === 'project') return `.dsh/${relative}`
+  if (ref.source === 'codex-project') return `.agents/${relative}`
+  return ref.source === 'user' ? join(dshHome(), relative) : fileURLToPath(new URL(`../${relative}`, import.meta.url))
+}
+
+async function skillIndexForBinding(binding: StageBinding | undefined, fs: Fs, cwd?: string, state?: TaskState, session?: SkillSession) {
+  return Promise.all((binding?.skills ?? []).map(async entry => {
+    const content = await readSkillAt(entry.skill, fs, cwd)
+    const loaded = state ? skillLoadForSession(state, formatResourceRef(entry.skill), session) : undefined
+    return { name: entry.skill.name, source: entry.skill.source, loading: entry.loading ?? 'required',
+      ...skillMetadata(content ?? ''), available: content !== undefined,
+      ...(content !== undefined ? { hash: hashText(content) } : {}),
+      loaded: !!loaded, ...(loaded ? { loaded_at_stage: loaded.stage } : {}),
+      path: instructionPath(entry.skill, 'skill'), rule_paths: entry.rules.map(rule => instructionPath(rule, 'rule')) }
+  }))
+}
+
+/** Missing required live skill files cannot be satisfied by the creation-time archive. */
 async function missingSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd?: string): Promise<string[]> {
   const missing: string[] = []
   for (const entry of binding?.skills ?? []) {
-    if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) missing.push(formatResourceRef(entry.skill))
+    if (requiredSkill(entry) && (await readSkillAt(entry.skill, fs, cwd)) === undefined) missing.push(formatResourceRef(entry.skill))
   }
   return missing
 }
@@ -1048,6 +1076,7 @@ async function changedSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd: 
   baseline?: FrozenResource[]): Promise<string[]> {
   const changed: string[] = []
   for (const entry of binding?.skills ?? []) {
+    if (!requiredSkill(entry)) continue
     const key = formatResourceRef(entry.skill)
     const original = baseline?.find(resource => (resource.kind === 'skill'
       || (resource.kind === undefined && resource.content.startsWith('---')))
@@ -1069,21 +1098,32 @@ async function changedSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd: 
  * @param fs - host filesystem for project-rule resolution.
  * @returns the disclosure text, or an empty string.
  */
-async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string, frozen?: FrozenResource[], full = false): Promise<string> {
+async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string, frozen?: FrozenResource[], full = false,
+  state?: TaskState, session?: SkillSession, disclosed = new Set<string>()): Promise<string> {
   const binding = bindingsForStage(stage, workflow)
   const skills = binding?.skills ?? []
   if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
   const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd, frozen)
-  const skillPart = skills.length > 0
-    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use dev_task operation=load_skill with the exact source:name)`
+  const required = skills.filter(requiredSkill)
+  const outstanding = required.filter(entry => !state || !skillLoadForSession(state, formatResourceRef(entry.skill), session))
+  const skillPart = full ? `required skills supplied to this execution context: ${required.map(entry => formatResourceRef(entry.skill)).join(', ') || 'none'}` : outstanding.length > 0
+    ? `required skills to load: ${outstanding.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use dev_task operation=load_skill with the exact source:name)`
     : 'skills to load: none'
   const currentSkills = await skillBodiesForBinding(binding, fs, cwd)
+  const requiredNames = new Set(required.map(entry => formatResourceRef(entry.skill)))
+  const requiredBodies = currentSkills.filter(skill => requiredNames.has(`${skill.source}:${skill.name}`))
+  const once = (key: string) => { if (disclosed.has(key)) return false; disclosed.add(key); return true }
+  const fullBodies = full ? requiredBodies.filter(skill => once(`skill:${skill.source}:${skill.name}`)) : []
+  const fullRules = full ? rules.filter(rule => once(`rule:${rule.source}:${rule.name}`)) : []
+  const skillIndex = await skillIndexForBinding(binding, fs, cwd, state, session)
   const skillInstructions = currentSkills.length > 0
-    ? full ? `current skill instructions for this task (read at this interaction):\n${currentSkills.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
-      : `skill index (instructions require load_skill):\n${currentSkills.map(skill => `${skill.source}:${skill.name} · sha256=${hashText(skill.content)}`).join('\n')}`
+    ? full ? `current skill instructions for this task (required in this execution context):\n${fullBodies.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
+      : `skill index (loaded means already read in this task/session):\n${JSON.stringify(skillIndex)}`
     : ''
+  const optionalPart = skills.some(entry => !requiredSkill(entry))
+    ? `on-demand skill catalog:\n${JSON.stringify(skillIndex.filter(entry => entry.loading === 'on-demand'))}\nChoose these only when their description/whenToUse applies to this task. No skip justification, load gate or skill_result evidence is required. Parent: use dev_task load_skill. Worker/reviewer: read the listed Skill file and all its rule_paths if selected; do not mutate the parent ledger. Do not read unrelated Skill bodies.` : ''
   const rulePart = rules.length > 0
-    ? full ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${rules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
+    ? full ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${fullRules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
       : `bound rule index (full text accompanies its Skill load):\n${rules.map(r => `${r.source}:${r.name} · sha256=${hashText(r.content)}`).join('\n')}`
     : ''
   // A bound rule that resolves nowhere is stated explicitly. Silently dropping it
@@ -1091,7 +1131,7 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
   const missingPart = missing.length > 0
     ? `rules in force at this stage but NOT FOUND in their declared layer: ${missing.join(', ')}`
     : ''
-  const missingSkillPart = skills.length > currentSkills.length
+  const missingSkillPart = required.length > requiredBodies.length
     ? `bound skills NOT FOUND in their declared layer: ${(await missingSkillRefs(binding, fs, cwd)).join(', ')}`
     : ''
   // Legacy stage-level rules are disclosed (so nothing is lost) but named as
@@ -1105,14 +1145,23 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
     // binding's declared evidence kind — a document-producing skill owes an
     // artifact, not a shell command, and saying otherwise would tell the model to
     // run something irrelevant.
-    const additional = skills
+    const additional = required
       .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
       .map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
       .filter(name => needsSkillReceipt(name))
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'no command skill_result receipt required for this stage; other evidence kinds follow their configured stage operations'
-  return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, missingSkillPart, legacyPart].filter(Boolean).join('\n')
+  return [skillPart, skillInstructions, optionalPart, receiptPart, rulePart, missingPart, missingSkillPart, legacyPart].filter(Boolean).join('\n')
+}
+
+/** Each independent reviewer receives its own complete required context, once per resource. */
+async function reviewBindings(state: TaskState, workflow: WorkflowConfig, fs: Fs, cwd?: string): Promise<string> {
+  const disclosed = new Set<string>()
+  const stages = [...new Set([state.stage, ...(workflow.stages.includes('代码审核') ? ['代码审核'] : [])])]
+  const result: string[] = []
+  for (const stage of stages) result.push(await renderBindings(stage, workflow, fs, cwd, state.flow?.resources, true, undefined, undefined, disclosed))
+  return result.filter(Boolean).join('\n\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
@@ -1303,12 +1352,14 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const entry of workflow.stage_bindings?.[stage]?.skills ?? []) {
+      if (!requiredSkill(entry)) continue
       const name = formatResourceRef(entry.skill)
       const content = await readSkillAt(entry.skill, fs, cwd)
       const rules = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
       if (content === undefined || rules.missing.length) continue
       const inputHash = hashText(JSON.stringify([content, rules.resolved.map(rule => [rule.source, rule.name, rule.content])]))
-      const loaded = state.skill_loads?.[stage]?.[name]
+      const loads = Object.values(state.skill_loads ?? {}).map(entries => entries[name]).filter(entry => entry !== undefined)
+      const loaded = loads.find(entry => entry.input_hash === inputHash) ?? loads[0]
       const refs = [entry.skill, ...entry.rules]
       const changed = refs.some(ref => {
         const original = state.flow?.resources?.find(resource => formatResourceRef(resource.ref) === formatResourceRef(ref))
@@ -1321,7 +1372,7 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
       const binding = (workflow.stage_bindings?.[stage]?.skills ?? []).find(entry =>
         name === entry.skill.name || name === `${entry.skill.source}:${entry.skill.name}`)
-      if (!binding || !needsSkillReceipt(name, binding.evidence)) continue
+      if (!binding || !requiredSkill(binding) || !needsSkillReceipt(name, binding.evidence)) continue
       if (result.receipt?.scope_hash !== current) blockers.push(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
     }
   }
@@ -1576,7 +1627,7 @@ export function registerDevTask(ctx: Context): void {
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
-      detail: { type: 'boolean', description: 'status/verify: include complete plans, artifacts and command logs. Default returns a compact view; persisted evidence stays complete. load_skill always returns complete bound instructions.' },
+      detail: { type: 'boolean', description: 'status/verify: include complete plans, artifacts and logs. load_skill: explicitly restore full Skill and Rule text even if already loaded in this task/session. Default reuses successful identical loads across stages.' },
       section: { type: 'string', enum: ['items', 'verification', 'artifacts', 'bindings', 'sonar'], description: 'status detail=true: retrieve one section. Use item_id or verification_group to narrow large plans and logs without rerunning work.' },
       intent: { type: 'string', enum: ['analysis', 'implementation'], description: 'create/assess: select what the user asked to receive, before complexity. analysis is a read-only diagnosis/proposal; implementation uses project engineering gates. Omission preserves legacy contracts.' },
       intent_reason: { type: 'string', description: 'Concrete user goal supporting intent (required when intent is supplied).' },
@@ -1615,6 +1666,7 @@ export function registerDevTask(ctx: Context): void {
       resources: { type: 'array', description: 'Project Skill/Rule drafts for init_project propose/apply; content is reviewed before creation.',
         items: { type: 'object', additionalProperties: false, properties: {
           kind: { type: 'string', enum: ['skill', 'rule'] }, name: { type: 'string' }, description: { type: 'string' },
+          whenToUse: { type: 'string', description: 'Skill: one short task/scope condition for on-demand selection. Recommended for new drafts; older drafts may omit it and use description.' },
           content: { type: 'string' }, meta_skills: { type: 'array', items: { type: 'string' } },
           rules: { type: 'array', items: { type: 'string' } },
         } } },
@@ -1736,7 +1788,7 @@ export function registerDevTask(ctx: Context): void {
         return JSON.stringify({ complexity: a.complexity, stages: config.stages,
           meta_skills: Object.fromEntries(Object.entries(config.stage_bindings ?? {}).map(([stage, binding]) =>
             [stage, (binding.skills ?? []).map(entry => ({ logical_name: entry.skill.name, effective_source: entry.skill.source,
-              rules: entry.rules }))])),
+              loading: entry.loading ?? 'required', rules: entry.rules }))])),
           artifacts: config.artifacts, review_depth: config.review_depth }, null, 2)
       }
 
@@ -1819,8 +1871,7 @@ export function registerDevTask(ctx: Context): void {
             writeMode, { kind: 'createIfAbsent' })
         }
         for (const resource of resources.filter(resource => resource.kind === 'skill')) {
-          const description = resource.description!.replace(/[\r\n]+/gu, ' ').trim()
-          const body = `---\nname: ${resource.name}\ndescription: ${description}\n---\n\n${resource.content.trimEnd()}\n`
+          const body = renderInitSkill(resource)
           await writeText(fs, `.dsh/skills/${resource.name}/SKILL.md`, body, cwd,
             writeMode, { kind: 'createIfAbsent' })
           const profile: SkillProfile = { rules: (resource.rules ?? []).map(name => ({ source: 'project', name })), evidence: 'none' }
@@ -1829,11 +1880,11 @@ export function registerDevTask(ctx: Context): void {
         }
         const bindings: NonNullable<AdaptiveConfig['meta_bindings']> = { ...meta.meta_bindings }
         for (const { meta: stage, name } of projectMetaSkillTargets(inventory.project_name)) {
-          if (existingMetaSkills.has(name)) bindings[stage] = [...new Set([...(bindings[stage] ?? []), name])]
+          if (existingMetaSkills.has(name)) bindings[stage] = appendInitMount(bindings[stage] ?? [], name, stage)
         }
         for (const resource of resources.filter(resource => resource.kind === 'skill')) {
           for (const skill of resource.meta_skills ?? []) {
-            bindings[skill] = [...new Set([...(bindings[skill] ?? []), resource.name])]
+            bindings[skill] = appendInitMount(bindings[skill] ?? [], resource.name, skill)
           }
         }
         const info = await (fs as unknown as WriteFs).lstat('.dsh/meta.json', { cwd })
@@ -2030,7 +2081,7 @@ export function registerDevTask(ctx: Context): void {
         bindDeliveryIntent(exec.agent, state.delivery?.intent)
         if (isAnalysis(state)) return JSON.stringify({ created: state.id, delivery: deliveryView(state),
           instruction: 'Read source and return findings early. Finish with submit_analysis; no synthetic implementation items, tests or commits. Project Skills are available as relevant investigation context.' })
-        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
+        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources, false, state, session)}\nBefore advance, load required skills (reuse prior successful loads in this task/session); choose on-demand skills only when relevant${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each required skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
@@ -2063,13 +2114,15 @@ export function registerDevTask(ctx: Context): void {
         const { resolved, missing } = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
         if (missing.length) throw new Error(`bound rule for ${a.skill_name} cannot be read: ${missing.join(', ')}`)
         const inputHash = hashText(JSON.stringify([content, resolved.map(rule => [rule.source, rule.name, rule.content])]))
+        const reusable = skillLoadForSession(state, a.skill_name!, session, inputHash)
+        if (reusable && !a.detail) return `skill: ${a.skill_name}\nreused: true; already loaded in this task/session at stage ${reusable.stage}. The full Skill and attached Rules remain applicable; no repeated body is returned. Current stage evidence is still checked independently. Use load_skill detail=true only when full instructions need to be restored.`
         const previous = state.skill_loads?.[stage]?.[a.skill_name!]
         const changedSinceCreation = [entry.skill, ...entry.rules].some(ref => {
           const original = state.flow?.resources?.find(resource => formatResourceRef(resource.ref) === formatResourceRef(ref))
           const live = ref === entry.skill ? content : resolved.find(rule => rule.source === ref.source && rule.name === ref.name)?.content
           return original && hashText(live ?? '') !== original.hash
         })
-        if ((previous && previous.input_hash !== inputHash) || (!previous && changedSinceCreation)) {
+        if (requiredSkill(entry) && ((previous && previous.input_hash !== inputHash) || (!previous && changedSinceCreation))) {
           state.verification = { passed: false, evidence: [] }
           state.review = { outcome: 'pending' }
           delete state.skill_results?.[stage]?.[a.skill_name!]
@@ -2082,6 +2135,7 @@ export function registerDevTask(ctx: Context): void {
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         return [`skill: ${a.skill_name}`, `current skill instructions:\n${content}`,
           resolved.length ? `rules attached to this skill:\n${resolved.map(rule => `### ${rule.source}:${rule.name}\n${rule.content}`).join('\n\n')}` : 'rules attached to this skill: none',
+          'Skill loading policy: only required mounts have load/evidence gates. Select on-demand mounts by description and whenToUse; do not load unrelated Skills or manufacture skip/evidence records. Successful identical loads in this task/session are reusable across stages; stage artifacts, verification and review are separate obligations.',
           state.delivery?.intent === 'implementation'
             ? 'Task execution contract: implementation v1. Direct work uses plan/plan_execution, real verify and accept_item; no extra dispatch/review_item/items sequence is required. Dispatch is for delegation. Apply legacy procedural instructions only to legacy tasks; all applicable project code constraints remain in force.'
             : 'Task execution contract: legacy. Follow the configured dispatch, review_item and items gates.'].join('\n\n')
@@ -2146,7 +2200,7 @@ export function registerDevTask(ctx: Context): void {
             test_count: run.receipt.test_summary?.count ?? null, passed: run.passed, invalidated_reason: run.invalidated_reason })),
           task_plan_item_blockers: planItemBlockers,
           skill_obligations: obligationStages(state, workflow).map(stage => {
-            const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
+            const bindings = (workflow.stage_bindings?.[stage]?.skills ?? []).filter(requiredSkill)
             const skills = bindings.map(entry => state.complexity !== undefined || entry.skill.source === 'codex-project'
               ? formatResourceRef(entry.skill) : entry.skill.name)
             // Only bindings whose evidence is a command owe a command receipt, so a
@@ -2205,10 +2259,7 @@ export function registerDevTask(ctx: Context): void {
           bindings: {
             skills: binding?.skills ?? [],
             ...(a.detail ? { skill_contents: await skillBodiesForBinding(binding, fs, cwd) } : {
-              skill_index: (await skillBodiesForBinding(binding, fs, cwd)).map(skill => ({
-                name: skill.name, source: skill.source, hash: hashText(skill.content),
-                loaded: state.skill_loads?.[state.stage]?.[`${skill.source}:${skill.name}`]?.session_id === (session?.id ?? ''),
-              })),
+              skill_index: await skillIndexForBinding(binding, fs, cwd, state, session),
             }),
             // The layer is disclosed with each rule, because two same-named rules in
             // different layers are distinct resources and the caller needs to know
@@ -2532,6 +2583,7 @@ export function registerDevTask(ctx: Context): void {
                 if (run && run.receipt.scope_hash !== hashes[group.id]) impact.push(...group.item_ids)
               }
               for (const [stage, entries] of Object.entries(state.skill_loads ?? {})) for (const binding of workflow.stage_bindings?.[stage]?.skills ?? []) {
+                if (!requiredSkill(binding)) continue
                 const loaded = entries[formatResourceRef(binding.skill)]
                 if (!loaded) continue
                 const content = await readSkillAt(binding.skill, fs, cwd)
@@ -2543,6 +2595,9 @@ export function registerDevTask(ctx: Context): void {
                 }
               }
               for (const resource of state.flow?.resources ?? []) {
+                if (!Object.values(workflow.stage_bindings ?? {}).some(stage => stage.skills?.some(binding => requiredSkill(binding)
+                  && (resource.kind === 'skill' ? formatResourceRef(binding.skill) === formatResourceRef(resource.ref)
+                    : binding.rules.some(rule => formatResourceRef(rule) === formatResourceRef(resource.ref)))))) continue
                 const content = resource.kind === 'skill' ? await readSkillAt(resource.ref, fs, cwd)
                   : resource.kind === 'rule' ? await readRuleAt(resource.ref.source, resource.ref.name, fs, cwd) : undefined
                 if (content === undefined || hashText(content) !== resource.hash) {
@@ -2753,8 +2808,7 @@ export function registerDevTask(ctx: Context): void {
           await assertDeliveryChanges(fs, plan, state.root ?? cwd)
           const current = await itemContextScope(fs, state, item.id, cwd)
           const scope = await scopeFingerprint(fs, { ...state, files: plan.files }, cwd)
-          const reviewConstraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, true),
-            workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources, true) : ''].filter(Boolean).join('\n\n')
+          const reviewConstraints = await reviewBindings(state, workflow, fs, cwd)
           const contextHash = hashText(JSON.stringify({ plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints: reviewConstraints, scope: current,
             ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
           const previous = item.independent_review
@@ -2862,8 +2916,7 @@ export function registerDevTask(ctx: Context): void {
               || review.scope_hash !== await scopeFingerprint(fs, { ...state, files: item.execution_plan.files }, cwd))
               throw new Error('independent review is missing or stale; run review_dispatch on the current verified delivery')
             if (a.spec_outcome !== review.spec || a.quality_outcome !== review.quality) throw new Error('parent verdict cannot override independent findings; fix and re-review first')
-            const constraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, true),
-              workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources, true) : ''].filter(Boolean).join('\n\n')
+            const constraints = await reviewBindings(state, workflow, fs, cwd)
             const contextHash = hashText(JSON.stringify({ plan: item.execution_plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints,
               scope: await itemContextScope(fs, state, item.id, cwd),
               ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
@@ -2919,9 +2972,9 @@ export function registerDevTask(ctx: Context): void {
           }
           if (!result.ok) throw new Error(result.errors!.join('; '))
           state.stage = target
-          const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources)
+          const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, false, state, session)
           const terminalObligations = obligationStages(state, workflow).filter(stage => stage !== state.stage)
-          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd, state.flow?.resources)}`))
+          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd, state.flow?.resources, false, state, session)}`))
           note = [`advanced to ${state.stage}`, disclosure, ...terminalDisclosure].filter(Boolean).join('\n')
           break
         }
