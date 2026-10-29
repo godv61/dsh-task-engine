@@ -2,7 +2,8 @@
 import { createElement, useCallback, useEffect, useState, type CSSProperties } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { META_EVIDENCE, META_STAGES, type MetaSkill } from '../adaptive.ts'
-import type { ResourceRef, SkillProfile } from '../engine.ts'
+import type { ResourceRef, SkillLoading, SkillProfile } from '../engine.ts'
+import { appendMount, mountLoading, mountName } from '../skill-loading.ts'
 import { styles } from './styles.ts'
 import { describeError } from './shared.ts'
 import type { AdaptiveConfigView, AdaptiveProjectConfig, ReadSkillResult, RuleCatalogEntry, SkillCatalogEntry, TaskEngineRemote } from './TaskEngineSection.tsx'
@@ -34,6 +35,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const [activeMeta, setActiveMeta] = useState<MetaSkill>('requirements-analysis')
   const [metaQuery, setMetaQuery] = useState('')
   const [skillQuery, setSkillQuery] = useState('')
+  const [newLoading, setNewLoading] = useState<SkillLoading>('required')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -82,13 +84,16 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
   const update = (config: AdaptiveProjectConfig) => { setDraft(config); setDirty(true); setMessage('') }
   const addSkill = (meta: MetaSkill, name: string) => {
     if (!name) return
-    const meta_bindings = { ...draft.meta_bindings, [meta]: [...new Set([...(draft.meta_bindings?.[meta] ?? []), name])] }
+    const meta_bindings = { ...draft.meta_bindings, [meta]: appendMount(draft.meta_bindings?.[meta] ?? [], { name, loading: newLoading }) }
     update({ ...draft, meta_bindings })
   }
   const removeSkill = (meta: MetaSkill, name: string) => {
-    const meta_bindings = { ...draft.meta_bindings, [meta]: (draft.meta_bindings?.[meta] ?? []).filter(entry => entry !== name) }
+    const meta_bindings = { ...draft.meta_bindings, [meta]: (draft.meta_bindings?.[meta] ?? []).filter(entry => mountName(entry) !== name) }
     update({ ...draft, meta_bindings })
   }
+  const changeLoading = (meta: MetaSkill, name: string, loading: SkillLoading) => update({ ...draft,
+    meta_bindings: { ...draft.meta_bindings, [meta]: (draft.meta_bindings?.[meta] ?? []).map(entry =>
+      mountName(entry) === name ? { name, loading } : entry) } })
   const updateSonar = (patch: NonNullable<AdaptiveProjectConfig['sonar']>) => {
     if (patch.host_url !== undefined || patch.project_key !== undefined) setTokenInfo(null)
     update({ ...draft, sonar: { ...draft.sonar, ...patch, source: 'ide-local', mode: 'branch',
@@ -204,11 +209,12 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
     name !== 'eng-delivery' && !(name in META_STAGES)).sort()
   const stageQuery = metaQuery.trim().toLowerCase()
   const visibleStages = (Object.entries(META_STAGES) as [MetaSkill, string][]).filter(([id, stage]) =>
-    !stageQuery || `${id} ${stage} ${(draft.meta_bindings?.[id] ?? []).join(' ')}`.toLowerCase().includes(stageQuery))
+    !stageQuery || `${id} ${stage} ${(draft.meta_bindings?.[id] ?? []).map(mountName).join(' ')}`.toLowerCase().includes(stageQuery))
   const visibleMeta = visibleStages.find(([id]) => id === activeMeta)?.[0] ?? visibleStages[0]?.[0]
   const mounted = visibleMeta ? draft.meta_bindings?.[visibleMeta] ?? [] : []
+  const mountedNames = mounted.map(mountName)
   const candidateQuery = skillQuery.trim().toLowerCase()
-  const matchingCandidates = candidates.filter(name => !mounted.includes(name) && (!candidateQuery
+  const matchingCandidates = candidates.filter(name => !mountedNames.includes(name) && (!candidateQuery
     || name.toLowerCase().includes(candidateQuery)
     || skills.some(skill => skill.name === name && `${skill.description} ${skill.sourceLabel}`.toLowerCase().includes(candidateQuery))))
   const sonar = draft.sonar ?? {}
@@ -229,7 +235,7 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
         )))),
     createElement('div', { style: card },
       createElement('strong', null, '元技能与项目技能'),
-      createElement('span', { style: label }, '每个元技能始终加载同名核心 Skill；同名项目 Skill 覆盖用户与内置版本。附加技能按名称挂载，实际来源在任务创建时解析。Rule 保存在对应 Skill 的 profile.json。'),
+      createElement('span', { style: label }, '核心 Skill 强制加载。附加 Skill 可选强制或按需；按需项由模型根据描述和使用时机选择，不设读取或完成凭证门禁。同一任务、同一会话已读内容可跨阶段复用；阶段产物与测试审核仍单独检查。Rule 随 Skill 保存于 profile.json，必须始终遵守的规范请挂在强制 Skill 下。'),
       createElement('input', { className: 'te-input', type: 'search', 'aria-label': '搜索元技能或已挂载技能',
         placeholder: '搜索阶段或已挂载的 Skill', value: metaQuery,
         onChange: (event: { target: HTMLInputElement }) => setMetaQuery(event.target.value) }),
@@ -246,19 +252,26 @@ export function AdaptivePanel({ workspace, remote, onOpenInit }: { workspace: st
             createElement('div', { style: label }, '核心 Skill 与附加 Skill 的 Rule 分别保存在各自的配置中。')),
           createElement('div', { className: 'te-meta-skill-row' },
             createElement('span', null, createElement('strong', null, visibleMeta),
-              createElement('small', { style: { ...label, display: 'block' } }, `核心 · ${effectiveSource(skills, visibleMeta)}`)),
+              createElement('small', { style: { ...label, display: 'block' } }, `核心 · 强制加载 · ${effectiveSource(skills, visibleMeta)}`)),
             createElement(Button, { variant: 'outline', size: 'sm', onClick: () => openRules(visibleMeta) }, '配置 Rule')),
           createElement('strong', { style: { fontSize: 13 } }, `附加 Skill · ${mounted.length}`),
-          ...mounted.map(name => createElement('div', { key: name, className: 'te-meta-skill-row' },
+          ...mountedNames.map(name => createElement('div', { key: name, className: 'te-meta-skill-row' },
             createElement('span', null, createElement('strong', null, name),
               createElement('small', { style: { ...label, display: 'block' } }, effectiveSource(skills, name))),
             createElement('div', { className: 'te-meta-skill-actions' },
+              createElement('select', { className: 'te-input', 'aria-label': `${META_STAGES[visibleMeta]} ${name} 加载方式`,
+                value: mountLoading(mounted.find(entry => mountName(entry) === name)!),
+                onChange: (event: { target: HTMLSelectElement }) => changeLoading(visibleMeta, name, event.target.value as SkillLoading) },
+                createElement('option', { value: 'required' }, '强制加载'), createElement('option', { value: 'on-demand' }, '按需加载')),
               createElement(Button, { variant: 'outline', size: 'sm', onClick: () => openRules(name) }, '配置 Rule'),
               createElement('button', { type: 'button', className: 'te-transfer-remove',
                 'aria-label': `从${META_STAGES[visibleMeta]}移除 ${name}`, onClick: () => removeSkill(visibleMeta, name) }, '×')))),
           mounted.length === 0 ? createElement('span', { style: label }, '尚未挂载附加 Skill。') : null,
           createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 7 } },
             createElement('strong', { style: { fontSize: 13 } }, '挂载附加 Skill'),
+            createElement('label', { style: row }, '挂载方式', createElement('select', { className: 'te-input', 'aria-label': '新挂载 Skill 加载方式',
+              value: newLoading, onChange: (event: { target: HTMLSelectElement }) => setNewLoading(event.target.value as SkillLoading) },
+              createElement('option', { value: 'required' }, '强制加载'), createElement('option', { value: 'on-demand' }, '按需加载'))),
             createElement('input', { className: 'te-input', type: 'search', 'aria-label': '搜索可挂载技能',
               placeholder: '搜索 Skill 名称、说明或来源', value: skillQuery,
               onChange: (event: { target: HTMLInputElement }) => setSkillQuery(event.target.value) }),

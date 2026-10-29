@@ -63,6 +63,12 @@ npm run verify:package
 
 ## 当前质量约束
 
+Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺省保留旧强制语义；自适应 `meta_bindings` 同时接受旧名称字符串和 `{name, loading}`。核心元技能固定强制，`profile.json` 的 Rule 与 evidence 仍由 Skill 自己拥有。compact/adoption、浏览器严格 codec 和冻结任务均保留挂载策略。
+
+初始化 `InitResource.whenToUse` 为可选字符串，默认生成提示要求新草案说明适用任务/修改范围，旧草案仍兼容；UI 可编辑，所有严格请求/响应 codec 及进度恢复保留此字段。预览冲突校验、控制器写入与 dev_task 写入共享 `renderInitSkill`，使用时机变化使既有提案哈希失效，且不得覆盖不同的已有文件。初始化元数据与 Skill 强制/按需挂载策略分别保存，不相互推导。
+
+必读门禁通过本任务、本会话的真实成功工具事件及读取记录确认，可跨阶段复用；阶段 evidence 不跨阶段复用。按需项不参与读取、完成凭证及缺失资源门禁，选中后仍返回完整 Skill 与其 Rule。`load_skill detail=true` 显式恢复全文。子代理每次得到自己的必要强制约束，同一审核提示跨阶段去重；按需正文只经目录中的文件路径读取，不自动加入提示，也不允许子代理改写父台账。`.skill-loading-test.mjs` 与执行策略回归覆盖这些行为。
+
 - 任务保存已抽到 `task-store.ts`，所有入口共用沙箱写策略、逻辑 revision 与宿主原子版本意图。执行等待不得持有只读调查批次的任务锁。
 - `delivery-contract.ts` 区分交付意图、运行记录与接受结果；`investigation-runtime.ts` 复用 DSH activation，`run-scheduler.ts` 管理只读依赖与并发。源文件引用通过当前文本、行段和 SHA-256 绑定；不能把结构匹配当作语义正确的证明。
 - `delivery-access.ts` 约束分析主会话及嵌套调用，恢复时读取其会话所属契约；只读子代理沿用受保护预设。动态缺失的搜索工具不会导致预设加载失败，存在的只读工具仍可使用。实施权限不通过修改分析任务获得。

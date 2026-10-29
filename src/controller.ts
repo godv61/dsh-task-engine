@@ -31,7 +31,7 @@ import { COMPLEXITY_OPTIONS, META_STAGES, adaptiveWorkflow, type MetaSkill } fro
 import { hashText } from './snapshot.ts'
 import { detectRoot, type FileProbe } from './project.ts'
 import { projectInitSteps, projectMapCoverageGaps, projectMapCoveragePaths, projectMapScopeNote, projectMetaSkillTargets, scanProject as scanProjectInventory,
-  validateInitResources, type InitResource, type ProjectInventory, type ProjectInitStep } from './project-init.ts'
+  validateInitResources, renderInitSkill, type InitResource, type ProjectInventory, type ProjectInitStep } from './project-init.ts'
 import { resolveSonarToken, sonarCredentialRef, type SonarCredentialInfo, type SonarCredentialProvider } from './sonar-credential.ts'
 import { localReviewGate, unresolvedBlockingFindings, validAuditIncludePaths, validLocalScanCommand } from './sonar.ts'
 import { lastLocalRuleUpdate, prepareLocalAnalyzer } from './sonarlint-local.ts'
@@ -46,9 +46,10 @@ import { renderInitStepPrompt } from './init-prompt.ts'
 import { discoverInitStepPaths, initPathPrompt, InitOutputError, InitRepositoryReader, runInitRepositoryModel, type InitReadRecord } from './init-repository.ts'
 import type { InitGraphQueryRecord } from './project-init.ts'
 import { reviewEvidenceBlockers } from './evidence-gate.ts'
+import { appendInitMount, mountLoading, mountName, validMetaMount } from './skill-loading.ts'
 
 export interface AdaptiveProjectConfig {
-  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  meta_bindings?: Partial<Record<MetaSkill, import('./skill-loading.ts').MetaSkillMount[]>>
   sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
     source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
@@ -74,11 +75,14 @@ function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>)
       problems.push('meta_bindings 必须是对象')
     } else for (const [meta, names] of Object.entries(config.meta_bindings)) {
       if (!(meta in META_STAGES)) problems.push(`未知元技能 ${meta}`)
-      if (!Array.isArray(names) || !names.every(name => typeof name === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name))) {
-        problems.push(`${meta} 的挂载技能必须是合法名称数组`)
+      if (!Array.isArray(names) || !names.every(validMetaMount)) {
+        problems.push(`${meta} 的挂载技能须为名称或含 name、loading（required/on-demand）的条目`)
       } else {
-        if (new Set(names).size !== names.length) problems.push(`${meta} 重复挂载同名技能`)
-        for (const name of names) if (!available.has(name)) problems.push(`挂载技能 ${name} 不存在`)
+        if (new Set(names.map(mountName)).size !== names.length) problems.push(`${meta} 重复挂载同名技能`)
+        for (const entry of names) {
+          if (mountName(entry) === meta && mountLoading(entry) !== 'required') problems.push(`${meta} 核心 Skill 必须强制加载`)
+          if (mountLoading(entry) === 'required' && !available.has(mountName(entry))) problems.push(`挂载技能 ${mountName(entry)} 不存在`)
+        }
       }
     }
   }
@@ -152,6 +156,7 @@ export interface EngWriteRequest {
 export interface SkillCatalogEntry {
   name: string
   description: string
+  whenToUse?: string
   source: string
   /** Source-qualified reference, so same-named skills in different layers stay distinct. */
   ref: ResourceRef
@@ -458,8 +463,8 @@ const INITFILE = 'AGENTS.md'
 const INIT_MAX_LINES = 200
 /** Hard timeout for the model-draft call; the UI reports elapsed time toward it. */
 const INIT_GENERATE_TIMEOUT_MS = INIT_ATTEMPT_TIMEOUT_MS
-const PROJECT_INIT_SYSTEM_PROMPT = '你是项目初始化助理。只输出合法 JSON：{"resources":[{"kind":"skill","name":"kebab-case","description":"技能简介","content":"Markdown 正文","meta_skills":["requirements-analysis"],"rules":[]}]}。技能必须提供 description 和 meta_skills；合法 meta_skills：requirements-analysis、architecture-design、task-orchestration、code-development、test-validation、code-review。资源最多 24 个，每个内容最多 16000 字符。不要输出代码围栏或解释。内置元技能已经负责需求分析、架构设计、任务编排、代码开发、测试和审核的基础流程与交接；不要为每个阶段再造同名项目 Skill。项目初始化只提出有仓库证据、跨需求可复用的可选知识；使用者可决定是否生成及挂载任何项目 Skill。已有同名 Skill 不要重建。若生成项目地图，应概括仓库各模块的职责、依赖和入口，不能写当前功能需求的总结。说明已发现主要路径及其职责或待确认项；目录发现未完成不使已有证据失效，但必须标明已查与未查范围，不得声称全仓已查证。业务能力图谱仅在有页面、接口、测试或业务文档等证据时生成；每项能力写明证据路径，区分代码事实、合理推导和待产品确认，不能把类名直接当作业务功能。不要根据语言、依赖或既有代码写法自动生成 Rule：技术事实不等于团队规范。项目 Rule 留待使用者依据明确团队约束或真实、可复用的审核失败案例创建并挂载。已有文件不得重建。'
-const PROJECT_INIT_STEP_PROMPT = '这是分段初始化中的一个步骤。已完成的草案（仅作为上下文，不要重复生成）：\n{{previous}}\n\n当前只生成这个资源：{{target}}。本次调用只输出 {"resources":[...]}，数组只能包含当前资源。非必需候选若证据不足或仅重复内置元技能，输出 {"resources":[]}。Skill 必须写 description、content、meta_skills、rules；meta_skills 必须包含 {{meta_skills}}。content 控制在 {{limit}} 字以内，引用真实证据路径。不要解释或代码围栏。'
+const PROJECT_INIT_SYSTEM_PROMPT = '你是项目初始化助理。只输出合法 JSON：{"resources":[{"kind":"skill","name":"kebab-case","description":"技能简介","whenToUse":"一句话说明适用任务或修改范围","content":"Markdown 正文","meta_skills":["requirements-analysis"],"rules":[]}]}。技能必须提供 description 和 meta_skills；新 Skill 同时生成简短 whenToUse，说明适用的任务或修改范围，例如涉及服务端逻辑时、涉及页面交互时；不要仅写进入某阶段必须读取，也不要把 whenToUse 当作强制挂载配置；合法 meta_skills：requirements-analysis、architecture-design、task-orchestration、code-development、test-validation、code-review。资源最多 24 个，每个内容最多 16000 字符。不要输出代码围栏或解释。内置元技能已经负责需求分析、架构设计、任务编排、代码开发、测试和审核的基础流程与交接；不要为每个阶段再造同名项目 Skill。项目初始化只提出有仓库证据、跨需求可复用的可选知识；使用者可决定是否生成及挂载任何项目 Skill。已有同名 Skill 不要重建。若生成项目地图，应概括仓库各模块的职责、依赖和入口，不能写当前功能需求的总结。说明已发现主要路径及其职责或待确认项；目录发现未完成不使已有证据失效，但必须标明已查与未查范围，不得声称全仓已查证。业务能力图谱仅在有页面、接口、测试或业务文档等证据时生成；每项能力写明证据路径，区分代码事实、合理推导和待产品确认，不能把类名直接当作业务功能。不要根据语言、依赖或既有代码写法自动生成 Rule：技术事实不等于团队规范。项目 Rule 留待使用者依据明确团队约束或真实、可复用的审核失败案例创建并挂载。已有文件不得重建。'
+const PROJECT_INIT_STEP_PROMPT = '这是分段初始化中的一个步骤。已完成的草案（仅作为上下文，不要重复生成）：\n{{previous}}\n\n当前只生成这个资源：{{target}}。本次调用只输出 {"resources":[...]}，数组只能包含当前资源。非必需候选若证据不足或仅重复内置元技能，输出 {"resources":[]}。Skill 必须写 description、content、meta_skills、rules，并生成简短 whenToUse 说明适用任务或修改范围，供按需选择；不要仅重复阶段名称。meta_skills 必须包含 {{meta_skills}}。content 控制在 {{limit}} 字以内，引用真实证据路径。不要解释或代码围栏。'
 /** System prompt for drafting a project AGENTS.md from a scanned snapshot. */
 const INIT_SYSTEM_PROMPT =
   '你是一名工程交付助理。根据下面提供的项目快照，为该项目写一份项目级 AGENTS.md（Markdown）。'
@@ -554,7 +559,7 @@ function scanRuleDir(dir: string, source: string): RuleCatalogEntry[] {
 }
 
 /** Parse the `name`+`description` frontmatter of one SKILL.md without invoking the registry. */
-function parseSkillFrontmatter(raw: string): { name: string; description: string } | undefined {
+function parseSkillFrontmatter(raw: string): { name: string; description: string; whenToUse?: string } | undefined {
   raw = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   const m = raw.match(/^---\n([\s\S]*?)\n---\n/)
   if (!m) return undefined
@@ -564,7 +569,7 @@ function parseSkillFrontmatter(raw: string): { name: string; description: string
     if (i > 0) meta[line.slice(0, i).trim()] = line.slice(i + 1).trim()
   }
   if (!meta.name || !meta.description) return undefined
-  return { name: meta.name, description: meta.description }
+  return { name: meta.name, description: meta.description, ...(meta.whenToUse ? { whenToUse: meta.whenToUse } : {}) }
 }
 
 /** Full parse of one SKILL.md: frontmatter fields plus the body below it. */
@@ -604,6 +609,7 @@ function listSkillsFromDir(dir: string, source: string): SkillCatalogEntry[] {
           result.push({
             name: parsed.name,
             description: parsed.description,
+            ...(parsed.whenToUse ? { whenToUse: parsed.whenToUse } : {}),
             source,
             ref: { source: asResourceSource(source), name: parsed.name },
             sourceLabel: sourceLabel(source),
@@ -1500,7 +1506,7 @@ export default class TaskEngineController extends TypertRemoteService {
     for (const resource of resources) {
       const file = resource.kind === 'rule' ? `.dsh/rules/${resource.name}.md` : `.dsh/skills/${resource.name}/SKILL.md`
       const expectedBody = resource.kind === 'rule' ? resource.content.trimEnd() + '\n'
-        : `---\nname: ${resource.name}\ndescription: ${resource.description!.replace(/[\r\n]+/gu, ' ').trim()}\n---\n\n${resource.content.trimEnd()}\n`
+        : renderInitSkill(resource)
       const existingBody = await readTextAt(fs, path, file)
       if (existingBody !== undefined && existingBody !== expectedBody) throw new Error(`已有同名资源且内容不同，不能覆盖：${file}`)
       files.push(file)
@@ -1522,10 +1528,10 @@ export default class TaskEngineController extends TypertRemoteService {
     for (const resource of resources) if (resource.kind === 'skill') available.add(resource.name)
     const bindings = { ...meta.meta_bindings }
     for (const { meta, name } of projectMetaSkillTargets(inventory.project_name)) {
-      if (existingMetaSkills.has(name)) bindings[meta] = [...new Set([...(bindings[meta] ?? []), name])]
+      if (existingMetaSkills.has(name)) bindings[meta] = appendInitMount(bindings[meta] ?? [], name, meta)
     }
     for (const resource of resources.filter(resource => resource.kind === 'skill')) {
-      for (const stage of resource.meta_skills ?? []) bindings[stage] = [...new Set([...(bindings[stage] ?? []), resource.name])]
+      for (const stage of resource.meta_skills ?? []) bindings[stage] = appendInitMount(bindings[stage] ?? [], resource.name, stage)
     }
     const problems = adaptiveProblems({ ...meta, meta_bindings: bindings }, available)
     if (problems.length) throw new Error(`项目配置校验失败：${problems.join('；')}`)
@@ -1557,8 +1563,7 @@ export default class TaskEngineController extends TypertRemoteService {
       await write(`.dsh/rules/${resource.name}.md`, resource.content.trimEnd() + '\n')
     }
     for (const resource of proposal.resources.filter(resource => resource.kind === 'skill')) {
-      const description = resource.description!.replace(/[\r\n]+/gu, ' ').trim()
-      await write(`.dsh/skills/${resource.name}/SKILL.md`, `---\nname: ${resource.name}\ndescription: ${description}\n---\n\n${resource.content.trimEnd()}\n`)
+      await write(`.dsh/skills/${resource.name}/SKILL.md`, renderInitSkill(resource))
       const profile: SkillProfile = { rules: (resource.rules ?? []).map(name => ({ source: 'project', name })), evidence: 'none' }
       await write(`.dsh/skills/${resource.name}/profile.json`, JSON.stringify(profile, null, 2) + '\n')
     }
@@ -1566,11 +1571,11 @@ export default class TaskEngineController extends TypertRemoteService {
     const bindings = { ...meta.meta_bindings }
     for (const { meta: stage, name } of projectMetaSkillTargets(proposal.inventory.project_name)) {
       if (await readTextAt(fs, path, `.dsh/skills/${name}/SKILL.md`) !== undefined) {
-        bindings[stage] = [...new Set([...(bindings[stage] ?? []), name])]
+        bindings[stage] = appendInitMount(bindings[stage] ?? [], name, stage)
       }
     }
     for (const resource of proposal.resources.filter(resource => resource.kind === 'skill')) {
-      for (const stage of resource.meta_skills ?? []) bindings[stage] = [...new Set([...(bindings[stage] ?? []), resource.name])]
+      for (const stage of resource.meta_skills ?? []) bindings[stage] = appendInitMount(bindings[stage] ?? [], resource.name, stage)
     }
     const target = await fs.resolve('.dsh/meta.json', { cwd: path })
     const info = metaSnapshot.info

@@ -132,6 +132,7 @@ test('init_project proposes project-specific Skills and binds reviewed resources
   const resources = [
     { kind: 'rule', name: 'component-boundary', content: 'Keep component boundary calls behind the existing service interface.' },
     { kind: 'skill', name: 'adaptive-project-project-map', description: 'Project structure and entry points',
+      whenToUse: 'When locating repository modules or entry points',
       content: 'The root package.json declares Vue 2.7; inspect src for the actual component layout.',
       meta_skills: ['requirements-analysis', 'architecture-design', 'code-development'], rules: ['component-boundary'] },
   ]
@@ -142,11 +143,13 @@ test('init_project proposes project-specific Skills and binds reviewed resources
   await f.call({ operation: 'init_project', phase: 'apply', resources, expected_hash: proposed.expected_hash,
     existing_hash: proposed.existing_hash })
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  assert.equal(meta.meta_bindings['requirements-analysis'].includes('adaptive-project-project-map'), true)
-  assert.equal(meta.meta_bindings['architecture-design'].includes('adaptive-project-project-map'), true)
+  assert.deepEqual(meta.meta_bindings['requirements-analysis'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
+  assert.deepEqual(meta.meta_bindings['architecture-design'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
   assert.equal(meta.meta_bindings['test-validation'], undefined)
-  assert.ok(meta.meta_bindings['code-development'].includes('adaptive-project-project-map'))
+  assert.deepEqual(meta.meta_bindings['code-development'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/profile.json')))
+  assert.match(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')),
+    /whenToUse: When locating repository modules or entry points/)
 })
 
 test('init_project accepts no project resources and preserves an existing stage Skill', async () => {
@@ -159,7 +162,7 @@ test('init_project accepts no project resources and preserves an existing stage 
     expected_hash: proposed.expected_hash, existing_hash: proposed.existing_hash })
   assert.equal(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-code-review/SKILL.md')), existing)
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  assert.ok(meta.meta_bindings['code-review'].includes('adaptive-project-code-review'))
+  assert.deepEqual(meta.meta_bindings['code-review'], [{ name: 'adaptive-project-code-review', loading: 'on-demand' }])
   const fresh = fixture()
   assert.ok(JSON.parse(await fresh.call({ operation: 'init_project', phase: 'propose', resources })).expected_hash)
   const empty = JSON.parse(await fresh.call({ operation: 'init_project', phase: 'propose', resources: [] }))
@@ -179,9 +182,38 @@ test('init_project can attach six existing stage Skills without creating duplica
   await f.call({ operation: 'init_project', phase: 'apply', resources: [],
     expected_hash: proposed.expected_hash, existing_hash: proposed.existing_hash })
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  for (const stage of PROJECT_META_SKILLS) assert.deepEqual(meta.meta_bindings[stage], [`adaptive-project-${stage}`])
+  for (const stage of PROJECT_META_SKILLS) assert.deepEqual(meta.meta_bindings[stage], [{ name: `adaptive-project-${stage}`, loading: 'on-demand' }])
   assert.equal(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-code-review/SKILL.md')),
     '# Existing code-review project method')
+})
+
+test('both initialization writers default new mounts to on-demand while preserving existing required and optional mounts', async () => {
+  for (const mode of ['tool', 'workbench']) {
+    const oldMounts = ['keep-required', { name: 'keep-optional', loading: 'on-demand' }]
+    const f = fixture({ '.dsh/meta.json': JSON.stringify({ meta_bindings: { 'code-development': oldMounts } }),
+      '.dsh/skills/keep-required/SKILL.md': '# Required project guide',
+      '.dsh/skills/keep-optional/SKILL.md': '# Optional project guide' })
+    const resources = [{ kind: 'skill', name: 'backend-guide', description: 'Backend guidance', whenToUse: 'Backend changes only',
+      content: '# Backend', meta_skills: ['code-development'], rules: [] }]
+    if (mode === 'tool') {
+      const preview = JSON.parse(await f.call({ operation: 'init_project', phase: 'propose', resources }))
+      await f.call({ operation: 'init_project', phase: 'apply', resources, expected_hash: preview.expected_hash, existing_hash: preview.existing_hash })
+    } else {
+      const receiver = { authorizedPath: async path => path, fs: () => f.fs,
+        projectInitRoot: Controller.prototype.projectInitRoot, inspectProjectInit: Controller.prototype.inspectProjectInit,
+        previewProjectInit: Controller.prototype.previewProjectInit,
+        listSkills: async () => ({ skills: [{ name: 'keep-required' }, { name: 'keep-optional' }] }) }
+      const preview = await receiver.previewProjectInit({ path: f.cwd, resources })
+      await Controller.prototype.applyProjectInit.call(receiver, { path: f.cwd, resources, expected_hash: preview.expected_hash, existing_hash: preview.existing_hash })
+    }
+    const saved = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
+    assert.deepEqual(saved.meta_bindings['code-development'], [...oldMounts, { name: 'backend-guide', loading: 'on-demand' }])
+    await f.call({ operation: 'create', task_id: `INIT-${mode}`, title: 'Use initialized configuration', branch: 'test', complexity: 'low', complexity_reason: 'Small change' })
+    const entries = f.state(`INIT-${mode}`).flow.config.stage_bindings['代码开发'].skills
+    assert.notEqual(entries.find(entry => entry.skill.name === 'code-development').loading, 'on-demand')
+    assert.notEqual(entries.find(entry => entry.skill.name === 'keep-required').loading, 'on-demand')
+    assert.equal(entries.find(entry => entry.skill.name === 'backend-guide').loading, 'on-demand')
+  }
 })
 
 test('task-plan item headings preserve the full implementation sequence', async () => {
@@ -492,6 +524,7 @@ test('workbench initializes reviewed project resources directly and preserves So
   const resources = [
     { kind: 'rule', name: 'backend-convention', content: 'Use the backend module Maven Java 8 build for backend changes.' },
     { kind: 'skill', name: 'adaptive-project-project-map', description: 'Reusable repository map',
+      whenToUse: 'When finding modules and cross-module entry points',
       content: 'Root package.json, backend/pom.xml and frontend/package.json define the backend and frontend modules.',
       meta_skills: ['requirements-analysis', 'code-development'], rules: ['backend-convention'] },
   ]
@@ -510,6 +543,8 @@ test('workbench initializes reviewed project resources directly and preserves So
     } },
   }
   const plan = await Controller.prototype.inspectProjectInit.call(receiver, { path: f.cwd })
+  assert.match(plan.system_prompt, /whenToUse/)
+  assert.match(plan.step_prompt, /whenToUse/)
   assert.ok(plan.inventory.suggestions.some(item => item.name === 'adaptive-project-project-map'))
   assert.doesNotMatch(plan.user_prompt, /adaptive-project-code-review/)
   assert.match(plan.user_prompt, /frontend\/package.json/)
@@ -518,19 +553,25 @@ test('workbench initializes reviewed project resources directly and preserves So
   const draft = await Controller.prototype.generateProjectInit.call(receiver,
     { path: f.cwd, system_prompt: plan.system_prompt + ' Review carefully.', user_prompt: plan.user_prompt + '\nUse reviewed conventions.' })
   assert.match(generatedOptions.system, /Review carefully/)
+  assert.match(generatedOptions.system, /whenToUse/)
   assert.match(generatedOptions.messages[0].content[0].text, /Use reviewed conventions/)
   assert.deepEqual(draft.project_map_coverage, ['backend', 'frontend', 'package.json'])
   assert.equal(f.files.has(join(f.cwd, '.dsh/rules/backend-convention.md')), false)
+  await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,
+    { path: f.cwd, resources: draft.resources.map(resource => resource.kind === 'skill' ? { ...resource, whenToUse: 'Different scope' } : resource),
+      expected_hash: draft.expected_hash, existing_hash: draft.existing_hash }), /改变/)
   await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,
     { path: f.cwd, resources: draft.resources, expected_hash: 'stale', existing_hash: draft.existing_hash }), /改变/)
   const applied = await Controller.prototype.applyProjectInit.call(receiver,
     { path: f.cwd, resources: draft.resources, expected_hash: draft.expected_hash, existing_hash: draft.existing_hash })
   assert.equal(applied.ok, true)
   assert.equal(f.files.get(join(f.cwd, '.dsh/meta.json')).includes('keep-me'), true)
-  assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['code-development'][0],
-    'adaptive-project-project-map')
+  assert.deepEqual(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['code-development'][0],
+    { name: 'adaptive-project-project-map', loading: 'on-demand' })
   assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['test-validation'], undefined)
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
+  assert.match(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')),
+    /whenToUse: When finding modules and cross-module entry points/)
   assert.equal((await Controller.prototype.previewProjectInit.call(receiver,
     { path: f.cwd, resources })).ok, true, 'identical resources can be safely previewed again')
 })

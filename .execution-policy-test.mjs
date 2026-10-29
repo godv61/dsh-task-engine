@@ -11,10 +11,22 @@ import { todosBlockers } from './lib/engine.js'
 const all = { spawn: true, fork: true, reviewer: true }
 const none = { spawn: false, fork: false, reviewer: false }
 const planInput = { execution_reason: '明确的文件范围、接口和可独立验证的交付', task_boundary: 'independent', files: ['a.mjs','check.test.mjs'], acceptance: ['value() 返回 2'] }
-async function fixture({ legacy = false, policy = 'auto' } = {}) {
+async function fixture({ legacy = false, policy = 'auto', loadingPolicy = false } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), 'task-execution-policy-'))
   writeFileSync(join(cwd, 'a.mjs'), 'export const value = () => 2\n')
   writeFileSync(join(cwd, 'check.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert/strict';import{value}from'./a.mjs';test('delivered value',()=>assert.equal(value(),2));")
+  if (loadingPolicy) {
+    for (const name of ['shared-map', 'frontend']) {
+      mkdirSync(join(cwd, '.dsh/skills', name), { recursive: true })
+      writeFileSync(join(cwd, '.dsh/skills', name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name}\nwhenToUse: ${name === 'frontend' ? 'Only for UI changes' : 'Repository context'}\n---\n${name === 'frontend' ? 'UNRELATED_FRONTEND_BODY' : 'SHARED_MAP_BODY'}\n`)
+      writeFileSync(join(cwd, '.dsh/skills', name, 'profile.json'), JSON.stringify({ rules: [{ source: 'project', name }], evidence: 'none' }))
+    }
+    mkdirSync(join(cwd, '.dsh/rules'), { recursive: true })
+    writeFileSync(join(cwd, '.dsh/rules/shared-map.md'), 'SHARED_MAP_RULE_BODY')
+    writeFileSync(join(cwd, '.dsh/rules/frontend.md'), 'UNRELATED_FRONTEND_RULE_BODY')
+    const mounts = ['shared-map', { name: 'frontend', loading: 'on-demand' }]
+    writeFileSync(join(cwd, '.dsh/meta.json'), JSON.stringify({ meta_bindings: { 'code-development': mounts, 'code-review': mounts } }))
+  }
   const fs = { resolve: async (p, opts) => ({ targetKey: join(opts?.cwd ?? cwd, p) }),
     readText: async t => { try { return readFileSync(t.targetKey, 'utf8') } catch (e) { if (e.code !== 'ENOENT') throw e } },
     lstat: async (p, opts) => { try { const s = lstatSync(join(opts?.cwd ?? cwd, p)); return { type: s.isFile() ? 'file' : 'directory', version: `${s.mtimeMs}:${s.size}` } } catch(e) { if(e.code !== 'ENOENT') throw e } },
@@ -30,8 +42,15 @@ async function fixture({ legacy = false, policy = 'auto' } = {}) {
       const r = spawnSync(process.execPath, ['--test','--experimental-test-isolation=none','--test-reporter=tap','check.test.mjs'], {cwd:spec.workdir,encoding:'utf8',env})
       return {exitCode:r.status,timedOut:false,aborted:false,stdout:{text:r.stdout},stderr:{text:r.stderr}} } } : undefined }
   registerDevTask(ctx)
-  const session = {id:'parent',header:{cwd},snapshotEvents:()=>[]}
-  const call = args => execute({task_id:'POLICY-1',...args},{agent:{session},signal:new AbortController().signal})
+  const events = []
+  const session = {id:'parent',header:{cwd},snapshotEvents:()=>events}
+  const call = async args => {
+    const input = {task_id:'POLICY-1',...args}, callId = `parent-${events.length}`
+    events.push({type:'tool/call',data:{name:'dev_task',callId,arguments:JSON.stringify(input)}})
+    try { const text = await execute(input,{agent:{session},callId,signal:new AbortController().signal})
+      events.push({type:'tool/result',data:{message:{toolCallId:callId,content:[{type:'text',text}]}}});return text
+    } catch(error) { events.push({type:'tool/result',data:{message:{toolCallId:callId,isError:true}}});throw error }
+  }
   await call({operation:'create', title:'execution strategy test',branch:'test',files:['a.mjs','check.test.mjs'],
     ...legacy ? {} : {complexity:'low',complexity_reason:'bounded module',execution_policy:policy},items:[{id:'I1',title:'deliver module'}]})
   if (!legacy) await call({operation:'plan_verification',verification_group:'module',command:'node --test check.test.mjs',files:['a.mjs','check.test.mjs'],item_ids:['I1']})
@@ -61,6 +80,24 @@ async function fixture({ legacy = false, policy = 'auto' } = {}) {
     }, listDescendants:async()=>[{id:'review-child',kind:'child',parentId:'parent',depth:1,activity:'inactive'}] }
   return {cwd,fs,ctx,call,state,save,calls,query,children,get runtime(){return runtime},set runtime(v){runtime=v},set verdict(v){verdict=v},get disposed(){return disposed}}
 }
+test('worker and reviewer receive their own required context once; on-demand bodies and Rules stay deferred', async () => {
+  const f = await fixture({ loadingPolicy: true })
+  await f.call({ operation: 'load_skill', skill_name: 'project:shared-map' })
+  await f.call({ operation: 'plan_execution', item_id: 'I1', ...planInput, execution: 'spawn' })
+  await f.call({ operation: 'dispatch', item_id: 'I1', description: 'Implement backend only' })
+  await f.call({ operation: 'verify', verification_group: 'module' })
+  await f.call({ operation: 'review_dispatch', item_id: 'I1' })
+  assert.equal(f.calls.length, 2)
+  for (const child of f.calls) {
+    const prompt = child.request.prompt[0].text
+    assert.equal(prompt.split('\nSHARED_MAP_BODY\n').length - 1, 1)
+    assert.equal(prompt.split('SHARED_MAP_RULE_BODY').length - 1, 1)
+    assert.match(prompt, /Only for UI changes/)
+    assert.match(prompt, /\.dsh\/skills\/frontend\/SKILL\.md/)
+    assert.doesNotMatch(prompt, /UNRELATED_FRONTEND_BODY|UNRELATED_FRONTEND_RULE_BODY/)
+  }
+})
+
 test('automatic routing uses boundaries, context needs and actual host availability', () => {
   const state = {items:[{id:'I1'}],files:['a.mjs','check.test.mjs'],complexity:'medium',risk_level:'standard'}
   const item = state.items[0]

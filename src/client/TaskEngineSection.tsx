@@ -69,7 +69,7 @@ function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding
 type RemoteResult<T> = { ok: true; value: T } | { ok: false; error?: unknown }
 
 export interface AdaptiveProjectConfig {
-  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  meta_bindings?: Partial<Record<MetaSkill, import('../skill-loading.ts').MetaSkillMount[]>>
   sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
     source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
@@ -97,6 +97,7 @@ interface EngConfigView {
 export interface SkillCatalogEntry {
   name: string
   description: string
+  whenToUse?: string
   source: string
   /** Source-qualified reference, so two same-named skills in different layers stay distinct. */
   ref: ResourceRef
@@ -662,6 +663,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
   const [query, setQuery] = useState('')
+  const [loadingMode, setLoadingMode] = useState<'required' | 'on-demand'>('required')
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
   const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
@@ -677,7 +679,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
     const alreadyBound = current.some(entry => formatResourceRef(entry.skill) === raw)
     const next = alreadyBound
       ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
-      : [...current, { skill: refFromText(raw), rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
+      : [...current, { skill: refFromText(raw), loading: refFromText(raw).source === 'bundled' ? 'required' as const : loadingMode, rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
         formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
     if (!alreadyBound && profile === undefined) setSkillProfiles({ ...skillProfiles, [raw]: { rules: [] } })
     setSkills(currentStage, next)
@@ -718,6 +720,9 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
         <section className="te-transfer-pane" aria-label="可用技能">
           <div className="te-binding-heading"><h4>可用技能</h4><span className="te-binding-count">{skills.filter(entry => !boundKeys.has(formatResourceRef(entry.ref))).length} 项</span></div>
           <input className="te-input te-transfer-search" type="search" value={query} placeholder="搜索技能名称或说明" aria-label="搜索可用技能" onChange={event => setQuery(event.target.value)} />
+          <select className="te-input" aria-label="新绑定技能加载方式" value={loadingMode} onChange={event => setLoadingMode(event.target.value as 'required' | 'on-demand')}>
+            <option value="required">强制加载</option><option value="on-demand">按需加载</option>
+          </select>
           <div className="te-transfer-list" role="group" aria-label="可用技能列表">
             {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请先在“技能”页添加。</p> : null}
             {skills.length > 0 && available.length === 0 ? <p className="te-binding-empty">没有可添加的技能。</p> : null}
@@ -739,6 +744,10 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
               return <div key={raw} className="te-transfer-row is-bound">
                 <span className="te-transfer-row-main"><strong>{entry.skill.name}</strong><small>{catalog?.sourceLabel ?? entry.skill.source} · {entry.rules.length} 条规则{catalog ? '' : ' · 资源未找到'}</small></span>
                 <span className="te-transfer-actions">
+                  <select className="te-input" aria-label={`${currentStage} ${entry.skill.name} 加载方式`} value={entry.loading ?? 'required'} disabled={entry.skill.source === 'bundled'}
+                    onChange={event => setSkills(currentStage, boundSkills.map(bound => formatResourceRef(bound.skill) === raw ? { ...bound, loading: event.target.value as 'required' | 'on-demand' } : bound))}>
+                    <option value="required">强制加载</option><option value="on-demand">按需加载</option>
+                  </select>
                   <button type="button" className="te-transfer-config" onClick={() => onConfigureSkill(entry.skill)}>配置规则</button>
                   <button type="button" className="te-transfer-remove" onClick={() => toggleSkill(raw)} aria-label={`移除技能 ${entry.skill.name}`}>×</button>
                 </span>

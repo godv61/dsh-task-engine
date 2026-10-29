@@ -116,7 +116,8 @@ pnpm dsh web --no-open</code></pre>
         <p>先判断交付目标。只排查原因、解释调用链或给方案时，创建 <code>intent=analysis</code> 并写明 <code>intent_reason</code>，由主会话直接搜索与读取源码，再用 <code>submit_analysis</code> 一次提交结论、方案、未确认项和含文件、行段、原文的证据。分析不会进入代码实施或为取得回执写测试；运行时限制写入和终端工具。业务结论仍须主会话核对，源码匹配不等于语义正确。</p>
         <p>需要只读委派时，用 <code>delegate</code> 说明问题、引用入口、依赖、明确收益与理由，默认最多两个同时运行。子代理返回与任务接受分别显示，失败前报告保持可见；清理不明时不得交付，原父会话经宿主确认停止后才能 <code>recover_analysis</code>。下面的实施步骤用于用户已要求修改代码的 <code>intent=implementation</code> 任务。</p>
         <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；高风险项在宿主能力允许时要求独立审核，标准风险不会仅因复杂度或委派实施增加审核代理。旧台账继续按原快照操作，不自动转换。</p>
-        <p>阶段提示和默认 <code>status</code> 只返回绑定索引、指纹及状态摘要；<code>load_skill</code> 仍一次返回 Skill 与全部挂载 Rule 正文。完整计划和命令日志通过 <code>status detail=true</code> 获取，可用 <code>section=items</code> 配合 <code>item_id</code>，或 <code>section=verification</code> 配合 <code>verification_group</code> 缩小读取范围，无需重跑测试。子代理与审核代理各自收到完整约束。</p>
+        <p>挂载 Skill 时可选“强制加载”或“按需加载”，同一 Skill 在不同节点可选不同方式。核心 Skill 始终强制；旧配置默认强制。按需项由模型按描述和使用时机选择，不因未读或未提供 Skill 完成凭证阻塞，也不要求填写跳过说明。必须始终遵守的团队规范应放在强制 Skill 下。读取复用不代替当前阶段的产物、测试和审核。</p>
+        <p>阶段提示和默认 <code>status</code> 只返回绑定索引、指纹及状态摘要；<code>load_skill</code> 首次返回选中 Skill 与其全部挂载 Rule 正文；同一任务、同一会话已成功读取的内容跨阶段复用，再次调用只返回复用提示，<code>detail=true</code> 可显式恢复全文。完整计划和命令日志通过 <code>status detail=true</code> 获取，可用 <code>section=items</code> 配合 <code>item_id</code>，或 <code>section=verification</code> 配合 <code>verification_group</code> 缩小读取范围，无需重跑测试。子代理与审核代理各自收到必要的强制约束；按需 Skill 只提供简介、使用时机和读取路径。</p>
         <p>Sonar 阻断或审核证据过期时，先按工具返回的 <code>recovery</code> 回到实施阶段，再修复和验收。缺陷返工可复用计划与输入指纹均匹配的最新通过测试，受影响项的审核仍须重新接受；较新的失败、输入/计划/指令变化，以及需求、方案变化或未知影响，不得复用旧通过记录。</p>
         <ol>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>

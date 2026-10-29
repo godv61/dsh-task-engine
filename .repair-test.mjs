@@ -506,7 +506,7 @@ test('ledger cursor reads at most 100 records and does not lose or duplicate rem
   assert.equal(new Set([...first.tasks, ...next.tasks].map(task => task.task_id)).size, 131)
 })
 
-test('successful task load cannot substitute for a load in another stage', () => {
+test('successful task/session load is reusable across stages but not across sessions', () => {
   const skills = [{ skill: { source: 'project', name: 'one' }, rules: [], evidence: 'none' }]
   const workflow = resolveFlow('standard', { stage_bindings: { '需求评审': { skills }, '设计': { skills } } }).config
   const session = { id: 'assessment', snapshotEvents: () => [
@@ -516,7 +516,8 @@ test('successful task load cannot substitute for a load in another stage', () =>
   const state = { id: 'T', stage: '需求评审', complexity: 'medium', skill_loads: { '需求评审': { 'project:one': { session_id: 'assessment' } } } }
   assert.deepEqual(skillBlockers(state, workflow, session), [])
   state.stage = '设计'
-  assert.match(skillBlockers(state, workflow, session).join(' '), /again for this stage/)
+  assert.deepEqual(skillBlockers(state, workflow, session), [])
+  assert.match(skillBlockers(state, workflow, { ...session, id: 'another-session' }).join(' '), /load_skill/)
 })
 
 test('changing the actual synchronized analyzer configuration invalidates the old local audit', async () => {

@@ -116,6 +116,8 @@ export function parseResourceRef(text: string): ResourceRef | undefined {
 export interface SkillBinding {
   /** The skill, named with its source layer. */
   skill: ResourceRef
+  /** Per-mount policy. Missing preserves the historical required behavior. */
+  loading?: SkillLoading
   /** Rules this skill follows, each named with its source layer. */
   rules: ResourceRef[]
   /**
@@ -129,6 +131,10 @@ export interface SkillBinding {
    */
   evidence?: EvidenceKind
 }
+
+export type SkillLoading = 'required' | 'on-demand'
+/** Compact stage reference; loading belongs to the mount, never to the Skill profile. */
+export interface SkillMountRef extends ResourceRef { loading?: SkillLoading }
 
 /** One skill's user-owned method, independent of the stages that use it. */
 export interface SkillProfile {
@@ -158,7 +164,7 @@ export type EvidenceKind = 'command' | 'artifact' | 'review' | 'manual' | 'none'
 export interface StageBinding {
   skills?: SkillBinding[]
   /** Persisted schema: stages select skill identities, with methods in skill_profiles. */
-  skill_refs?: ResourceRef[]
+  skill_refs?: SkillMountRef[]
   /**
    * Stage-level rule names from a pre-migration config, preserved verbatim.
    *
@@ -568,7 +574,13 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
         problems.push(`skill "${skillKey}" has different rules or evidence in multiple stages; copy it as a distinct skill`)
       }
       skillMethods.set(skillKey, method)
-      if (entry.evidence === 'artifact' && !config.artifacts.some(artifact => artifact.stage === stage)) {
+      if (entry.loading !== undefined && !['required', 'on-demand'].includes(entry.loading)) {
+        problems.push(`skill "${skillKey}" has unknown loading policy "${String(entry.loading)}"`)
+      }
+      if (entry.loading === 'on-demand' && entry.skill.source === 'bundled') {
+        problems.push(`bundled core skill "${skillKey}" must use required loading`)
+      }
+      if (entry.loading !== 'on-demand' && entry.evidence === 'artifact' && !config.artifacts.some(artifact => artifact.stage === stage)) {
         problems.push(`skill "${skillKey}" requires artifact evidence, but stage "${stage}" declares no artifact`)
       }
       if (entry.evidence !== undefined && !['command', 'artifact', 'review', 'manual', 'none'].includes(entry.evidence)) {

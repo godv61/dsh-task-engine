@@ -47,17 +47,19 @@ const commitSchema = z.object({
 /** Preserve source-qualified identities across the browser/host boundary. */
 const resourceRefSchema = z.object({ source: z.enum(['bundled', 'project', 'codex-project', 'user']), name: z.string() })
 const evidenceSchema = z.enum(['command', 'artifact', 'review', 'manual', 'none'])
+const loadingSchema = z.enum(['required', 'on-demand'])
 const skillProfileSchema = z.object({ rules: z.array(resourceRefSchema), evidence: evidenceSchema.optional() })
 const skillBindingSchema = z.object({
   skill: resourceRefSchema,
   rules: z.array(resourceRefSchema),
   evidence: evidenceSchema.optional(),
+  loading: loadingSchema.optional(),
 })
 
 /** Browser-safe shape of one stage's skill references and legacy bindings. */
 const stageBindingSchema = z.object({
   skills: z.array(skillBindingSchema).optional(),
-  skill_refs: z.array(resourceRefSchema).optional(),
+  skill_refs: z.array(resourceRefSchema.extend({ loading: loadingSchema.optional() })).optional(),
   legacy_rules: z.array(z.string()).optional(),
 })
 
@@ -105,6 +107,7 @@ const skillCatalogSchema = z.object({
   skills: z.array(z.object({
     name: z.string(),
     description: z.string(),
+    whenToUse: z.string().optional(),
     source: z.string(),
     ref: resourceRefSchema,
     sourceLabel: z.string(),
@@ -339,6 +342,7 @@ const initDraftSchema = z.object({
 
 const projectInitResourceSchema = z.object({
   kind: z.enum(['skill', 'rule']), name: z.string(), description: z.string().optional(),
+  whenToUse: z.string().optional(),
   content: z.string(), meta_skills: z.array(z.string()).optional(), rules: z.array(z.string()).optional(),
 })
 const projectInitInventorySchema = z.object({
@@ -394,7 +398,7 @@ const resourcePreviewSchema = z.object({ ok: z.boolean(), name: z.string(), desc
 const resourceRootsRequestSchema = z.object({ kind: z.enum(['skill', 'rule']), path: z.string() })
 const resourceRootsSchema = z.object({ project: z.string(), user: z.string() })
 const adaptiveConfigSchema = z.object({
-  meta_bindings: z.record(z.string(), z.array(z.string())).optional(),
+  meta_bindings: z.record(z.string(), z.array(z.union([z.string(), z.object({ name: z.string(), loading: loadingSchema })]))).optional(),
   sonar: z.object({
     enabled: z.boolean().optional(), host_url: z.string().optional(), project_key: z.string().optional(),
     mode: z.enum(['branch', 'pull-request']).optional(), token_env: z.string().optional(),

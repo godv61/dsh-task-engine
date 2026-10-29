@@ -1,6 +1,7 @@
 /** Correlate successful skill calls with the trusted session log, never model claims. */
 import type { EvidenceKind, TaskState, WorkflowConfig } from './engine.ts'
 import { skillCommandProblem } from './verification-tests.ts'
+import { requiredSkill } from './skill-loading.ts'
 
 export interface SkillSession {
   id?: string
@@ -40,6 +41,17 @@ export function loadedSkills(session?: SkillSession): Map<string, string> {
     }
   }
   return loaded
+}
+
+/** A real successful load may be reused across stages, but never across task/session identities. */
+export function skillLoadForSession(state: TaskState, name: string, session?: SkillSession, inputHash?: string,
+  calls = loadedSkills(session)): { stage: string; load: NonNullable<TaskState['skill_loads']>[string][string] } | undefined {
+  if (!session?.id || !calls.has(`${state.id}#${name}`)) return undefined
+  for (const [stage, loads] of Object.entries(state.skill_loads ?? {})) {
+    const load = loads[name]
+    if (load?.session_id === session.id && (inputHash === undefined || load.input_hash === inputHash)) return { stage, load }
+  }
+  return undefined
 }
 
 /** Terminal bindings run before entering the terminal state, not after reporting completion. */
@@ -116,13 +128,13 @@ function evidenceBlockers(
 export function skillBlockers(state: TaskState, workflow: WorkflowConfig, session?: SkillSession): string[] {
   const loaded = loadedSkills(session)
   return obligationStages(state, workflow).flatMap(stage => (workflow.stage_bindings?.[stage]?.skills ?? []).flatMap(entry => {
+    if (!requiredSkill(entry)) return []
     // The host skill tool uses a bare name. A Codex project Skill instead uses
     // a task-scoped, source-qualified dev_task load so a same-named Skill or a
     // load for another task cannot satisfy this binding.
     const exact = `${state.id}#${entry.skill.source}:${entry.skill.name}`
-    if (state.skill_loads && (!state.skill_loads[stage]?.[`${entry.skill.source}:${entry.skill.name}`]
-      || state.skill_loads[stage]?.[`${entry.skill.source}:${entry.skill.name}`]?.session_id !== (session?.id ?? '')))
-      return [`${stage}: load skill "${entry.skill.source}:${entry.skill.name}" again for this stage`]
+    if (state.skill_loads && !skillLoadForSession(state, `${entry.skill.source}:${entry.skill.name}`, session, undefined, loaded))
+      return [`${stage}: load skill "${entry.skill.source}:${entry.skill.name}" with dev_task operation=load_skill in this task/session before leaving this stage`]
     const name = state.complexity !== undefined || entry.skill.source === 'codex-project'
       ? `${entry.skill.source}:${entry.skill.name}` : entry.skill.name
     const isLoaded = loaded.has(exact) || (state.complexity === undefined && entry.skill.source !== 'codex-project'
