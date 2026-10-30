@@ -285,10 +285,27 @@ function verificationKey(state2, itemId) {
   return JSON.stringify(requiredGroups(state2, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((group) => [group.id, group.key, latestGroupRun(state2, group.id)?.id]));
 }
 
-// src/engine.ts
-function formatResourceRef(ref) {
-  return `${ref.source}:${ref.name}`;
+// src/requirements.ts
+function taskExecutionProblem(state2) {
+  if (state2.completed || state2.delivery?.intent === "analysis") return void 0;
+  return state2.flow?.config.requirement_review?.version === 1 ? void 0 : "\u6B64\u4EFB\u52A1\u7F3A\u5C11\u65B0\u7248\u9700\u6C42\u786E\u8BA4\u7ED3\u6784\uFF0C\u4EC5\u53EF\u67E5\u770B\uFF1B\u8BF7\u4F7F\u7528\u65B0\u7684 task_id \u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\uFF0C\u6574\u7406\u9700\u6C42\u603B\u7ED3\u5E76\u7531\u7528\u6237\u786E\u8BA4\u540E\u7EE7\u7EED\u3002\u4E0D\u4F1A\u8FC1\u79FB\u65E7\u56DE\u6267\u6216\u6539\u52A8\u5DF2\u6709\u4EE3\u7801\u3002";
 }
+function requirementSource(state2, policy) {
+  const fields = state2.artifacts[policy.artifact] ?? {};
+  return JSON.stringify({
+    task: state2.id,
+    title: state2.title,
+    fields: Object.keys(fields).sort().map((key) => [key, fields[key]]),
+    clarifications: (state2.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer }))
+  });
+}
+function requirementConfirmed(state2, config2) {
+  if (!config2.requirement_review) return false;
+  const doc = state2.requirements?.document, confirmation = doc?.confirmation;
+  return !!doc && doc.status === "confirmed" && !!confirmation && doc.source === requirementSource(state2, config2.requirement_review) && confirmation.hash === doc.hash && confirmation.version === doc.version && !(state2.requirements?.clarifications ?? []).some((question) => !question.answer);
+}
+
+// src/engine.ts
 function artifactsForStage(stage, config2) {
   return config2.artifacts.filter((artifact) => artifact.stage === stage);
 }
@@ -316,7 +333,7 @@ function todosBlockers(state2, config2) {
 function guardSatisfied(guard, state2, config2) {
   switch (guard) {
     case "requirement_confirmation":
-      return state2.requirement_confirmed;
+      return requirementConfirmed(state2, config2);
     case "solution_confirmation":
       return state2.solution_confirmed;
     case "todos_done":
@@ -394,6 +411,7 @@ function verificationBlockers(state2, config2) {
   return blockers;
 }
 function commitCheckpoint(state2, config2) {
+  if (config2.requirement_review && !requirementConfirmed(state2, config2)) return { allowed: false, reason: "\u5F53\u524D\u9700\u6C42\u7248\u672C\u5C1A\u672A\u7531\u7528\u6237\u786E\u8BA4" };
   const { policy, checkpoints } = config2.commit;
   if (policy === "manual") {
     return { allowed: false, reason: "commit policy is manual \u2014 await an explicit user instruction" };
@@ -423,226 +441,9 @@ function isEngineMeta(file) {
 function checkFileScope(state2, committing, config2) {
   if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
   if (state2.files.length === 0) return { ok: false, outside: [], noScope: true };
-  const outside = committing.filter((file) => !state2.files.includes(file) && !isEngineMeta(file));
+  const requirementDocument = config2.requirement_review ? state2.requirements?.document?.path : void 0;
+  const outside = committing.filter((file) => !state2.files.includes(file) && file !== requirementDocument && !isEngineMeta(file));
   return outside.length === 0 ? { ok: true, outside: [], noScope: false } : { ok: false, outside, noScope: false };
-}
-
-// src/workflows.ts
-var STANDARD = {
-  stages: ["\u9700\u6C42\u8BC4\u5BA1", "\u8BBE\u8BA1", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"],
-  start_stage: "\u9700\u6C42\u8BC4\u5BA1",
-  transitions: [
-    { from: "\u9700\u6C42\u8BC4\u5BA1", to: "\u8BBE\u8BA1", requires: ["requirement_confirmation", "artifacts_present"] },
-    { from: "\u8BBE\u8BA1", to: "\u5F00\u53D1", requires: ["solution_confirmation", "artifacts_present"] },
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
-    { from: "\u4EA4\u4ED8", to: "\u4EE3\u7801\u5BA1\u6838", requires: ["verified"] },
-    { from: "\u4EE3\u7801\u5BA1\u6838", to: "\u5B8C\u6210", requires: ["review_passed", "artifacts_present"] }
-  ],
-  // No artifacts, no commit policy, no skills: the skeleton carries none of them.
-  artifacts: [],
-  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EE3\u7801\u5BA1\u6838"], file_scope: true },
-  high_risk_requires_verification: true
-};
-var STANDARD_RECOMMENDATION = {
-  commit: {
-    // Only the TEXT conventions. Policy, checkpoints and scope stay on the
-    // skeleton: they decide when a gate fires, not how a message reads.
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF08\u5982 GREET-001\uFF09\uFF0C\u5199\u7ED3\u679C\u4E0D\u5199\u7A7A\u6CDB\u52A8\u4F5C"
-  },
-  artifacts: [
-    { stage: "\u9700\u6C42\u8BC4\u5BA1", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope", "acceptance_criteria"] },
-    { stage: "\u8BBE\u8BA1", id: "design", name: "\u8BBE\u8BA1\u6587\u6863", fields: ["approach", "risks", "impact"] },
-    { stage: "\u4EE3\u7801\u5BA1\u6838", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ]
-};
-var AGILE = {
-  stages: ["\u9700\u6C42", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u5BA1\u67E5"],
-  start_stage: "\u9700\u6C42",
-  transitions: [
-    { from: "\u9700\u6C42", to: "\u5F00\u53D1", requires: ["requirement_confirmation"] },
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
-    // Entering 审查 is unconditional. A review guard on this edge would be
-    // circular — it would demand the verdict BEFORE the stage that produces it —
-    // and it would also block the commit at 交付, since a commit requires its
-    // stage's outgoing guards. What 审查 requires is declared as completion_guards
-    // instead, because a terminal stage has no outgoing edge to carry it.
-    { from: "\u4EA4\u4ED8", to: "\u5BA1\u67E5", requires: [] }
-  ],
-  artifacts: [],
-  commit: { policy: "item", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: true },
-  high_risk_requires_verification: false,
-  // 审查 is terminal and IS the review, so there is no outgoing edge to carry
-  // the guard. Declaring it here is what makes a blocked review prevent
-  // completion; without it the stage could be reached and finished with the
-  // review failing, which is what the assessment found.
-  completion_guards: ["review_passed"]
-};
-var AGILE_RECOMMENDATION = {
-  commit: {
-    // `item` policy emits two label shapes: `T<n>` mid-flow and `TASK` at the
-    // closing checkpoint. The pattern accepts BOTH, so the label the engine hands
-    // the model always satisfies the rule that validates it.
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF1B\u5B9E\u65BD\u9879\u63D0\u4EA4\u7528 T1\u3001T2\uFF0C\u6536\u5C3E\u63D0\u4EA4\u7528 TASK"
-  },
-  artifacts: [
-    { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] },
-    // Optional review record; the flow's review gate itself does not require a skill.
-    { stage: "\u5BA1\u67E5", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ]
-};
-var MINIMAL = {
-  stages: ["\u5F00\u53D1", "\u4EA4\u4ED8"],
-  start_stage: "\u5F00\u53D1",
-  transitions: [
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] }
-  ],
-  artifacts: [],
-  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: false },
-  high_risk_requires_verification: false
-};
-var MINIMAL_RECOMMENDATION = {
-  // A fast-change flow checks each change once, not twice under two headings a
-  // short change rarely distinguishes. The item still has to be reviewed — what
-  // drops is the duplicated verdict, which is where the weight actually was.
-  review_depth: "single"
-};
-function deriveCapabilities(config2) {
-  const caps = [];
-  const guards = new Set(config2.transitions.flatMap((t) => t.requires ?? []));
-  if (guards.has("verified")) caps.push("verification_gate");
-  if (guards.has("review_passed")) caps.push("review_gate");
-  if (guards.has("artifacts_present")) caps.push("artifact_gate");
-  if (config2.commit.file_scope) caps.push("file_scope");
-  return caps;
-}
-function preset(id, version, label, description, config2, recommendation) {
-  return {
-    id,
-    version,
-    label,
-    description,
-    capabilities: deriveCapabilities(config2),
-    config: config2,
-    // exactOptionalPropertyTypes: omit rather than assign undefined.
-    ...recommendation !== void 0 ? { recommendation } : {}
-  };
-}
-var FLOW_PRESETS = {
-  standard: preset("standard", 3, "\u5B8C\u6574\u7814\u53D1", "\u65B0\u529F\u80FD\u3001\u67B6\u6784\u6216\u8DE8\u6A21\u5757\u6539\u52A8\u3001\u9AD8\u98CE\u9669\u4EFB\u52A1\uFF1A\u9700\u6C42\u786E\u8BA4 \u2192 \u65B9\u6848\u786E\u8BA4 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u8BC1 \u2192 \u5BA1\u6838 \u2192 \u63D0\u4EA4", STANDARD, STANDARD_RECOMMENDATION),
-  // Version 4 for agile: 交付 → 审查 now requires review_passed, where it previously
-  // required nothing. That is a gate-semantics change, so a task created before it
-  // keeps its frozen version 3 config and behaves exactly as it did.
-  //
-  // Version 3 across all three: the preset is now a bare skeleton and its former
-  // built-in bindings, commit rule and artifacts are a separate recommendation a
-  // user adopts explicitly. Tasks created before this keep their frozen config and
-  // are unaffected; a project's existing config is likewise left exactly as it is.
-  agile: preset("agile", 4, "\u65E5\u5E38\u8FED\u4EE3", "\u76EE\u6807\u660E\u786E\u7684\u5E38\u89C4\u529F\u80FD\u4E0E\u7F3A\u9677\u4FEE\u590D\uFF1A\u76EE\u6807\u4E0E\u9A8C\u6536 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u6536\u4E0E\u5BA1\u67E5 \u2192 \u63D0\u4EA4", AGILE, AGILE_RECOMMENDATION),
-  minimal: preset("minimal", 3, "\u5FEB\u901F\u4FEE\u6539", "\u5C40\u90E8\u3001\u4F4E\u98CE\u9669\u3001\u65B9\u6848\u660E\u786E\u7684\u6539\u52A8\uFF1A\u4FEE\u6539 \u2192 \u68C0\u67E5\u4E0E\u63D0\u4EA4\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5", MINIMAL, MINIMAL_RECOMMENDATION)
-};
-function dedupe(names) {
-  return [...new Set(names)];
-}
-function applyProjectConfig(base, project) {
-  if (project === void 0) return base;
-  const next = { ...base };
-  if (project.stage_bindings !== void 0) {
-    const profiles = { ...project.skill_profiles ?? {} };
-    const explicitProfiles = new Set(Object.keys(project.skill_profiles ?? {}));
-    const problems = [];
-    const bindings = {};
-    for (const [stage, binding] of Object.entries(project.stage_bindings)) {
-      const entry = {};
-      if (binding === null || typeof binding !== "object") {
-        problems.push(`stage_bindings "${stage}" must be an object`);
-        bindings[stage] = entry;
-        continue;
-      }
-      if (binding.skill_refs !== void 0 && binding.skills !== void 0) {
-        problems.push(`stage_bindings "${stage}" has both skill_refs and legacy skills`);
-      }
-      if (binding.skill_refs !== void 0) {
-        if (!Array.isArray(binding.skill_refs)) {
-          problems.push(`stage_bindings "${stage}" skill_refs must be an array`);
-        }
-        entry.skills = (Array.isArray(binding.skill_refs) ? binding.skill_refs : []).flatMap((ref) => {
-          if (ref === null || typeof ref !== "object") {
-            problems.push(`stage_bindings "${stage}" has an invalid skill reference`);
-            return [];
-          }
-          const key = formatResourceRef(ref);
-          const profile = profiles[key];
-          if (profile === void 0) {
-            problems.push(`skill profile "${key}" is missing`);
-            return [];
-          }
-          if (profile === null || !Array.isArray(profile.rules)) {
-            problems.push(`skill profile "${key}" must declare a rules array`);
-            return [];
-          }
-          return [{
-            skill: { source: ref.source, name: ref.name },
-            rules: profile.rules,
-            ...ref.loading !== void 0 ? { loading: ref.loading } : {},
-            ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
-          }];
-        });
-      } else if (binding.skills !== void 0) {
-        if (!Array.isArray(binding.skills)) {
-          problems.push(`stage_bindings "${stage}" skills must be an array`);
-        }
-        entry.skills = (Array.isArray(binding.skills) ? binding.skills : []).flatMap((skill) => {
-          if (skill === null || typeof skill !== "object" || skill.skill === null || typeof skill.skill !== "object") {
-            problems.push(`stage_bindings "${stage}" has an invalid skill binding`);
-            return [];
-          }
-          const key = formatResourceRef(skill.skill);
-          if (explicitProfiles.has(key)) {
-            const profile = profiles[key];
-            if (profile === null || !Array.isArray(profile?.rules)) {
-              problems.push(`skill profile "${key}" must declare a rules array`);
-              return [];
-            }
-            return [{
-              skill: skill.skill,
-              rules: profile.rules,
-              ...skill.loading !== void 0 ? { loading: skill.loading } : {},
-              ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
-            }];
-          }
-          const candidate = { rules: skill.rules ?? [], ...skill.evidence !== void 0 ? { evidence: skill.evidence } : {} };
-          const existing = profiles[key];
-          if (existing !== void 0 && JSON.stringify(existing) !== JSON.stringify(candidate)) {
-            problems.push(`skill "${key}" has different rules or evidence in multiple stages; copy it as a distinct skill`);
-          } else profiles[key] = candidate;
-          return [skill];
-        });
-      }
-      const legacy = dedupe(binding.legacy_rules ?? []);
-      if (legacy.length > 0) entry.legacy_rules = legacy;
-      bindings[stage] = entry;
-    }
-    next.stage_bindings = bindings;
-    next.skill_profiles = profiles;
-    if (problems.length > 0) next.configuration_errors = problems;
-  } else if (project.skill_profiles !== void 0) {
-    next.skill_profiles = project.skill_profiles;
-  }
-  if (project.commit !== void 0) next.commit = project.commit;
-  if (project.artifacts !== void 0) next.artifacts = project.artifacts;
-  if (project.review_depth !== void 0) next.review_depth = project.review_depth;
-  if (project.commit_required !== void 0) next.commit_required = project.commit_required;
-  return next;
-}
-function resolveFlow(flow, project) {
-  const preset2 = FLOW_PRESETS[flow];
-  if (preset2 === void 0) {
-    return { ok: false, code: "UNKNOWN_FLOW", flow, knownFlows: Object.keys(FLOW_PRESETS) };
-  }
-  const { flow: _ignored, ...rest } = project ?? { flow };
-  return { ok: true, config: applyProjectConfig(preset2.config, { flow, ...rest }), preset: preset2 };
 }
 
 // src/snapshot.ts
@@ -820,11 +621,13 @@ function normalizeTask(task) {
     branch: String(task.branch ?? ""),
     work_size: task.work_size ?? "standard",
     risk_level: task.risk_level ?? "standard",
+    ...task.delivery ? { delivery: task.delivery } : {},
     ...task.complexity !== void 0 ? { complexity: task.complexity } : {},
     ...task.sonar_policy !== void 0 ? { sonar_policy: task.sonar_policy } : {},
     ...task.sonar_audit !== void 0 ? { sonar_audit: task.sonar_audit } : {},
     stage: String(task.stage ?? ""),
     requirement_confirmed: task.requirement_confirmed === true,
+    ...task.requirements ? { requirements: task.requirements } : {},
     solution_confirmed: task.solution_confirmed === true,
     items: Array.isArray(task.items) ? task.items : [],
     verification: task.verification ?? { passed: false, evidence: [] },
@@ -942,7 +745,7 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (worktreeOid !== match[2]) refuse(`\u6682\u5B58\u533A\u5185\u5BB9\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
 }
 function pickTask(tasks2, branch2) {
-  const candidates = tasks2.filter(({ task }) => task.branch === branch2 && task.stage !== "\u5B8C\u6210" && task.completed === void 0);
+  const candidates = tasks2.filter(({ task }) => task.branch === branch2 && task.stage !== "\u5B8C\u6210" && task.completed === void 0 && !taskExecutionProblem(task) && task.delivery?.intent !== "analysis");
   if (candidates.length > 1) {
     refuse(`\u5F53\u524D\u5206\u652F\u6709\u591A\u4E2A\u672A\u5B8C\u6210\u4EFB\u52A1\uFF08${candidates.map(({ task }) => task.id).join("\u3001")}\uFF09\uFF1B\u8BF7\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011`);
   }
@@ -982,32 +785,6 @@ function riskVerified(state2) {
   const receipt = state2.verification.receipt;
   return state2.risk_level === "high_risk" && receipt !== void 0 && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted;
 }
-function defaultConfig() {
-  const resolved = resolveFlow("standard");
-  if (!resolved.ok) throw new Error('built-in "standard" preset is missing');
-  return resolved.config;
-}
-function loadWorkflow(parsed) {
-  if (parsed === void 0) return defaultConfig();
-  const flow = parsed.flow;
-  if (typeof flow !== "string" || flow.trim() === "") {
-    refuse('\u9879\u76EE .dsh/eng.json \u7F3A "flow" \u5B57\u6BB5\u2014\u2014\u8BBE\u4E3A standard|agile|minimal\uFF0C\u6216\u5220\u9664\u8BE5\u6587\u4EF6');
-  }
-  const project = {
-    flow,
-    ...typeof parsed.stage_bindings === "object" && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings) ? { stage_bindings: parsed.stage_bindings } : {},
-    ...typeof parsed.skill_profiles === "object" && parsed.skill_profiles !== null && !Array.isArray(parsed.skill_profiles) ? { skill_profiles: parsed.skill_profiles } : {},
-    ...typeof parsed.commit === "object" && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit } : {},
-    ...Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts } : {},
-    ...typeof parsed.review_depth === "string" ? { review_depth: parsed.review_depth } : {},
-    ...typeof parsed.commit_required === "boolean" ? { commit_required: parsed.commit_required } : {}
-  };
-  const resolved = resolveFlow(flow, project);
-  if (!resolved.ok) {
-    refuse(`\u672A\u77E5\u6D41\u7A0B "${resolved.flow}"\uFF08\u5DF2\u77E5\u6D41\u7A0B\uFF1A${resolved.knownFlows.join("\u3001")}\uFF09`);
-  }
-  return resolved.config;
-}
 if (!messageFile) {
   process.exit(0);
 }
@@ -1029,6 +806,7 @@ if (taskId !== void 0) {
 if (!state) {
   refuse("\u5F53\u524D\u5206\u652F\u6CA1\u6709\u53EF\u63D0\u4EA4\u7684 dev_task \u4EFB\u52A1\u2014\u2014\u8BF7\u5148\u5EFA\u7ACB\u4EFB\u52A1\uFF0C\u6216\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011");
 }
+if (state.completed !== void 0) refuse("\u6B64\u4EFB\u52A1\u5DF2\u5F52\u6863\uFF0C\u4EC5\u53EF\u67E5\u770B\uFF1B\u8BF7\u65B0\u5EFA\u4EFB\u52A1\u540E\u63D0\u4EA4");
 var branch = currentBranch();
 if (!branch || branch === "HEAD" || state.branch !== branch) {
   refuse(`\u4EFB\u52A1 ${state.id} \u8BB0\u5F55\u7684\u5206\u652F\u662F ${state.branch}\uFF0C\u5F53\u524D Git \u5206\u652F\u662F ${branch || "\u672A\u77E5"}\uFF1B\u8BF7\u5207\u56DE\u4EFB\u52A1\u5206\u652F`);
@@ -1036,24 +814,31 @@ if (!branch || branch === "HEAD" || state.branch !== branch) {
 if (state.flow?.hash !== void 0 && hashConfig(state.flow.config) !== state.flow.hash) {
   refuse(`\u4EFB\u52A1 ${state.id} \u7684\u6D41\u7A0B\u5FEB\u7167 hash \u4E0D\u5339\u914D\u2014\u2014task \u8BB0\u5F55\u5728\u521B\u5EFA\u540E\u88AB\u6539\u52A8\u8FC7\uFF0C\u4FEE\u590D\u6216\u91CD\u5EFA\u4EFB\u52A1\u540E\u518D\u63D0\u4EA4`);
 }
+var executionProblem = taskExecutionProblem(state);
+if (executionProblem) refuse(executionProblem);
 var config;
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
 } else {
-  const configPath = import_node_path2.default.join(state.root ?? cwd, ".dsh", "eng.json");
-  if (import_node_fs2.default.existsSync(configPath)) {
-    let parsed;
-    try {
-      parsed = JSON.parse(import_node_fs2.default.readFileSync(configPath, "utf8"));
-    } catch (error) {
-      refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
-    }
-    config = loadWorkflow(parsed);
-  } else config = loadWorkflow(void 0);
+  refuse("\u6B64\u4EFB\u52A1\u7F3A\u5C11\u6D41\u7A0B\u5FEB\u7167\uFF0C\u8BF7\u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\u540E\u63D0\u4EA4");
 }
 var verdict = validateCommitMessage(message, config);
 if (!verdict.ok) {
   refuse(verdict.errors?.[0] ?? "commit summary does not match the configured pattern");
+}
+if (config.requirement_review) {
+  if (!requirementConfirmed(state, config)) refuse("\u5F53\u524D\u9700\u6C42\u7248\u672C\u5C1A\u672A\u7531\u7528\u6237\u786E\u8BA4");
+  const doc = state.requirements.document, workspace2 = state.root ?? cwd;
+  const documentPath = import_node_path2.default.resolve(workspace2, doc.path);
+  const outside = (file) => {
+    const rel = import_node_path2.default.relative(import_node_fs2.default.realpathSync(workspace2), file);
+    return rel.startsWith("..") || import_node_path2.default.isAbsolute(rel);
+  };
+  try {
+    if (outside(import_node_fs2.default.realpathSync(documentPath)) || hashText(import_node_fs2.default.readFileSync(documentPath, "utf8")) !== doc.hash) refuse("\u9700\u6C42\u6587\u6863\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+  } catch {
+    refuse("\u9700\u6C42\u6587\u6863\u65E0\u6CD5\u6838\u5BF9\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+  }
 }
 var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {

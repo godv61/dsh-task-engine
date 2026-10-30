@@ -47,6 +47,8 @@ import { discoverInitStepPaths, initPathPrompt, InitOutputError, InitRepositoryR
 import type { InitGraphQueryRecord } from './project-init.ts'
 import { reviewEvidenceBlockers } from './evidence-gate.ts'
 import { appendInitMount, mountLoading, mountName, validMetaMount } from './skill-loading.ts'
+import { requirementsView, taskExecutionProblem } from './requirements.ts'
+import { requirementDocumentProblem } from './requirement-commands.ts'
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, import('./skill-loading.ts').MetaSkillMount[]>>
@@ -70,6 +72,7 @@ function adaptiveGrades(): AdaptiveConfigView['grades'] {
 function adaptiveProblems(config: AdaptiveProjectConfig, available: Set<string>): string[] {
   const problems: string[] = []
   if (config === null || typeof config !== 'object' || Array.isArray(config)) return ['自适应配置必须是对象']
+  if ('requirement_confirmation' in config) problems.push('requirement_confirmation 配置已移除；删除该字段后使用统一的需求确认流程')
   if (config.meta_bindings !== undefined) {
     if (config.meta_bindings === null || typeof config.meta_bindings !== 'object' || Array.isArray(config.meta_bindings)) {
       problems.push('meta_bindings 必须是对象')
@@ -1098,7 +1101,9 @@ export default class TaskEngineController extends TypertRemoteService {
         const awaitingCommit = !state.completed && evidenceStatus === 'valid' && reviewStatus === 'valid'
           && state.flow?.config.transitions.some(edge => edge.from === state.stage
             && assertAdvance(state, edge.to, state.flow!.config).errors?.some(error => error.startsWith('commit required before leaving')))
+        const requirements = requirementsView(state, !state.completed && !!await requirementDocumentProblem(fs, state, path), true)
         tasks.push({
+          ...(requirements ? { requirements } : {}),
           ...(state.delivery ? { delivery: deliveryView(state)! } : {}),
           evidence_status: evidenceStatus,
             ...(groupViews.length ? { verification_groups: groupViews } : {}),
@@ -1110,7 +1115,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.completed ? { completed_at: state.completed.at } : {}),
           ...(state.related_task ? { related_task: state.related_task } : {}),
           items_done: (state.items ?? []).filter(item => item.status === "done").length,
-          next_action: state.completed ? "已归档；后续改动请新建关联任务" : state.delivery?.intent === 'analysis' ? '主会话查证并及时交付结论；submit_analysis 接受证据与方案' : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接",
+          next_action: state.completed ? "已归档；后续改动请新建关联任务" : taskExecutionProblem(state) ?? (requirements && requirements.status !== 'confirmed' ? '澄清需求并生成总结；等待用户确认当前版本后再实施' : state.delivery?.intent === 'analysis' ? '主会话查证并及时交付结论；submit_analysis 接受证据与方案' : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接"),
           verification_passed: state.completed ? state.verification?.passed ?? false : evidenceStatus === 'valid',
           review_outcome: state.review?.outcome ?? 'pending',
           ...(state.sonar_policy ? { sonar: {

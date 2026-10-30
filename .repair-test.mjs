@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 // Repair regressions: exercise production modules with explicit FS/session/HTTP adapters.
 // Delivery checks additionally use real Git, real files and real node:test processes.
 import assert from 'node:assert/strict'
@@ -66,9 +67,10 @@ async function fixture(flow = 'standard', config = {}, diskRoot, createArgs = {}
     get: name => name === 'shell' ? shell : name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'workspace-write', workspaceRoot: cwd }) } : undefined }
   registerDevTask(ctx)
   const session = { id: 'assessment', header: { cwd }, snapshotEvents: () => events }
-  const call = args => execute({ task_id: 'ASSESS-1', ...args }, { agent: { session }, signal: new AbortController().signal })
+  const call = args => execute({ task_id: 'ASSESS-1', ...(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit' } : {}), ...args }, { agent: { session }, signal: new AbortController().signal })
   await call({ operation: 'create', title: 'isolated assessment', branch: 'main', files: ['a.js'], ...createArgs })
   const path = join(cwd, '.dsh/task-ASSESS-1.json')
+  { const initial = JSON.parse(records.get(path)); initial.flow.config = resolveFlow(flow, { flow, ...config }).config; initial.stage = initial.flow.config.start_stage; initial.flow.resources = undefined; delete initial.flow.hash; delete initial.delegation_version; delete initial.execution_policy; delete initial.verification_version; delete initial.delivery; confirmedRequirement(initial, (p,c) => records.set(join(cwd,p),c)); records.set(path,JSON.stringify(initial)) }
   const current = () => JSON.parse(records.get(path))
   const save = state => records.set(path, JSON.stringify(state))
   const loadCurrent = async () => {
@@ -265,7 +267,7 @@ test('Skill/Rule edits require reload and clear the old verdict', async () => {
 
 for (const providerName of ['spawn', 'fork']) for (const outcome of ['completed', 'error', 'aborted', 'max-tokens']) test(`subagent ${providerName} ${outcome}: persist adapter-returned id and release; never auto-complete the item`, async () => {
   const f = await fixture()
-  const state = f.current(); state.stage = '开发'; state.artifacts = { requirement: { scope: 'preserve interfaces' } }; f.save(state)
+  const state = f.current(); state.stage = '开发'; state.artifacts = { ...state.artifacts, requirement: { scope: 'preserve interfaces' } }; f.save(state)
   await f.call({ operation: 'items', items: [{ id: 'I1', title: 'delegate' }] })
   let disposed = 0
   const get = f.ctx.get

@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, lstatSync } from 'node:fs'
@@ -31,6 +32,7 @@ test('shipped browser strict codec preserves grouped evidence and environment-bl
 })
 async function fixture({ dependencies = [], shared = false, planned = true } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'task-verification-groups-'))
+  mkdirSync(join(root, '.dsh'), { recursive: true })
   for (const side of ['be', 'fe']) {
     writeFileSync(join(root, `${side}.mjs`), 'export const value = 2\n')
     writeFileSync(join(root, `${side}.json`), '{"setting":true}\n')
@@ -60,9 +62,9 @@ async function fixture({ dependencies = [], shared = false, planned = true } = {
   const path = join(root, '.dsh/task-GROUPS.json')
   const state = () => JSON.parse(readFileSync(path, 'utf8'))
   const save = value => writeFileSync(path, JSON.stringify(value))
-  await call({ operation: 'create', title: 'two complete units', branch: 'fixture', complexity: 'medium', complexity_reason: 'two local units',
+  await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', title: 'two complete units', branch: 'fixture', complexity: 'medium', complexity_reason: 'two local units',
     files: ['be.mjs', 'be.test.mjs', 'fe.mjs', 'fe.test.mjs'], items: [{ id: 'BE', title: 'backend + tests' }, { id: 'FE', title: 'frontend + tests' }] })
-  const initial = state(); initial.stage = '代码开发'; save(initial)
+  const initial = confirmedRequirement(state(), (p,c) => {mkdirSync(dirname(join(root,p)),{recursive:true});writeFileSync(join(root,p),c)}); initial.stage = '代码开发'; save(initial)
   for (const [id, side] of [['BE', 'be'], ['FE', 'fe']]) {
     await call({ operation: 'plan_execution', item_id: id, task_boundary: 'local', execution_reason: 'complete local implementation and its test',
       files: [`${side}.mjs`, `${side}.test.mjs`], acceptance: ['value is 2 and real test passes'], depends_on: id === 'FE' ? dependencies : [] })

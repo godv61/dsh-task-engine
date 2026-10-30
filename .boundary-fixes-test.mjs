@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 // Public-tool regressions: real Git/FS/test processes, controlled child/HTTP transports.
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -11,10 +12,11 @@ import { scanProject, projectMapCoverageGaps } from './lib/project-init.js'
 import { inspectSonar, sonarCommitBlockers } from './lib/sonar.js'
 
 const command = 'node --test --experimental-test-isolation=none --test-reporter=tap check.test.mjs'
-const basePlan = { item_id: 'I1', task_boundary: 'independent', execution_reason: 'One bounded delivery with a real regression',
+const basePlan = { delegation_benefit: 'context_isolation', item_id: 'I1', task_boundary: 'independent', execution_reason: 'One bounded delivery with a real regression',
   files: ['old file.mjs', 'check.test.mjs'], acceptance: ['requested behavior and regression pass'] }
 async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto', rename = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'task-engine-boundary-'))
+  mkdirSync(join(root, '.dsh'), { recursive: true })
   const old = 'old file.mjs', target = "nested/new 'file.mjs"
   writeFileSync(join(root, old), 'export const obsolete = true\n')
   writeFileSync(join(root, 'check.test.mjs'), `import test from 'node:test';import assert from 'node:assert/strict';import {existsSync} from 'node:fs';test('delivery',()=>{assert.equal(existsSync(${JSON.stringify(old)}),false);${rename ? `assert.equal(existsSync(${JSON.stringify(target)}),true);` : ''}})\n`)
@@ -65,7 +67,8 @@ async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto',
   const events = [], session = { id: 'parent', header: { cwd: root }, snapshotEvents: () => events }
   const call = args => execute({ task_id: 'BOUNDARY', ...args }, { agent: { session }, signal: new AbortController().signal })
   const files = [old, 'check.test.mjs', ...(rename ? [target] : [])]
-  await call({ operation: 'create', title: 'Boundary regression', branch: 'fixture', files, complexity, complexity_reason: 'Boundary fixture', risk_level: risk, execution_policy: policy, items: [{ id: 'I1', title: 'deliver change' }] })
+  await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', title: 'Boundary regression', branch: 'fixture', files, complexity, complexity_reason: 'Boundary fixture', risk_level: risk, execution_policy: policy, items: [{ id: 'I1', title: 'deliver change' }] })
+  { const accepted = state(); confirmedRequirement(accepted, (p,c) => { mkdirSync(dirname(join(root,p)), {recursive:true}); writeFileSync(join(root,p),c) }); save(accepted) }
   await call({ operation: 'plan_verification', verification_group: 'unit', item_ids: ['I1'], command, files })
   return { root, old, target, files, fs, ctx, call, state, save, git, starts, commands,
     implement: () => implementation(),

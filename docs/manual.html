@@ -115,7 +115,8 @@ pnpm dsh web --no-open</code></pre>
         <h2>执行一个任务</h2>
         <p>先判断交付目标。只排查原因、解释调用链或给方案时，创建 <code>intent=analysis</code> 并写明 <code>intent_reason</code>，由主会话直接搜索与读取源码，再用 <code>submit_analysis</code> 一次提交结论、方案、未确认项和含文件、行段、原文的证据。分析不会进入代码实施或为取得回执写测试；运行时限制写入和终端工具。业务结论仍须主会话核对，源码匹配不等于语义正确。</p>
         <p>需要只读委派时，用 <code>delegate</code> 说明问题、引用入口、依赖、明确收益与理由，默认最多两个同时运行。子代理返回与任务接受分别显示，失败前报告保持可见；清理不明时不得交付，原父会话经宿主确认停止后才能 <code>recover_analysis</code>。下面的实施步骤用于用户已要求修改代码的 <code>intent=implementation</code> 任务。</p>
-        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；高风险项在宿主能力允许时要求独立审核，标准风险不会仅因复杂度或委派实施增加审核代理。旧台账继续按原快照操作，不自动转换。</p>
+        <p>新建任务默认必须明确 <code>intent</code>；实施任务还必须提供 <code>complexity</code> 及理由。先查阅并澄清关键疑问，用 <code>record</code> 整理需求，再用 <code>prepare_requirement</code> 生成需求总结、<code>confirm_requirement expected_hash=...</code> 请用户确认该版本，确认前不能修改业务代码或执行项目命令。低复杂度使用精简总结；相同有效版本的重复确认复用原回执，文档精确恢复为原文后权限同步恢复。所有实施任务统一使用该流程，不提供兼容模式。缺少新版结构的未完成任务仅可查看，继续工作需新建任务并重新确认；历史记录和已有代码不会自动修改。</p>
+        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；高风险项在宿主能力允许时要求独立审核，标准风险不会仅因复杂度或委派实施增加审核代理。不符合新版需求结构的未完成台账只读，不自动转换。</p>
         <p>挂载 Skill 时可选“强制加载”或“按需加载”，同一 Skill 在不同节点可选不同方式。核心 Skill 始终强制；旧配置默认强制。按需项由模型按描述和使用时机选择，不因未读或未提供 Skill 完成凭证阻塞，也不要求填写跳过说明。必须始终遵守的团队规范应放在强制 Skill 下。读取复用不代替当前阶段的产物、测试和审核。</p>
         <p>阶段提示和默认 <code>status</code> 只返回绑定索引、指纹及状态摘要；<code>load_skill</code> 首次返回选中 Skill 与其全部挂载 Rule 正文；同一任务、同一会话已成功读取的内容跨阶段复用，再次调用只返回复用提示，<code>detail=true</code> 可显式恢复全文。完整计划和命令日志通过 <code>status detail=true</code> 获取，可用 <code>section=items</code> 配合 <code>item_id</code>，或 <code>section=verification</code> 配合 <code>verification_group</code> 缩小读取范围，无需重跑测试。子代理与审核代理各自收到必要的强制约束；按需 Skill 只提供简介、使用时机和读取路径。</p>
         <p>Sonar 阻断或审核证据过期时，先按工具返回的 <code>recovery</code> 回到实施阶段，再修复和验收。缺陷返工可复用计划与输入指纹均匹配的最新通过测试，受影响项的审核仍须重新接受；较新的失败、输入/计划/指令变化，以及需求、方案变化或未知影响，不得复用旧通过记录。</p>
@@ -123,7 +124,7 @@ pnpm dsh web --no-open</code></pre>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
           <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；实施中、已完成或有审查记录的项仍受保护。</li>
-          <li>实施前用 <code>plan</code> 或 <code>plan_execution</code> 记录边界、文件、验收、依赖与理由。新契约直接实施使用真实 <code>verify</code> 后的 <code>accept_item</code>；需要委派时才使用 <code>dispatch</code>，高风险项按计划先独立审核。旧任务仍按 <code>dispatch</code>、<code>review_item</code> 和 <code>items done</code> 留痕。台账显示计划方式、实际方式、选择原因和审核结果。变更文件登记在任务 <code>files</code> 范围内；修改代码后旧测试和审核回执会失效。</li>
+          <li>实施前用 <code>plan</code> 或 <code>plan_execution</code> 记录边界、文件、验收、依赖与理由。新契约直接实施使用真实 <code>verify</code> 后的 <code>accept_item</code>；需要委派时才使用 <code>dispatch</code>，高风险项按计划先独立审核。台账显示计划方式、实际方式、选择原因和审核结果。变更文件登记在任务 <code>files</code> 范围内；修改代码后旧测试和审核回执会失效。</li>
           <li>测试阶段调用 <code>verify</code> 执行真实命令；代码审核阶段运行 <code>sonar_check</code>（若启用 Sonar），处理问题后记录 <code>review</code>。通过门禁后按 <code>status.commit</code> 的提示提交并完成任务。</li>
         </ol>
         <h3>给会话的第一条需求示例</h3>
@@ -145,7 +146,7 @@ pnpm dsh web --no-open</code></pre>
 <pre>{"operation":"create","task_id":"FIX-1","title":"修复字段转换并补回归","intent":"implementation","intent_reason":"用户要求实现修复","complexity":"low","complexity_reason":"边界明确的局部修复","files":["src/adapter.js","test/adapter.test.js"]}</pre>
 <p>实施按当前绑定技能、plan、真实 verify、accept_item 和后续阶段推进；完整参数示例见 README，不绕过项目提交及审核要求。</p>
 <p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
-        <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。旧活动任务可以显式规划测试组升级，旧全局回执保留为历史，不直接认作分组通过；归档任务始终只读。</p>
+        <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。不将历史全局回执直接认作当前分组通过；不符合新版结构的活动任务及归档记录均只读。</p>
         <p>开发阶段也支持原地缺陷返工。执行计划登记允许修改的交付文件，测试计划还登记只读配置等输入；共同配置未修改时不必列为共同交付。测试结果中的 <code>group_result</code> 表示本组状态，<code>task_verified</code> 和兼容字段 <code>ok</code> 表示任务整体状态，本组通过后可以先验收对应实施项。</p>
         <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Go 使用 <code>go test -json ./...</code>，只统计真实通过的测试用例；部分包无测试不影响其它包的有效结果，全跳过和只有包级成功不能通过。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
@@ -189,6 +190,7 @@ pnpm dsh web --no-open</code></pre>
           <tr><td><code>.dsh/meta.json</code></td><td>项目元技能挂载与可选 Sonar 非秘密配置。</td><td>审阅后提交。</td></tr>
           <tr><td><code>.dsh/skills/</code>、<code>.dsh/rules/</code></td><td>项目 Skill、Rule 与各 Skill 的 <code>profile.json</code>。</td><td>审阅后提交。</td></tr>
           <tr><td><code>.dsh/task-&lt;id&gt;.json</code></td><td>该任务的阶段、实施项、回执和审核状态。</td><td>按团队任务留痕政策决定。</td></tr>
+          <tr><td><code>docs/requirements/&lt;id&gt;.md</code></td><td>新实施任务的需求总结；台账展示版本、用户确认及修改意见。确认前不能实施，需求变更后重新确认；同一有效版本复用回执，精确恢复原文后权限同步恢复。</td><td>可按团队要求提交；路径可在生成时指定，人工修改受保护。</td></tr>
           <tr><td><code>.dsh/reviews/</code></td><td>逐次 Sonar Markdown 报告、结构化详情及误报处置。</td><td>可忽略，保留本机；不含 Token。</td></tr>
           <tr><td>本机 DSH 项目凭据</td><td>Sonar Token。</td><td>不提交、不回显。</td></tr>
         </tbody></table></div>

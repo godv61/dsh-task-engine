@@ -8,17 +8,13 @@ whenToUse: 自适应任务进入代码开发元技能时。
 
 仅用户已要求实施时使用。先检查挂载清单，读取尚未加载的强制 Skill，并按任务范围选择按需 Skill；选中时一并读取其全部 Rule，保留已有工作区修改，按验收条件和实现依赖推进。流程操作以当前任务的交付契约和工具返回为准；项目 Skill 补充代码约束，旧版流程示例不能覆盖当前契约。
 
-## 新交付契约（intent=implementation）
+## 实施契约（intent=implementation）
 
 用 `plan` 原子登记完整实施项，或逐项 `plan_execution`：记录 `item_id`、`task_boundary`、交付 `files`、`acceptance`、`depends_on`、`execution_reason`。local 表示局部改动，independent 表示边界清晰，coupled 表示需要共同处理；边界独立本身不是委派理由。默认主会话执行，只有明确 `delegation_benefit`（并行、上下文隔离、独立核对）才委派。用户指定全程主会话时使用 `execution_policy=main_only`。
 
 主会话直接实施：实现与必要测试 → `verify` → `accept_item`（`spec_outcome`、`quality_outcome`、具体 `notes`），一次接受审核并标 done。**直接实施不需要额外 `dispatch`，也不需要再串联 `review_item` 和 `items`。**
 
 确需子代理：先记录计划与收益，再 `dispatch`，不得绕过引擎调用原生子代理工具。主会话核对真实交付并运行 `verify`；计划要求独立审核时先 `review_dispatch`，再通过 `accept_item` 接受同一结论。子代理自报完成、文本自报测试通过都不构成验收。
-
-## 旧契约任务
-
-只有没有新交付契约的旧任务使用 `dispatch` → 实现与验证 → `review_item` → `items done`。`review_item` 不自动完成旧任务的实施项。暂停时设回 todo，保留已有记录；不要把这一套额外叠加到新契约的直接实施项。
 
 ## 验证与交付范围
 

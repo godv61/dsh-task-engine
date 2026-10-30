@@ -36,17 +36,14 @@ import {
   newTask,
   taskIdFromMessage,
   terminalRequirements,
-  unmetGuards,
   validateCommitMessage,
   validateWorkflow,
   verificationBlockers,
   type FlowSnapshot,
   type ParsedProjectConfig,
   type FrozenResource,
-  type GuardName,
   type ResourceRef,
   type ResourceSource,
-  type Result,
   type SkillProfile,
   type StageBinding,
   type TaskItem,
@@ -73,7 +70,9 @@ import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type Dele
 import { executeAnalysisCommand } from './analysis-commands.ts'
 import { assertInsideRoot } from './path-guard.ts'
 import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
-import { bindDeliveryIntent, installDeliveryAccess } from './delivery-access.ts'
+import { bindTaskDelivery, installDeliveryAccess } from './delivery-access.ts'
+import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, taskExecutionProblem, type ClarificationQuestion } from './requirements.ts'
+import { executeRequirementCommand, requirementDocumentProblem, REQUIREMENT_OPERATIONS } from './requirement-commands.ts'
 import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { isFullOid, isOidInput } from './git-oid.ts'
@@ -629,19 +628,12 @@ async function resolveWriteMode(
   return mode
 }
 
-/**
- * The workflow a task runs under: its frozen snapshot when present (created
- * 0.18+), otherwise the project's current config re-resolved on demand for
- * pre-snapshot records. A missing snapshot never silently widens a gate — the
- * live config must still resolve cleanly.
- */
-async function workflowFor(state: TaskState, fs: Fs, cwd?: string): Promise<WorkflowConfig> {
+/** Current execution uses its snapshot; a snapshot-less record has only a history view. */
+function workflowFor(state: TaskState): WorkflowConfig {
   if (state.flow !== undefined) return state.flow.config
-  const resolved = await resolveWorkflow(fs, cwd)
-  if (resolved.problems.length > 0) {
-    throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
-  }
-  return resolved.config
+  return { stages: [state.stage], start_stage: state.stage, transitions: [], artifacts: [],
+    high_risk_requires_verification: false,
+    commit: { policy: 'manual', checkpoints: [], file_scope: true, message_pattern: '', message_hint: '' } }
 }
 
 function dshHome(): string {
@@ -735,6 +727,7 @@ async function readAdaptiveConfig(fs: Fs, cwd?: string): Promise<AdaptiveConfig>
   try { config = JSON.parse(raw) as AdaptiveConfig }
   catch (error) { throw new Error(`invalid .dsh/meta.json: ${error instanceof Error ? error.message : String(error)}`) }
   if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new Error('.dsh/meta.json must be an object')
+  if ('requirement_confirmation' in config) throw new Error('requirement_confirmation 配置已移除；删除该字段后使用统一的需求确认流程')
   if (config.meta_bindings !== undefined) {
     if (config.meta_bindings === null || typeof config.meta_bindings !== 'object' || Array.isArray(config.meta_bindings)) {
       throw new Error('.dsh/meta.json meta_bindings must be an object')
@@ -1166,6 +1159,8 @@ async function reviewBindings(state: TaskState, workflow: WorkflowConfig, fs: Fs
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
 export interface OpArgs {
+  document_path?: string
+  clarification_questions?: ClarificationQuestion[]
   operation: string
   detail?: boolean
   section?: 'items' | 'verification' | 'artifacts' | 'bindings' | 'sonar'
@@ -1528,9 +1523,6 @@ function requireItem(state: TaskState, id: string | undefined): TaskItem {
   return item
 }
 
-/** Confirmation gates satisfied by a human approval, never by the task record. */
-const CONFIRMATION_GUARDS: readonly GuardName[] = ['requirement_confirmation', 'solution_confirmation']
-
 /** Narrow runtime view of the shared `approval` service (read optionally). */
 interface ApprovalAsk {
   request(input: {
@@ -1542,52 +1534,13 @@ interface ApprovalAsk {
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
 
-/** Human-readable label for a confirmation gate, used in the approval reason. */
-function confirmationLabel(guard: GuardName): string {
-  return guard === 'requirement_confirmation' ? '需求' : '方案'
-}
-
-/**
- * Ask a human to approve the pending confirmation gates, then re-run the
- * transition check. `'allowed-once'` satisfies the gates; every other outcome
- * (`rejected`/`cancelled`/`unavailable`) leaves them unmet and the advance
- * rejected. The approval audit pair lands on the agent's session log.
- */
-export async function approveAdvance(
-  ctx: Context,
-  state: TaskState,
-  target: string,
-  workflow: WorkflowConfig,
-  confirmations: GuardName[],
-  exec: ToolRunContext,
-): Promise<Result> {
-  const approval = ctx.get('approval') as ApprovalAsk | undefined
-  const labels = [...new Set(confirmations.map(confirmationLabel))].join('、')
-  if (approval === undefined) {
-    return { ok: false, errors: [`${labels}确认需人工批准，但审批服务不可用`] }
-  }
-  const outcome = await approval.request({
-    agent: exec.agent,
-    toolName: 'dev_task',
-    callId: exec.callId,
-    reason: `${labels}确认：请确认「${state.title}」的${labels}已达成，批准后流转到下一阶段。`,
-    signal: exec.signal,
-  })
-  if (outcome !== 'allowed-once') {
-    const verb = outcome === 'rejected' ? '被驳回' : outcome === 'cancelled' ? '已取消' : '无人批准'
-    return { ok: false, errors: [`${labels}确认${verb}，流转被拒绝。保持当前阶段；先获取用户的修改意见并修订，不要假定误操作或直接重复申请。`] }
-  }
-  if (confirmations.includes('requirement_confirmation')) state.requirement_confirmed = true
-  if (confirmations.includes('solution_confirmation')) state.solution_confirmed = true
-  return assertAdvance(state, target, workflow)
-}
-
-const OPERATIONS = ['status', 'assess', 'create', 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', ...REQUIREMENT_OPERATIONS, 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
+  'New intent=implementation adaptive tasks require a human-confirmed requirement version before business writes: clarify_requirement asks actual business questions; record requirement fields; prepare_requirement writes a summary Markdown; confirm_requirement expected_hash asks the human to accept that exact version. Ordinary tool approval never supplies business consent. ' +
   'First select the user deliverable: diagnosis/proposal creates intent=analysis with task_id, title, intent_reason (branch optional), investigates directly, then submit_analysis accepts exact source_evidence and a conclusion/proposal/limitations in one transaction. ' +
   'Minimal analysis create: {"operation":"create","task_id":"TRACE-1","title":"Trace a missing field","intent":"analysis","intent_reason":"User requested cause and proposal only"}. ' +
-  'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Legacy calls below remain supported. ' +
+  'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Unsupported task records are read-only; create a new task instead of resuming an old gate. ' +
   'Track engineering delivery in a workspace task record and enforce configured stage guards. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
   'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
@@ -1627,9 +1580,16 @@ export function registerDevTask(ctx: Context): void {
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
+      document_path: { type: 'string', description: 'prepare_requirement: optional workspace-relative Markdown path. Default docs/requirements/<task_id>.md. Existing human edits are protected.' },
+      clarification_questions: { type: 'array', description: 'clarify_requirement: 1–3 business questions that affect scope or acceptance; the host asks the human and stores real answers.', items: {
+        type: 'object', additionalProperties: false, properties: {
+          id: { type: 'string', required: true }, question: { type: 'string', required: true },
+          options: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { label: { type: 'string', required: true }, description: { type: 'string' } } } },
+        },
+      } },
       detail: { type: 'boolean', description: 'status/verify: include complete plans, artifacts and logs. load_skill: explicitly restore full Skill and Rule text even if already loaded in this task/session. Default reuses successful identical loads across stages.' },
       section: { type: 'string', enum: ['items', 'verification', 'artifacts', 'bindings', 'sonar'], description: 'status detail=true: retrieve one section. Use item_id or verification_group to narrow large plans and logs without rerunning work.' },
-      intent: { type: 'string', enum: ['analysis', 'implementation'], description: 'create/assess: select what the user asked to receive, before complexity. analysis is a read-only diagnosis/proposal; implementation uses project engineering gates. Omission preserves legacy contracts.' },
+      intent: { type: 'string', enum: ['analysis', 'implementation'], description: 'create/assess: select what the user asked to receive, before complexity. analysis is a read-only diagnosis/proposal; implementation requires complexity and a user-confirmed requirement version. Creates require intent. All implementation tasks use the current requirement-confirmation contract; unsupported records are read-only.' },
       intent_reason: { type: 'string', description: 'Concrete user goal supporting intent (required when intent is supplied).' },
       delegation_benefit: { type: 'string', enum: ['parallel', 'context_isolation', 'independent_check'], description: 'Concrete delegation benefit; independent boundaries alone do not spawn under the new delivery contract.' },
       concurrency: { type: 'integer', description: 'delegate: bounded read-only concurrency 1–4, default 2; code writes remain serial.' },
@@ -1652,7 +1612,7 @@ export function registerDevTask(ctx: Context): void {
       related_task_id: { type: 'string', description: 'Archived source task for a new defect, enhancement or follow-up. New work always gets a new task_id.' },
       relation_kind: { type: 'string', enum: ['defect', 'enhancement', 'follow_up'], description: 'How a newly created task relates to related_task_id.' },
       skill_name: { type: 'string', description: 'Bound skill to load or record. For a codex-project skill, pass codex-project:name to load_skill and skill_result. Command evidence needs a real validation command; manual evidence needs human approval.' },
-      branch: { type: 'string', description: 'Current git branch. New intent contracts can omit it; the engine reads Git HEAD or records unversioned. Required only for legacy create.' },
+      branch: { type: 'string', description: 'Current git branch. New intent contracts can omit it; the engine reads Git HEAD or records unversioned. The branch is optional for create.' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Optional workload tier (create), default standard. This is separate from complexity; do not pass low/medium/high here.' },
       complexity: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Task-level complexity (assess/create). Select from requirement scope and implementation dependencies; independent of risk_level. Passing this on create selects the adaptive meta-skill flow.' },
@@ -1687,7 +1647,7 @@ export function registerDevTask(ctx: Context): void {
       items_mode: { type: 'string', enum: ['merge', 'replace'], description: 'items operation: merge by id (default) or explicitly replace untouched items and reorder the supplied list.' },
       item_id: { type: 'string', description: 'Item id to start or review (dispatch/review_item).' },
       description: { type: 'string', description: 'Implementation intent (dispatch); the current agent may execute it directly.' },
-      execution: { type: 'string', enum: ['direct', 'spawn', 'fork'], description: 'plan_execution: omit for automatic routing; use direct with a concrete cost/benefit reason for very small independent work. dispatch reads the recorded mode; legacy dispatch defaults to direct. Children still need parent verification and review.' },
+      execution: { type: 'string', enum: ['direct', 'spawn', 'fork'], description: 'plan_execution: omit for automatic routing; use direct with a concrete cost/benefit reason for very small independent work. dispatch reads the recorded mode. Children still need parent verification and review.' },
       execution_policy: { type: 'string', enum: ['auto', 'main_only'], description: 'create: auto (default) chooses from task boundaries and real host capabilities; main_only honors a request to keep work and review in the main session.' },
       execution_reason: { type: 'string', description: 'Required with delegate: explain the concrete benefit of delegating these questions. Also used by plan_execution to explain the task boundary and execution choice. No user reminder is required.' },
       task_boundary: { type: 'string', enum: ['local', 'independent', 'coupled'], description: 'plan_execution: local small change, independent deliverable with explicit acceptance, or tightly coupled work. Do not split work merely to spawn children.' },
@@ -1725,7 +1685,7 @@ export function registerDevTask(ctx: Context): void {
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
-      expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; apply is rejected without it, or with a different hash (init apply).' },
+      expected_hash: { type: 'string', description: 'confirm_requirement: the exact hash returned by prepare_requirement. init apply: the content hash returned by init phase=propose.' },
       existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
       sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result/local Sonar scanner command. Commands otherwise use the session policy. Retry a denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
@@ -1746,7 +1706,7 @@ export function registerDevTask(ctx: Context): void {
       const cwd = exec.agent?.session.header.cwd ?? executionDirectory
       const session = exec.agent?.session as unknown as SkillSession | undefined
       const mutationPath = a.task_id ? (process.platform === 'win32' ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)).toLowerCase() : resolve(cwd ?? process.cwd(), taskPath(a.task_id))) : undefined
-      const release = mutationPath && !['status', 'config', 'assess', 'delegate'].includes(a.operation)
+      const release = mutationPath && !['status', 'config', 'assess', 'delegate', 'clarify_requirement', 'confirm_requirement'].includes(a.operation)
         ? acquireTaskMutation(process.platform === 'win32' ? mutationPath.toLowerCase() : mutationPath) : undefined
       try {
 
@@ -1762,7 +1722,7 @@ export function registerDevTask(ctx: Context): void {
             ...(task.completed ? { completed_at: task.completed.at } : {}),
             ...(task.complexity !== undefined ? { complexity: task.complexity } : {}) })
         }
-        return JSON.stringify({ tasks, required_create_fields: ['task_id', 'title', 'intent', 'intent_reason'], next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Create with task_id, title, intent=analysis|implementation and intent_reason. New contracts read the Git branch automatically; implementation should include the assessed complexity and complexity_reason.' }, null, 2)
+        return JSON.stringify({ tasks, required_create_fields: ['task_id', 'title', 'intent', 'intent_reason'], next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Create with task_id, title, intent=analysis|implementation and intent_reason. New contracts read the Git branch automatically; implementation must include the assessed complexity and complexity_reason.' }, null, 2)
       }
 
       if (a.operation === 'config') {
@@ -1784,7 +1744,8 @@ export function registerDevTask(ctx: Context): void {
             instruction: 'Analyze the requirement, choose one grade, then call assess with complexity to preview its stages and effective Skill sources. Record the reason on create. Risk is assessed separately.' }, null, 2)
         }
         if (!isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
-        const config = await resolveAdaptiveWorkflow(a.complexity, fs, cwd)
+        const creationPolicy = await readAdaptiveConfig(fs, cwd)
+        const config = await resolveAdaptiveWorkflow(a.complexity, fs, cwd, creationPolicy)
         return JSON.stringify({ complexity: a.complexity, stages: config.stages,
           meta_skills: Object.fromEntries(Object.entries(config.stage_bindings ?? {}).map(([stage, binding]) =>
             [stage, (binding.skills ?? []).map(entry => ({ logical_name: entry.skill.name, effective_source: entry.skill.source,
@@ -1977,7 +1938,9 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'create') {
-        const required: ('task_id' | 'title' | 'branch' | 'intent_reason')[] = a.intent ? ['task_id', 'title', 'intent_reason'] : ['task_id', 'title', 'branch']
+        if (!a.intent) throw new Error('create requires explicit intent=analysis|implementation and intent_reason; legacy creation is not supported')
+        if (!['analysis', 'implementation'].includes(a.intent)) throw new Error('create intent must be analysis|implementation')
+        const required: ('task_id' | 'title' | 'intent_reason')[] = ['task_id', 'title', 'intent_reason']
         const missing = required.filter(field => !a[field]?.trim())
         if (!a.task_id || !a.title || missing.length) {
           throw new Error(`create requires ${required.join(', ')}; missing: ${missing.join(', ')}. New-contract example: ${JSON.stringify({ operation: 'create', task_id: 'TASK-1', title: 'Concrete user goal', intent: a.intent === 'analysis' ? 'analysis' : 'implementation', intent_reason: 'What the user asked to receive' })}. Branch is optional when intent is supplied.`)
@@ -1986,6 +1949,9 @@ export function registerDevTask(ctx: Context): void {
           throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
         }
         if (await fs.lstat(taskPath(a.task_id), cwd === undefined ? undefined : { cwd }) !== undefined) throw new Error('task_id already exists; inspect status and continue it, or use a new task_id. Existing records are never replaced by create.')
+        const adaptiveConfig = a.intent === 'analysis' ? undefined : await readAdaptiveConfig(fs, cwd)
+        if (a.intent === 'implementation' && a.complexity === undefined)
+          throw new Error('implementation create requires complexity and complexity_reason; call assess first')
         if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
         if ((a.related_task_id === undefined) !== (a.relation_kind === undefined)) throw new Error('related_task_id and relation_kind must be provided together')
         if (a.related_task_id === a.task_id) throw new Error('a follow-up task needs its own task_id')
@@ -1996,13 +1962,10 @@ export function registerDevTask(ctx: Context): void {
         if (a.complexity !== undefined && !a.complexity_reason?.trim()) {
           throw new Error('adaptive create requires complexity_reason explaining the requirement evidence for this grade')
         }
-        const adaptiveConfig = a.complexity === undefined ? undefined : await readAdaptiveConfig(fs, cwd)
         const resolved = a.intent === 'analysis'
           ? { flow: 'analysis-v1', version: 1, config: analysisWorkflow(), problems: [] }
-          : a.complexity !== undefined
-          ? { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
-              config: await resolveAdaptiveWorkflow(a.complexity, fs, cwd, adaptiveConfig), problems: [] }
-          : await resolveWorkflow(fs, cwd)
+          : { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
+              config: await resolveAdaptiveWorkflow(a.complexity!, fs, cwd, adaptiveConfig), problems: [] }
         if (resolved.problems.length > 0) {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
@@ -2013,7 +1976,7 @@ export function registerDevTask(ctx: Context): void {
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
-        const sonarPolicy = a.intent === 'analysis' || adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
+        const sonarPolicy = a.intent === 'analysis' || a.complexity === undefined || adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
         if (sonarPolicy?.source === 'ide-local' && resolved.config.stages.includes('代码审核')) {
           resolved.config.commit = { ...resolved.config.commit, checkpoints: ['代码审核'] }
         }
@@ -2072,13 +2035,14 @@ export function registerDevTask(ctx: Context): void {
         }
         state.files = isAnalysis(state) ? [] : a.files ?? []
         let baselineNotice = ''
+        if (flow.config.requirement_review) baselineNotice += '\nBusiness writes are blocked until the human confirms this requirement version. Read related source, clarify important gaps, record requirement fields, prepare_requirement, then confirm_requirement expected_hash. Low complexity uses a short summary in its initial stage.'
         if (sonarPolicy?.source === 'ide-local') {
           try { state.sonar_baseline = await captureLocalAuditBaseline(root, sonarPolicy.reference_branch ?? 'HEAD') }
           catch { baselineNotice = '\nExisting changes baseline unavailable; local audit will conservatively require every changed code file in the task scope.' }
         }
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        bindDeliveryIntent(exec.agent, state.delivery?.intent)
+        await bindTaskDelivery(ctx, exec.agent, state)
         if (isAnalysis(state)) return JSON.stringify({ created: state.id, delivery: deliveryView(state),
           instruction: 'Read source and return findings early. Finish with submit_analysis; no synthetic implementation items, tests or commits. Project Skills are available as relevant investigation context.' })
         return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources, false, state, session)}\nBefore advance, load required skills (reuse prior successful loads in this task/session); choose on-demand skills only when relevant${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each required skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
@@ -2086,13 +2050,28 @@ export function registerDevTask(ctx: Context): void {
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
       const state = await loadTask(fs, a.task_id, cwd)
-      bindDeliveryIntent(exec.agent, state.delivery?.intent)
-      const workflow = await workflowFor(state, fs, cwd)
+      await bindTaskDelivery(ctx, exec.agent, state)
+      const executionProblem = taskExecutionProblem(state)
+      if (executionProblem && a.operation !== 'status') throw new Error(executionProblem)
+      const workflow = workflowFor(state)
       if (state.completed !== undefined && a.operation === 'complete') {
         return `task already completed at ${state.completed.at}`
       }
       if (state.completed !== undefined && a.operation !== 'status') {
         throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
+      }
+
+      if ((REQUIREMENT_OPERATIONS as readonly string[]).includes(a.operation)) {
+        if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? ''))))
+          throw new Error('a child dispatch is still active; wait or recover it before changing requirements')
+        try { return await executeRequirementCommand(a, { ctx, exec, state, cwd, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec) }) }
+        finally { await bindTaskDelivery(ctx, exec.agent, await loadTask(fs, state.id, cwd)) }
+      }
+      if (workflow.requirement_review && !state.completed) {
+        const problem = await requirementDocumentProblem(fs, state, cwd)
+        if ((!requirementConfirmed(state, workflow) || problem) && !['status', 'load_skill', 'record', 'scope', 'revise', 'advance'].includes(a.operation))
+          throw new Error(problem ?? '需求尚未由用户确认；先 clarify_requirement（有疑问时）、record、prepare_requirement、confirm_requirement，再实施')
+        if (problem && a.operation === 'advance') throw new Error(problem)
       }
 
       if (isAnalysis(state) && a.operation !== 'status') return await executeAnalysisCommand(a, {
@@ -2136,9 +2115,7 @@ export function registerDevTask(ctx: Context): void {
         return [`skill: ${a.skill_name}`, `current skill instructions:\n${content}`,
           resolved.length ? `rules attached to this skill:\n${resolved.map(rule => `### ${rule.source}:${rule.name}\n${rule.content}`).join('\n\n')}` : 'rules attached to this skill: none',
           'Skill loading policy: only required mounts have load/evidence gates. Select on-demand mounts by description and whenToUse; do not load unrelated Skills or manufacture skip/evidence records. Successful identical loads in this task/session are reusable across stages; stage artifacts, verification and review are separate obligations.',
-          state.delivery?.intent === 'implementation'
-            ? 'Task execution contract: implementation v1. Direct work uses plan/plan_execution, real verify and accept_item; no extra dispatch/review_item/items sequence is required. Dispatch is for delegation. Apply legacy procedural instructions only to legacy tasks; all applicable project code constraints remain in force.'
-            : 'Task execution contract: legacy. Follow the configured dispatch, review_item and items gates.'].join('\n\n')
+          'Task execution contract: implementation. Direct work uses plan/plan_execution, real verify and accept_item. Dispatch is for delegation. All applicable project code constraints remain in force.'].join('\n\n')
       }
 
       if (a.operation === 'status') {
@@ -2174,6 +2151,7 @@ export function registerDevTask(ctx: Context): void {
           id: state.id,
           stage: state.stage,
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
+          ...(executionProblem ? { execution_blocker: executionProblem } : {}),
           ...(state.delivery ? { delivery: deliveryView(state) } : {}),
           risk_level: state.risk_level,
           complexity: state.complexity ?? null,
@@ -2184,10 +2162,11 @@ export function registerDevTask(ctx: Context): void {
           completion_blockers: completionIssues,
           work_size: state.work_size,
           requirement_confirmed: state.requirement_confirmed,
+          requirements: requirementsView(state, !!await requirementDocumentProblem(fs, state, cwd), a.detail),
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
-          execution_policy: state.execution_policy ?? 'legacy-direct',
+          execution_policy: state.execution_policy ?? null,
           subagent_capabilities: executionCapabilities(ctx, !!exec.agent),
           execution_planning: state.delegation_version ? { required: true, operation: 'plan_execution',
             instruction: 'For every item record boundary, files, acceptance and execution_reason in orchestration or before implementation. Omit execution to route automatically. dispatch then uses the recorded plan; independent review uses review_dispatch before review_item.' } : { required: false },
@@ -2561,7 +2540,8 @@ export function registerDevTask(ctx: Context): void {
             if (target === undefined || !workflow.stages.includes(target)) {
               throw new Error('revise requires target_stage naming a stage of this flow: ' + workflow.stages.join(', '))
             }
-            if (target === state.stage && !(kind === 'defect' && ['开发', '代码开发'].includes(target)))
+            if (target === state.stage && !(kind === 'defect' && ['开发', '代码开发'].includes(target))
+              && !(kind === 'requirement' && workflow.requirement_review?.stage === target))
               throw new Error('same-stage revise is supported only for a defect in the implementation stage; otherwise choose an earlier target_stage')
             // Which stages are reachable backwards is a property of the flow, not of the
             // tool: any earlier stage is a legal place to resume from.
@@ -2617,6 +2597,7 @@ export function registerDevTask(ctx: Context): void {
             await compactSonarHistory(fs, state, cwd, mode)
             delete state.sonar_audit
             await writeTask(fs, state, cwd, mode)
+            await bindTaskDelivery(ctx, exec.agent, state)
             return 'revised (' + kind + ') back to "' + outcome.stage + '"; invalidated: ' + outcome.invalidated.join(', ')
               + '; affected_items: ' + (impact ?? state.items.map(item => item.id)).join(', ')
               + '; preserved_items: ' + state.items.filter(item => impact?.length && !impact.includes(item.id)).map(item => item.id).join(', ')
@@ -2664,6 +2645,7 @@ export function registerDevTask(ctx: Context): void {
             merged[field] = value === undefined || value === null ? '' : String(value)
           }
           state.artifacts[def.id] = merged
+          if (workflow.requirement_review?.artifact === def.id && state.requirements?.document?.source !== requirementSource(state, workflow.requirement_review)) invalidateRequirement(state)
           const missing = def.fields.filter(field => !merged[field] || merged[field].trim() === '')
           note = missing.length === 0
             ? `recorded ${def.name} ("${def.id}") — all required fields present`
@@ -2960,16 +2942,7 @@ export function registerDevTask(ctx: Context): void {
           const unresolvedRules = (await rulesForBinding(bindingsForStage(state.stage, workflow), fs, cwd, state.flow?.resources)).missing
           const resourceIssues = resourceBlockers(unresolvedRules, state.stage)
           if (resourceIssues.length) throw new Error(resourceIssues.join('; '))
-          let result = assertAdvance(state, target, workflow)
-          if (!result.ok) {
-            const unmet = unmetGuards(state, target, workflow)
-            const confirmations = unmet.filter(guard => CONFIRMATION_GUARDS.includes(guard))
-            const others = unmet.filter(guard => !CONFIRMATION_GUARDS.includes(guard))
-            // Confirmation gates are satisfied by a human approval, not the record.
-            if (confirmations.length > 0 && others.length === 0 && exec.agent !== undefined) {
-              result = await approveAdvance(ctx, state, target, workflow, confirmations, exec)
-            }
-          }
+          const result = assertAdvance(state, target, workflow)
           if (!result.ok) throw new Error(result.errors!.join('; '))
           state.stage = target
           const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, false, state, session)
@@ -2988,15 +2961,9 @@ export function registerDevTask(ctx: Context): void {
             break
           }
           if (target === 'high_risk') {
-            if (state.flow === undefined) {
-              throw new Error(
-                'legacy task has no frozen workflow snapshot — recreate (or migrate) the task before raising risk to high_risk; ' +
-                'a task without a frozen snapshot cannot prove its flow carries the high-risk capabilities',
-              )
-            }
             if (!workflowSatisfies(workflow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
               throw new Error(
-                `cannot raise risk to high_risk on flow "${state.flow.flow}" — it lacks the required capabilities ` +
+                `cannot raise risk to high_risk on flow "${state.flow!.flow}" — it lacks the required capabilities ` +
                 `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
               )
             }
@@ -3183,6 +3150,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       await writeTask(fs, state, cwd, approvedWriteMode ?? await resolveWriteMode(ctx, a, exec))
+      await bindTaskDelivery(ctx, exec.agent, state)
       return note ?? `ok (stage ${state.stage})`
       } finally { release?.() }
     },

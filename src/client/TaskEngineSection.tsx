@@ -159,6 +159,7 @@ export interface TaskLedgerItem {
 
 /** One task's ledger projection: identity, stage, and per-item audit trail. */
 export interface TaskLedgerEntry {
+  requirements?: import('../requirements.ts').RequirementsView
   delivery?: import('../delivery-contract.ts').DeliveryView
   evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
   verification_groups?: VerificationGroupView[]

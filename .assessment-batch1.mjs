@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 /**
  * Batch-1 reproductions for the 2026-09-23 external assessment.
  *
@@ -49,6 +50,7 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
     [join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)],
     [join(cwd, 'app.js'), 'source'],
   ])
+  confirmedRequirement(state,(p,c)=>records.set(join(cwd,p),c));records.set(join(cwd,'.dsh/task-LIVE-1.json'),JSON.stringify(state))
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }

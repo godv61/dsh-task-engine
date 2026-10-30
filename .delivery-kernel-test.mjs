@@ -45,7 +45,9 @@ function fixture() {
     writeText: async(t,text)=>{mkdirSync(dirname(t.targetKey),{recursive:true});writeFileSync(t.targetKey,text)} }
   let execute, runtime
   const children=new Map(), guards=[]
-  const ctx={fs, tools:{register(t){execute=t.execute},guard(fn){guards.push(fn)}},get:name=>name==='subagents'?runtime:name==='sessionQuery'?{
+  const ctx={fs, tools:{register(t){execute=t.execute},guard(fn){guards.push(fn)}},get:name=>name==='userQuestions'?{
+    ask:async request=>({answers:request.questions.map(q=>({id:q.id,selected:['确认无误，继续']}))})
+  }:name==='subagents'?runtime:name==='sessionQuery'?{
     observeSession:async id=>({header:{id},events:children.get(id)?.events??[],[Symbol.dispose](){}})
   }:name==='taskEngineReviewPolicy'?{preset:'task-engine-review',proof:id=>children.has(id)?{version:1,preset:'task-engine-review',child_id:id,tools:['read','grep','glob','structured_output']}:undefined}
     :name==='sandboxPolicy'?{resolve:()=>({mode:'workspace-write',workspaceRoot:cwd})}:name==='shell'?{resolve:r=>r,run:async spec=>{
@@ -58,7 +60,12 @@ function fixture() {
   const callRaw=args=>execute(args,{agent,signal:new AbortController().signal})
   const call=args=>callRaw({task_id:'KERNEL',...args})
   const state=()=>JSON.parse(readFileSync(join(cwd,'.dsh/task-KERNEL.json'),'utf8'))
-  return {cwd,ctx,agent,guards,call,callRaw,state,children,set runtime(value){runtime=value}}
+  const confirmRequirement=async()=>{
+    await call({operation:'record',artifact:'requirement',fields:{goal:'return value',scope:'local fixture',acceptance:'value returns 2'}})
+    const summary=JSON.parse(await call({operation:'prepare_requirement'}))
+    await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
+  }
+  return {cwd,ctx,agent,guards,call,callRaw,state,children,confirmRequirement,set runtime(value){runtime=value}}
 }
 const claim={file:'chain.py',start_line:1,end_line:2,quote:'return {"batch": data["batch"]}'}
 test('create reports missing contract fields before writing a task and allows a corrected retry',async()=>{
@@ -102,6 +109,7 @@ test('read-only analysis completes with source evidence and zero synthetic imple
 })
 test('new implementation plans default direct, accept atomically only after a real test receipt',async()=>{
   const f=fixture();await f.call({operation:'create',title:'implementation',branch:'test',intent:'implementation',intent_reason:'user asked to implement',complexity:'low',complexity_reason:'bounded module'})
+  await f.confirmRequirement()
   await f.call({operation:'load_skill',skill_name:'bundled:code-development'})
   const plan={id:'I1',title:'deliver value',files:['a.mjs','check.test.mjs'],acceptance:['value returns 2'],task_boundary:'independent',execution_reason:'small existing module; handoff offers no benefit'}
   await f.call({operation:'plan',plans:[plan]})
@@ -117,6 +125,7 @@ test('new implementation plans default direct, accept atomically only after a re
 })
 test('bulk plan validation is atomic; directories and bad dependencies leave no partial changes',async()=>{
   const f=fixture();await f.call({operation:'create',title:'plan',branch:'test',intent:'implementation',intent_reason:'implement',complexity:'low',complexity_reason:'small'})
+  await f.confirmRequirement()
   const before=f.state()
   await assert.rejects(()=>f.call({operation:'plan',plans:[{id:'I1',title:'bad',files:['.dsh'],acceptance:['works'],task_boundary:'local',execution_reason:'test'}]}),/non-regular/)
   assert.deepEqual(f.state(),before)

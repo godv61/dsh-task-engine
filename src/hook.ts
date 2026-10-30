@@ -18,19 +18,15 @@ import {
   commitCheckpoint,
   validateCommitMessage,
   type FlowSnapshot,
-  type StageBinding,
   type TaskState,
   type WorkflowConfig,
-  type ArtifactDef,
-  type CommitRule,
-  type ReviewDepth,
 } from './engine.ts'
-import { resolveFlow, type ProjectConfig } from './workflows.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { DEFAULT_RISK_POLICY, isSensitivePath } from './project.ts'
 import { sonarCommitBlockers } from './sonar.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
 import { groupInputs } from './verification-state.ts'
+import { requirementConfirmed, taskExecutionProblem } from './requirements.ts'
 import { lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 
 const messageFile = process.argv[2]
@@ -52,8 +48,7 @@ function readJson(abs: string): Record<string, unknown> | undefined {
 }
 
 /**
- * Fill every field missing from a legacy task record so the engine's pure
- * functions (`commitCheckpoint`, `checkFileScope`) never read an absent field.
+ * Normalize records for inspection; support checks run before executing gates.
  */
 function normalizeTask(task: Record<string, unknown>): TaskState {
   return {
@@ -63,11 +58,13 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
     branch: String(task.branch ?? ''),
     work_size: (task.work_size as TaskState['work_size']) ?? 'standard',
     risk_level: (task.risk_level as TaskState['risk_level']) ?? 'standard',
+    ...(task.delivery ? { delivery: task.delivery as NonNullable<TaskState['delivery']> } : {}),
     ...(task.complexity !== undefined ? { complexity: task.complexity as NonNullable<TaskState['complexity']> } : {}),
     ...(task.sonar_policy !== undefined ? { sonar_policy: task.sonar_policy as NonNullable<TaskState['sonar_policy']> } : {}),
     ...(task.sonar_audit !== undefined ? { sonar_audit: task.sonar_audit as NonNullable<TaskState['sonar_audit']> } : {}),
     stage: String(task.stage ?? ''),
     requirement_confirmed: task.requirement_confirmed === true,
+    ...(task.requirements ? { requirements: task.requirements as NonNullable<TaskState['requirements']> } : {}),
     solution_confirmed: task.solution_confirmed === true,
     items: Array.isArray(task.items) ? (task.items as TaskState['items']) : [],
     verification: (task.verification as TaskState['verification']) ?? { passed: false, evidence: [] },
@@ -196,9 +193,10 @@ function assertIndexMatchesWorktree(repoRoot: string, file: string): void {
   if (worktreeOid !== match[2]) refuse(`暂存区内容与已验证工作区不一致：${file}；重新暂存并验证`)
 }
 
-/** A pattern-less legacy flow may select only an unambiguous active task on this branch. */
+/** Read-only historical/analysis records cannot compete with an executable task. */
 function pickTask(tasks: { file: string; task: TaskState }[], branch: string): TaskState | undefined {
-  const candidates = tasks.filter(({ task }) => task.branch === branch && task.stage !== '完成' && task.completed === undefined)
+  const candidates = tasks.filter(({ task }) => task.branch === branch && task.stage !== '完成' && task.completed === undefined
+    && !taskExecutionProblem(task) && task.delivery?.intent !== 'analysis')
   if (candidates.length > 1) {
     refuse(`当前分支有多个未完成任务（${candidates.map(({ task }) => task.id).join('、')}）；请在提交消息开头写明【任务ID】`)
   }
@@ -265,47 +263,6 @@ function riskVerified(state: TaskState): boolean {
     && !receipt.aborted
 }
 
-/** The standard preset, applied when the project has no `.dsh/eng.json` at all. */
-function defaultConfig(): WorkflowConfig {
-  const resolved = resolveFlow('standard')
-  if (!resolved.ok) throw new Error('built-in "standard" preset is missing')
-  return resolved.config
-}
-
-/**
- * Resolve the project's live workflow — used only as a FALLBACK when a legacy
- * task record carries no frozen snapshot. Mirrors `dev_task` `resolveWorkflow`:
- * no file → standard; missing/unknown `flow` → fail closed (never silent fallback).
- */
-  function loadWorkflow(parsed: { flow?: string; stage_bindings?: unknown; skill_profiles?: unknown; commit?: unknown; artifacts?: unknown; review_depth?: unknown; commit_required?: unknown } | undefined): WorkflowConfig {
-  if (parsed === undefined) return defaultConfig()
-  const flow = parsed.flow
-  if (typeof flow !== 'string' || flow.trim() === '') {
-    refuse('项目 .dsh/eng.json 缺 "flow" 字段——设为 standard|agile|minimal，或删除该文件')
-  }
-  // The hook validates the same contract the tool does, so it reads the same whole
-  // config: narrowing to stage_bindings would let the hook judge a commit against a
-  // different commit rule than the one the tool authorised it under.
-  const project = {
-    flow,
-    ...(typeof parsed.stage_bindings === 'object' && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings)
-      ? { stage_bindings: parsed.stage_bindings as Record<string, StageBinding> }
-      : {}),
-    ...(typeof parsed.skill_profiles === 'object' && parsed.skill_profiles !== null && !Array.isArray(parsed.skill_profiles)
-      ? { skill_profiles: parsed.skill_profiles as NonNullable<ProjectConfig['skill_profiles']> }
-      : {}),
-    ...(typeof parsed.commit === 'object' && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit as CommitRule } : {}),
-    ...(Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts as ArtifactDef[] } : {}),
-    ...(typeof parsed.review_depth === 'string' ? { review_depth: parsed.review_depth as ReviewDepth } : {}),
-    ...(typeof parsed.commit_required === 'boolean' ? { commit_required: parsed.commit_required } : {}),
-  }
-  const resolved = resolveFlow(flow, project)
-  if (!resolved.ok) {
-    refuse(`未知流程 "${resolved.flow}"（已知流程：${resolved.knownFlows.join('、')}）`)
-  }
-  return resolved.config
-}
-
 // --- the gate ---
 if (!messageFile) {
   process.exit(0)
@@ -331,6 +288,7 @@ if (taskId !== undefined) {
 if (!state) {
   refuse('当前分支没有可提交的 dev_task 任务——请先建立任务，或在提交消息开头写明【任务ID】')
 }
+if (state.completed !== undefined) refuse('此任务已归档，仅可查看；请新建任务后提交')
 const branch = currentBranch()
 if (!branch || branch === 'HEAD' || state.branch !== branch) {
   refuse(`任务 ${state.id} 记录的分支是 ${state.branch}，当前 Git 分支是 ${branch || '未知'}；请切回任务分支`)
@@ -340,18 +298,15 @@ if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.fl
   refuse(`任务 ${state.id} 的流程快照 hash 不匹配——task 记录在创建后被改动过，修复或重建任务后再提交`)
 }
 
-// A task snapshot is authoritative. Only pre-snapshot records consult eng.json.
+const executionProblem = taskExecutionProblem(state)
+if (executionProblem) refuse(executionProblem)
+
+// Execution requires a current task snapshot.
 let config: WorkflowConfig
 if (state.flow !== undefined && state.flow.config !== undefined) {
   config = state.flow.config
 } else {
-  const configPath = path.join(state.root ?? cwd, '.dsh', 'eng.json')
-  if (fs.existsSync(configPath)) {
-    let parsed: { flow?: string; stage_bindings?: unknown }
-    try { parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { flow?: string; stage_bindings?: unknown } }
-    catch (error) { refuse('invalid JSON in .dsh/eng.json: ' + (error instanceof Error ? error.message : String(error))) }
-    config = loadWorkflow(parsed)
-  } else config = loadWorkflow(undefined)
+  refuse('此任务缺少流程快照，请重新创建任务后提交')
 }
 
 const verdict = validateCommitMessage(message, config)
@@ -359,6 +314,15 @@ if (!verdict.ok) {
   refuse(verdict.errors?.[0] ?? 'commit summary does not match the configured pattern')
 }
 
+if (config.requirement_review) {
+  if (!requirementConfirmed(state, config)) refuse('当前需求版本尚未由用户确认')
+  const doc = state.requirements!.document!, workspace = state.root ?? cwd
+  const documentPath = path.resolve(workspace, doc.path)
+  const outside = (file: string) => { const rel = path.relative(fs.realpathSync(workspace), file); return rel.startsWith('..') || path.isAbsolute(rel) }
+  try {
+    if (outside(fs.realpathSync(documentPath)) || hashText(fs.readFileSync(documentPath, 'utf8')) !== doc.hash) refuse('需求文档已变化；请修订并重新确认')
+  } catch { refuse('需求文档无法核对；请修订并重新确认') }
+}
 const checkpoint = commitCheckpoint(state, config)
 if (!checkpoint.allowed) {
   refuse((checkpoint.reason ?? 'commit checkpoint rejected') + '（当前阶段: ' + state.stage + '）')

@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, lstatSync } from 'node:fs'
@@ -10,9 +11,10 @@ import { todosBlockers } from './lib/engine.js'
 
 const all = { spawn: true, fork: true, reviewer: true }
 const none = { spawn: false, fork: false, reviewer: false }
-const planInput = { execution_reason: '明确的文件范围、接口和可独立验证的交付', task_boundary: 'independent', files: ['a.mjs','check.test.mjs'], acceptance: ['value() 返回 2'] }
-async function fixture({ legacy = false, policy = 'auto', loadingPolicy = false } = {}) {
+const planInput = { delegation_benefit: 'context_isolation', execution_reason: '明确的文件范围、接口和可独立验证的交付', task_boundary: 'independent', files: ['a.mjs','check.test.mjs'], acceptance: ['value() 返回 2'] }
+async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk' } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), 'task-execution-policy-'))
+  mkdirSync(join(cwd, '.dsh'), { recursive: true })
   writeFileSync(join(cwd, 'a.mjs'), 'export const value = () => 2\n')
   writeFileSync(join(cwd, 'check.test.mjs'), "import {test} from 'node:test';import assert from 'node:assert/strict';import{value}from'./a.mjs';test('delivered value',()=>assert.equal(value(),2));")
   if (loadingPolicy) {
@@ -51,9 +53,10 @@ async function fixture({ legacy = false, policy = 'auto', loadingPolicy = false 
       events.push({type:'tool/result',data:{message:{toolCallId:callId,content:[{type:'text',text}]}}});return text
     } catch(error) { events.push({type:'tool/result',data:{message:{toolCallId:callId,isError:true}}});throw error }
   }
-  await call({operation:'create', title:'execution strategy test',branch:'test',files:['a.mjs','check.test.mjs'],
-    ...legacy ? {} : {complexity:'low',complexity_reason:'bounded module',execution_policy:policy},items:[{id:'I1',title:'deliver module'}]})
-  if (!legacy) await call({operation:'plan_verification',verification_group:'module',command:'node --test check.test.mjs',files:['a.mjs','check.test.mjs'],item_ids:['I1']})
+  await call({operation:'create', intent:'implementation', intent_reason:'Fixture implementation', complexity:'low', complexity_reason:'Fixture unit', risk_level:risk, title:'execution strategy test',branch:'test',files:['a.mjs','check.test.mjs'],
+    execution_policy:policy,items:[{id:'I1',title:'deliver module'}]})
+  { const p=join(cwd,'.dsh/task-POLICY-1.json'); const accepted=JSON.parse(readFileSync(p,'utf8')); confirmedRequirement(accepted,(f,c)=>{mkdirSync(dirname(join(cwd,f)),{recursive:true});writeFileSync(join(cwd,f),c)});writeFileSync(p,JSON.stringify(accepted)) }
+  await call({operation:'plan_verification',verification_group:'module',command:'node --test check.test.mjs',files:['a.mjs','check.test.mjs'],item_ids:['I1']})
   const taskPath = join(cwd,'.dsh/task-POLICY-1.json')
   const state = () => JSON.parse(readFileSync(taskPath,'utf8'))
   const save = s => writeFileSync(taskPath,JSON.stringify(s))
@@ -64,10 +67,8 @@ async function fixture({ legacy = false, policy = 'auto', loadingPolicy = false 
       assert.equal(spec.delivery,'caller');assert.equal(spec.request.cwd,cwd)
       const reviewer = request.label.endsWith('/review')
       calls.push({provider,reviewer,request,spec})
-      if (!legacy) {
-        assert.match(request.prompt[0].text, /current skill instructions for this task/)
-        assert.match(request.prompt[0].text, /# 代码开发元技能/)
-      }
+      assert.match(request.prompt[0].text, /current skill instructions for this task/)
+      assert.match(request.prompt[0].text, /# 代码开发元技能/)
       if (reviewer) { assert.equal(request.agentPreset,'task-engine-review');assert.equal(request.toolFilter,undefined);assert.match(request.prompt[0].text,/Applicable project Skills and Rules/);assert.match(request.prompt[0].text,/code-development/);assert.match(request.prompt[0].text,/code-review/) }
       const childId=reviewer?'review-child':'implementation-child'
       children.set(childId,()=>reviewer?state().items[0].execution_plan.files.flatMap((file,index)=>{
@@ -195,12 +196,10 @@ test('parent cannot replace independent failures with a self-reported pass', asy
   await f.call({operation:'review_item',item_id:'I1',spec_outcome:'fail',quality_outcome:'fail'})
   await assert.rejects(()=>f.call({operation:'items',items:[{id:'I1',status:'done'}]}),/independent review/)
 })
-test('unavailable host selects an explicit main-session fallback; legacy records remain executable', async () => {
+test('unavailable host selects an explicit main-session fallback', async () => {
   const f=await fixture();f.runtime=undefined
   await f.call({operation:'plan_execution',item_id:'I1',...planInput})
   assert.equal(f.state().items[0].execution_plan.mode,'direct');assert.match(f.state().items[0].execution_plan.reason,/不可用/)
-  const legacy=await fixture({legacy:true});const state=legacy.state();state.stage='开发';legacy.save(state)
-  await legacy.call({operation:'dispatch',item_id:'I1'});assert.equal(legacy.state().items[0].status,'doing')
 })
 test('malformed reviewer output and fabricated acceptance metadata do not close the item', async () => {
   assert.throws(()=>parseIndependentReview('looks good'))
@@ -253,7 +252,7 @@ test('three completed verdicts cap only the same code, dispatch, plan and constr
   const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput});await f.call({operation:'dispatch',item_id:'I1'});await f.call({operation:'verify',command:'node --test check.test.mjs'})
   for(let i=0;i<3;i++)await f.call({operation:'review_dispatch',item_id:'I1'})
   await assert.rejects(()=>f.call({operation:'review_dispatch',item_id:'I1'}),/three completed/)
-  const s=f.state();s.artifacts={'changed-requirement':{scope:'new acceptance context'}};f.save(s)
+  const s=f.state();s.artifacts={...s.artifacts,'changed-requirement':{scope:'new acceptance context'}};f.save(s)
   await assert.rejects(()=>f.call({operation:'review_item',item_id:'I1',spec_outcome:'pass',quality_outcome:'pass'}),/context changed/)
   await f.call({operation:'review_dispatch',item_id:'I1'})
   assert.equal(f.state().items[0].independent_review.status,'completed')
@@ -284,7 +283,7 @@ test('partial successful reads cannot authorize a real item, and a later full re
   f.runtime.startActivation=start;await f.call({operation:'review_dispatch',item_id:'I1'});assert.equal(f.state().items[0].independent_review.read_coverage[0].lines,101)
 })
 test('unowned task files block implementation and adaptive main-session done requires current tests and review', async () => {
-  const f=await fixture();await f.call({operation:'plan_execution',item_id:'I1',...planInput,files:['a.mjs']})
+  const f=await fixture({risk:"standard"});await f.call({operation:'plan_execution',item_id:'I1',...planInput,files:['a.mjs']})
   await assert.rejects(()=>f.call({operation:'dispatch',item_id:'I1'}),/no implementation-plan owner/)
   await f.call({operation:'plan_execution',item_id:'I1',...planInput,task_boundary:'local'});await f.call({operation:'dispatch',item_id:'I1'})
   await assert.rejects(()=>f.call({operation:'items',items:[{id:'I1',status:'done'}]}),/review is missing/)

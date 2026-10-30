@@ -8,7 +8,7 @@ whenToUse: 自适应任务进入测试元技能时。
 
 根据验收条件选择场景，运行真实测试命令，并通过 `dev_task verify` 保存回执。构建可作为辅助检查，但仅编译或跳过测试的命令不能作为测试组计划。失败时先修复再重新运行；测试范围应覆盖本次改动及其主要回归风险。
 
-新任务按 status.verification_planning 中声明的组执行 `verify verification_group=...`。每组独立保存真实回执，全部必要组通过且输入指纹有效才可验收。声明 files 时包含生产代码、测试及相关构建/配置；跨项依赖输入由引擎保守纳入。哈希只判断证据是否过期，测试覆盖仍需按验收条件核对。旧任务仍可使用原 verify；通过 plan_verification 显式启用分组后须取得各组新回执，不把旧全局回执追认成多组通过。
+按 status.verification_planning 中声明的组执行 `verify verification_group=...`。每组独立保存真实回执，全部必要组通过且输入指纹有效才可验收。声明 files 时包含生产代码、测试及相关构建/配置；跨项依赖输入由引擎保守纳入。哈希只判断证据是否过期，测试覆盖仍需按验收条件核对。不把已有全局回执追认成多组通过。
 
 NO_TEST_SUMMARY 表示没有可识别的非零测试摘要；使用 node:test、Surefire/Failsafe、pytest 等实际运行器，不自行打印测试数量。环境拒绝、超时和取消应如实记录，不能说成功。Windows Node 测试若因子进程管道报 EPERM，确认版本支持且本组适合共享进程后可使用 --experimental-test-isolation=none，并更新命令计划、记录模式；不自动修改权限或关闭沙箱。新一次失败始终优先于同组旧通过。
 
