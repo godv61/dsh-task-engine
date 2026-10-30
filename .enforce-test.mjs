@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 /**
  * The three enforcement gaps the assessment found, tested as behaviour.
  *
@@ -44,15 +45,21 @@ async function project() {
   registerDevTask(ctx)
   const exec = { agent: { session: { id: 'e', header: { cwd }, snapshotEvents: () => events } }, signal: new AbortController().signal }
   const call = async args => execute(JSON.parse(JSON.stringify({ task_id: 'E-1', ...args })), exec)
-  await call({ operation: 'create', title: 't', branch: 'main', files: ['a.js'] })
+  await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit', title: 't', branch: 'main', files: ['a.js'] })
   const state = JSON.parse(records.get(join(cwd, '.dsh/task-E-1.json')))
+  delete state.flow.hash
+  state.flow.config = resolveFlow('standard', { ...adopted, stage_bindings }).config
+  delete state.delegation_version; delete state.execution_policy; delete state.verification_version; delete state.delivery
   state.stage = '开发'
+  confirmedRequirement(state, (p,c) => records.set(join(cwd,p),c))
   state.requirement_confirmed = true
   state.solution_confirmed = true
   records.set(join(cwd, '.dsh/task-E-1.json'), JSON.stringify(state))
-  const load = name => {
+  const load = async name => {
+    const skill_name = `project:${name}`
+    await call({operation:'load_skill',skill_name})
     const callId = 'c' + events.length
-    events.push({ type: 'tool/call', data: { name: 'skill', callId, arguments: JSON.stringify({ name }) } })
+    events.push({ type: 'tool/call', data: { name:'dev_task',callId,arguments:JSON.stringify({operation:'load_skill',task_id:'E-1',skill_name}) } })
     events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: callId, isError: false }] } } })
   }
   const current = () => JSON.parse(records.get(join(cwd, '.dsh/task-E-1.json')))
@@ -65,10 +72,10 @@ async function satistfyDevelopment(f) {
   await f.call({ operation: 'dispatch', item_id: 'A', description: 'd' })
   await f.call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' })
   await f.call({ operation: 'items', items: [{ id: 'A', status: 'done' }] })
-  for (const entry of f.current().flow.config.stage_bindings['开发'].skills) f.load(entry.skill.name)
+  for (const entry of f.current().flow.config.stage_bindings['开发'].skills) await f.load(entry.skill.name)
 }
 
-test('enforce: a task WITHOUT a snapshot cannot advance while a bound rule is unresolvable', async () => {
+test('enforce: a task WITHOUT frozen resource bodies cannot advance while a bound rule is unresolvable', async () => {
   // The disclosed-but-unenforced case: status said the rule was missing and advance
   // still succeeded, so the stage completed without the constraint.
   const f = await project()

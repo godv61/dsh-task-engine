@@ -125,7 +125,7 @@ try {
 // Resource package behavior from the installed artifact, including the commit
 // hook running for real inside throwaway repositories.
 try {
-  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs .delivery-kernel-test.mjs .evidence-hardening-test.mjs .skill-loading-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
+  const out = execSync('node --test --test-reporter=tap .resource-test.mjs .workflow-test.mjs .hook-test.mjs .preset-test.mjs .adaptive-test.mjs .gradle-report-test.mjs .execution-policy-test.mjs .boundary-fixes-test.mjs .repair-test.mjs .init-repository-test.mjs .init-progress-test.mjs .rc3-runtime-test.mjs .delivery-kernel-test.mjs .evidence-hardening-test.mjs .skill-loading-test.mjs .requirements-test.mjs', { cwd: installedDir, encoding: 'utf8', stdio: 'pipe' })
   check('in-package resource, workflow and hook behavior', /# fail 0/u.test(out))
 } catch (error) {
   const lines = String(error.stdout || error.stderr || error).split('\n')

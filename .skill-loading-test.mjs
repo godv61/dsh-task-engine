@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve, sep } from 'node:path'
@@ -47,6 +48,7 @@ function fixture(meta, mapEvidence = 'none') {
     try {
       const text = await execute(input, { agent: { session }, callId, signal: new AbortController().signal })
       events.push({ type: 'tool/result', data: { message: { toolCallId: callId, content: [{ type: 'text', text }] } } })
+      if (input.operation === 'create' || input.operation === 'record' && input.artifact === 'requirement') { const p = join(cwd, `.dsh/task-${input.task_id}.json`); const state = JSON.parse(files.get(p)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(p,JSON.stringify(state)) }
       return text
     } catch (error) {
       events.push({ type: 'tool/result', data: { message: { toolCallId: callId, isError: true } } })
@@ -56,7 +58,7 @@ function fixture(meta, mapEvidence = 'none') {
   return { cwd, fs, files, put, call, logs,
     state: (id = 'LOAD-1') => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))),
     create: (grade = 'medium', id = 'LOAD-1') => call({ operation: 'create', task_id: id, title: 'Backend-only change',
-      branch: 'test', complexity: grade, complexity_reason: 'A bounded backend change', files: ['app.js'] }),
+      intent: 'implementation', intent_reason: 'Fixture implementation', branch: 'test', complexity: grade, complexity_reason: 'A bounded backend change', files: ['app.js'] }),
     load: name => call({ operation: 'load_skill', skill_name: name }),
     recordRequirement: () => call({ operation: 'record', artifact: 'requirement', fields: { goal: 'Fix backend', scope: 'Backend only', acceptance: 'Existing behavior preserved' } }),
   }

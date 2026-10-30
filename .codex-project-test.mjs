@@ -70,14 +70,17 @@ test('a bound Codex Skill loads its attached DSH Rule and reads edits next time'
   const rule = { source: 'project', name: 'shared' }
   const project = { flow: 'minimal', stage_bindings: { '开发': { skill_refs: [ref] } }, skill_profiles: { 'codex-project:sample': { rules: [rule], evidence: 'none' } } }
   put(join(root, '.dsh/eng.json'), JSON.stringify(project))
+  put(join(root, '.agents/skills/sample/profile.json'),JSON.stringify({rules:[rule],evidence:'none'}))
+  put(join(root, '.dsh/meta.json'), JSON.stringify({meta_bindings:{'code-development':['sample']}}))
   assert.deepEqual(validateWorkflow(resolveFlow('minimal', project).config), [])
   const fs = diskFs(), tools = []
   registerDevTask({ fs, tools: { register(tool) { tools.push(tool) } }, get() { return undefined } })
   const execute = tools[0].execute
   const events = []
   const session = { id: 'test-session', header: { cwd: root }, snapshotEvents: () => events }
-  const run = (args, callId = 'call') => execute(args, { agent: { session }, callId, signal: undefined })
-  await run({ operation: 'create', task_id: 'T1', title: 'Test', branch: 'main' })
+  const run = async (args, callId = 'call') => { events.push({type:'tool/call',data:{name:'dev_task',callId,arguments:JSON.stringify(args)}}); const result=await execute(args,{agent:{session},callId,signal:undefined});events.push({type:'tool/result',data:{message:{toolCallId:callId,isError:false}}});return result }
+  await run({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit', task_id: 'T1', title: 'Test', branch: 'main' })
+  await run({operation:'load_skill',task_id:'T1',skill_name:'bundled:code-development'},'load-core')
   const first = await run({ operation: 'load_skill', task_id: 'T1', skill_name: 'codex-project:sample' }, 'load-1')
   assert.match(first, /Skill v1/)
   assert.match(first, /Rule v1/)

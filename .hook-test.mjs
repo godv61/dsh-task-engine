@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 /**
  * End-to-end test for the installed commit-msg hook.
  *
@@ -21,6 +22,49 @@ import { join, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 
 const HOOK = resolve('hooks/commit-msg')
+
+test('hook preserves versioned business confirmation and refuses a changed requirement document', async () => {
+  const { hashText, hashConfig } = await import('./lib/snapshot.js')
+  const { requirementSource } = await import('./lib/requirements.js')
+  const config = { stages: ['dev', 'done'], start_stage: 'dev', transitions: [{ from: 'dev', to: 'done', requires: ['requirement_confirmation'] }],
+    artifacts: [{ id: 'requirement', stage: 'dev', name: 'requirement', fields: ['goal'] }],
+    requirement_review: { version: 1, stage: 'dev', artifact: 'requirement' }, high_risk_requires_verification: false,
+    commit: { policy: 'task', checkpoints: ['dev'], message_pattern: '', message_hint: '', file_scope: true } }
+  const task = { schema: 1, id: 'REQ-HOOK', title: 'Requirement fixture', branch: 'main', stage: 'dev', work_size: 'tiny', risk_level: 'standard',
+    flow: { flow: 'fixture', version: 2, config, hash: hashConfig(config) }, artifacts: { requirement: { goal: 'one local change' } },
+    items: [], files: ['src/app.js'], commits: [], verification: { passed: false, evidence: [] }, review: { outcome: 'pending' },
+    requirement_confirmed: false, solution_confirmed: false, requirements: { clarifications: [] } }
+  const body = '# Requirement fixture\n', doc = { version: 1, path: 'docs/requirements/REQ-HOOK.md', hash: hashText(body), content: body,
+    status: 'awaiting_confirmation', source: requirementSource(task, config.requirement_review) }
+  task.requirements.document = doc
+  const root = await repo('requirement-review', task)
+  assert.ok(root.startsWith(join(tmpdir(), 'engine-hook-')))
+  try {
+    mkdirSync(join(root, 'docs/requirements'), { recursive: true }); writeFileSync(join(root, doc.path), body)
+    assert.match(tryCommit(root, 'feat: fixture').stderr, /需求版本尚未由用户确认/)
+    doc.status = 'confirmed'; doc.confirmation = { hash: doc.hash, version: 1, at: '2026-10-30T00:00:00Z', session_id: 'human' }
+    task.requirement_confirmed = true
+    writeFileSync(join(root, '.dsh/task-REQ-HOOK.json'), JSON.stringify(task))
+    writeFileSync(join(root, doc.path), '# Changed')
+    assert.match(tryCommit(root, 'feat: fixture').stderr, /需求文档已变化/)
+    writeFileSync(join(root, doc.path), body); git(root, ['add', doc.path])
+    const allowed = tryCommit(root, 'feat: fixture')
+    assert.equal(allowed.allowed, true, allowed.stderr)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
+
+test('hook refuses a task without the current requirement contract even when its old boolean says approved', async () => {
+  const { hashConfig } = await import('./lib/snapshot.js')
+  const root = await repo('old-contract', approvedTask({flow:{flow:'standard',version:1,config:await standardConfig()}}))
+  try {
+    const file=join(root,'.dsh/task-HOOK-1.json'), task=JSON.parse(readFileSync(file,'utf8'))
+    delete task.flow.config.requirement_review
+    task.flow.hash=hashConfig(task.flow.config);task.requirement_confirmed=true
+    writeFileSync(file,JSON.stringify(task))
+    const result=tryCommit(root,'【HOOK-1】【TASK】old contract')
+    assert.equal(result.allowed,false);assert.match(result.stderr,/仅可查看.*重新创建/)
+  } finally {rmSync(root,{recursive:true,force:true})}
+})
 
 /**
  * Git runs a hook by handing it to its own POSIX shell, which resolves
@@ -85,6 +129,7 @@ async function repo(name, task) {
   const gate = readFileSync(HOOK, 'utf8').replace(/^#![^\n]*\n/u, '')
   writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`, { mode: 0o755 })
   writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{\n  "type": "commonjs"\n}\n')
+  if (task.id !== 'REQ-HOOK' && task.flow?.config && !task.requirements?.document) confirmedRequirement(task, (p,c) => { mkdirSync(join(root,p,'..'),{recursive:true}); writeFileSync(join(root,p),c) })
   writeFileSync(join(root, '.dsh', `task-${task.id}.json`), JSON.stringify(task, null, 2))
   writeFileSync(join(root, 'src', 'app.js'), 'console.log(1)\n')
   git(root, ['add', 'src/app.js'])
@@ -146,6 +191,29 @@ test('a task at its checkpoint with the right message commits', async () => {
   }
 })
 
+test('read-only old tasks on the same branch do not prevent selecting the current task', async () => {
+  const config=await standardConfig();config.commit.message_pattern='';config.commit.message_hint=''
+  const root=await repo('old-and-current',approvedTask({flow:{flow:'standard',version:2,config}}))
+  try {
+    const task=JSON.parse(readFileSync(join(root,'.dsh/task-HOOK-1.json'),'utf8'))
+    const old={...task,id:'OLD',flow:{...task.flow,config:structuredClone(task.flow.config)}}
+    delete old.flow.config.requirement_review;delete old.flow.hash
+    const oldPath=join(root,'.dsh/task-OLD.json'), oldBytes=JSON.stringify(old)
+    writeFileSync(oldPath,oldBytes)
+    const result=tryCommit(root,'feat: current task delivery')
+    assert.equal(result.allowed,true,result.stderr)
+    assert.equal(readFileSync(oldPath,'utf8'),oldBytes)
+  } finally {rmSync(root,{recursive:true,force:true})}
+})
+
+test('an archived task cannot authorize a commit even when the message explicitly names it', async () => {
+  const root=await repo('archived-explicit',approvedTask({completed:{at:'2026-10-30T00:00:00Z'},flow:{flow:'standard',version:2,config:await standardConfig()}}))
+  try {
+    const result=tryCommit(root,'【HOOK-1】【TASK】archived task')
+    assert.equal(result.allowed,false);assert.match(result.stderr,/已归档，仅可查看/)
+  } finally {rmSync(root,{recursive:true,force:true})}
+})
+
 test('the installed hook rejects a failed verification on a current task', async () => {
   const config = await standardConfig()
   const root = await repo('failed-verification', approvedTask({
@@ -192,9 +260,9 @@ test('the installed hook finds a registered task in a monorepo subdirectory', as
     writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`, { mode: 0o755 })
     writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{ "type": "commonjs" }\n')
     writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{ "roots": ["module"] }\n')
-    writeFileSync(join(sub, '.dsh', 'task-HOOK-1.json'), JSON.stringify(approvedTask({
-      root: sub, files: ['src/app.js'], flow: { flow: 'standard', version: 2, config },
-    })))
+    const task = approvedTask({root:sub,files:['src/app.js'],flow:{flow:'standard',version:2,config}})
+    confirmedRequirement(task,(p,c)=>{mkdirSync(join(sub,p,'..'),{recursive:true});writeFileSync(join(sub,p),c)})
+    writeFileSync(join(sub,'.dsh/task-HOOK-1.json'),JSON.stringify(task))
     writeFileSync(join(sub, 'src', 'app.js'), 'console.log(1)\n')
     git(root, ['add', 'module/src/app.js'])
     await stampReceipt(sub, join(sub, '.dsh', 'task-HOOK-1.json'))

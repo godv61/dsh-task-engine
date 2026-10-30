@@ -17,6 +17,7 @@ import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
 import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
+import { invalidateRequirement, requirementConfirmed, type RequirementPolicy, type RequirementsState } from './requirements.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -191,6 +192,8 @@ export interface StageBinding {
 export type ReviewDepth = 'two-stage' | 'single'
 
 export interface WorkflowConfig {
+  /** Business confirmation belongs to a specific generated requirement version. */
+  requirement_review?: RequirementPolicy
   stages: string[]
   start_stage: string
   transitions: Transition[]
@@ -435,6 +438,7 @@ export interface TaskState {
   flow?: FlowSnapshot
   stage: string
   requirement_confirmed: boolean
+  requirements?: RequirementsState
   solution_confirmed: boolean
   items: TaskItem[]
   verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt; scope_hash?: string; problems?: string[] }
@@ -502,6 +506,13 @@ const GUARD_NAMES: readonly GuardName[] = [
  */
 export function validateWorkflow(config: WorkflowConfig): string[] {
   const problems: string[] = [...(config.configuration_errors ?? [])]
+  if (config.requirement_review) {
+    const review = config.requirement_review
+    if (review.version !== 1 || !config.stages.includes(review.stage)
+      || !config.artifacts.some(def => def.id === review.artifact && def.stage === review.stage)
+      || !config.transitions.some(edge => edge.from === review.stage && edge.requires?.includes('requirement_confirmation')))
+      problems.push('requirement_review requires a valid stage, artifact and requirement_confirmation transition')
+  }
   if (config.stages.length === 0) problems.push('stages must not be empty')
   const seen = new Set<string>()
   for (const stage of config.stages) {
@@ -692,7 +703,7 @@ export function todosBlockers(state: TaskState, config?: WorkflowConfig): string
 function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConfig): boolean {
   switch (guard) {
     case 'requirement_confirmation':
-      return state.requirement_confirmed
+      return requirementConfirmed(state, config)
     case 'solution_confirmation':
       return state.solution_confirmed
     case 'todos_done':
@@ -894,6 +905,7 @@ export function verificationBlockers(state: TaskState, config: WorkflowConfig): 
  * hold, so the engine cannot be asked to commit before its own state is valid.
  */
 export function commitCheckpoint(state: TaskState, config: WorkflowConfig): CommitCheckpoint {
+  if (config.requirement_review && !requirementConfirmed(state, config)) return { allowed: false, reason: '当前需求版本尚未由用户确认' }
   const { policy, checkpoints } = config.commit
   if (policy === 'manual') {
     return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
@@ -1009,6 +1021,7 @@ export function terminalRequirements(config: WorkflowConfig): GuardName[] {
 export function completionBlockers(state: TaskState, config: WorkflowConfig): string[] {
   const blockers: string[] = [...analysisBlockers(state)]
   if (state.completed !== undefined) return []
+  if (config.requirement_review && !requirementConfirmed(state, config)) blockers.push('当前需求版本尚未由用户确认')
   if (!isTerminalStage(state.stage, config)) {
     blockers.push(`task is at "${state.stage}", which is not a final stage; advance to one of: ${config.stages.filter(s => isTerminalStage(s, config)).join(', ')}`)
   }
@@ -1114,7 +1127,7 @@ export function applyRevision(state: TaskState, revision: TaskRevision, currentV
       && run.receipt.scope_hash === currentVerificationHashes[group.id] && receiptProblems(run.receipt).length === 0) reusableRuns.add(run.id)
   }
   const cleared = invalidatedBy(revision.kind)
-  if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
+  if (cleared.includes('requirement_confirmation')) invalidateRequirement(state)
   if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
   if (cleared.includes('verification')) {
     state.verification = { passed: false, evidence: [] }
@@ -1203,7 +1216,8 @@ function isEngineMeta(file: string): boolean {
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }
-  const outside = committing.filter(file => !state.files.includes(file) && !isEngineMeta(file))
+  const requirementDocument = config.requirement_review ? state.requirements?.document?.path : undefined
+  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }

@@ -65,6 +65,7 @@ const stageBindingSchema = z.object({
 
 /** The complete workflow config. Structural only: semantic checks live in `validateWorkflow`. */
 const configSchema = z.object({
+  requirement_review: z.object({ version: z.literal(1), stage: z.string(), artifact: z.string() }).optional(),
   stages: z.array(z.string()),
   start_stage: z.string(),
   transitions: z.array(transitionSchema),
@@ -270,6 +271,9 @@ const taskLedgerViewSchema = z.object({
   next_cursor: z.string().optional(), total_count: z.number().optional(),
   errors: z.array(z.object({ file: z.string(), message: z.string() })).optional(),
   tasks: z.array(z.object({
+    requirements: z.object({ status: z.enum(['clarifying', 'draft', 'awaiting_confirmation', 'confirmed', 'changes_requested', 'stale']),
+      pending_questions: z.number(), path: z.string().optional(), version: z.number().optional(), hash: z.string().optional(),
+      confirmed_at: z.string().optional(), feedback: z.string().optional(), content: z.string().optional() }).optional(),
     delivery: deliveryViewSchema.optional(),
     evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
     verification_groups: z.array(z.object({ id: z.string(), command: z.string(),

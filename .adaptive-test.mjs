@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve, sep } from 'node:path'
@@ -57,7 +58,12 @@ function fixture(extra = {}, services = {}) {
   } }
   registerDevTask(ctx)
   const exec = { agent: { session }, signal: new AbortController().signal }
-  return { cwd, files, fs, events, call: args => execute(args, exec), state: id => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))) }
+  const call = async args => {
+    const text = await execute(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', ...args } : args, exec)
+    if (args.operation === 'create') { const path = join(cwd, `.dsh/task-${args.task_id}.json`); const state = JSON.parse(files.get(path)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(path, JSON.stringify(state)) }
+    return text
+  }
+  return { cwd, files, fs, events, call, state: id => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))) }
 }
 
 const PROJECT_META_SKILLS = ['requirements-analysis', 'architecture-design', 'task-orchestration',

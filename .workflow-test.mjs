@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
@@ -56,6 +57,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     [join(cwd, 'app.js'), 'source'],
     [join(cwd, '.dsh/skills/software-testing/SKILL.md'), 'test instructions'],
     [join(cwd, '.dsh/skills/human-check/SKILL.md'), 'manual check instructions']])
+  confirmedRequirement(state, (p,c) => records.set(join(state.root??cwd,p),c)); records.set(join(cwd,'.dsh/task-LIVE-1.json'),JSON.stringify(state))
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }
@@ -86,7 +88,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     events.push({ type: 'tool/call', data: { name: 'skill', callId, arguments: JSON.stringify({ name }) } })
     events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: callId, isError: !success }] } } })
   }
-  return { call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...args })), exec), load, runs, policy, exec, records, cwd,
+  return { call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...(args.operation==='create'?{intent:'implementation',intent_reason:'Fixture implementation',complexity:'low',complexity_reason:'Fixture unit'}:{}), ...args })), exec), load, runs, policy, exec, records, cwd,
     state: () => JSON.parse(records.get(join(cwd, '.dsh/task-LIVE-1.json'))) }
 }
 
@@ -136,20 +138,24 @@ test('same-named skill and rule freeze separately and disclose the rule body', a
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
   } }))
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
   f.records.set(join(f.cwd, '.dsh/rules/custom.md'), 'RULE BODY')
   await f.call({ operation: 'create', title: 'collision', branch: 'main', files: ['app.js'] })
   const resources = f.state().flow.resources.filter(resource => resource.ref.name === 'custom')
   assert.deepEqual(resources.map(resource => resource.kind).sort(), ['rule', 'skill'])
   assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'CHANGED SKILL')
   const status = JSON.parse(await f.call({ operation: 'status', detail: true }))
-  assert.equal(status.bindings.skill_contents[0].content, 'CHANGED SKILL')
+  assert.equal(status.bindings.skill_contents.find(s=>s.name==='custom').content, 'CHANGED SKILL')
   assert.ok(status.changed_source_skills.some(ref => ref.includes('project:custom')))
   f.records.delete(join(f.cwd, '.dsh/skills/custom/SKILL.md'))
   const missing = JSON.parse(await f.call({ operation: 'status', detail: true }))
   assert.ok(missing.missing_skills.includes('project:custom'))
-  assert.equal(missing.bindings.skill_contents.length, 0)
+  assert.ok(!missing.bindings.skill_contents.some(s=>s.name==='custom'))
 })
 
 test('task creation applies skill_profiles rules even when legacy inline bindings are empty', async () => {
@@ -164,12 +170,14 @@ test('task creation applies skill_profiles rules even when legacy inline binding
     },
     skill_profiles: { 'project:custom': { rules: [rule], evidence: 'none' } },
   }))
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[rule],evidence:'none'}))
   await assert.rejects(f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] }), /rule:project:my-rule/)
   f.records.set(join(f.cwd, '.dsh/rules/my-rule.md'), 'RULE BODY')
   await f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] })
-  assert.deepEqual(f.state().flow.config.stage_bindings['开发'].skills[0].rules, [rule])
-  assert.deepEqual(f.state().flow.config.stage_bindings['交付'].skills[0].rules, [rule])
+  assert.deepEqual(f.state().flow.config.stage_bindings['代码开发'].skills.find(s=>s.skill.name==='custom').rules, [rule])
   assert.equal(f.state().flow.resources.find(resource => resource.kind === 'rule')?.content, 'RULE BODY')
   assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
 })
@@ -180,7 +188,8 @@ test('task creation rejects an unavailable skill or rule before writing a record
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'missing-skill' }, rules: [] }] },
   } }))
-  await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /unreadable bound resources/)
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['missing-skill']}}))
+  await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /was not found|unreadable bound resources/)
   assert.equal(f.records.has(join(f.cwd, '.dsh/task-LIVE-1.json')), false)
 })
 
@@ -192,6 +201,8 @@ test('stage prompts and default status use an index, while load_skill retains ev
   } }))
   const skill = 'UNIQUE_SKILL_BODY\n' + 'detailed instructions\n'.repeat(1000)
   const rule = 'UNIQUE_RULE_BODY\n' + 'required constraints\n'.repeat(1000)
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), skill)
   f.records.set(join(f.cwd, '.dsh/rules/custom.md'), rule)
   const created = await f.call({ operation: 'create', title: 'compact disclosure', branch: 'main', files: ['app.js'] })
@@ -200,7 +211,7 @@ test('stage prompts and default status use an index, while load_skill retains ev
   const raw = await f.call({ operation: 'status' }), compact = JSON.parse(raw)
   assert.ok(!raw.includes('UNIQUE_RULE_BODY'))
   assert.ok(raw.length < 12000)
-  assert.equal(compact.bindings.skill_index[0].name, 'custom')
+  assert.equal(compact.bindings.skill_index.find(s=>s.name==='custom').name, 'custom')
   assert.match(compact.bindings.rules[0].hash, /^[a-f0-9]{64}$/)
   const body = await f.call({ operation: 'load_skill', skill_name: 'project:custom' })
   assert.ok(body.includes(skill) && body.includes(rule))
