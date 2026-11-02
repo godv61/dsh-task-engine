@@ -160,7 +160,7 @@ test('ledger isolates malformed records and reports their errors',async()=>{
  const controller=Object.create(Controller.prototype)
  controller.authorizedPath=async p=>p
  for(const content of ['{broken','null','{}']) {
-   controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'task-broken.json'}],readText:async()=>content})
+   controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'broken'}],readText:async()=>content})
    const result = await controller.readTasks('/project')
    assert.deepEqual(result.tasks, [])
    assert.match(result.errors[0].message, /任务记录/)
@@ -170,7 +170,7 @@ test('ledger exposes Sonar findings without project credentials',async()=>{
  const {default:Controller}=await import('./lib/controller.js')
  const controller=Object.create(Controller.prototype)
  controller.authorizedPath=async p=>p
- controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'task-sample.json'}],readText:async()=>JSON.stringify({
+ controller.fs=()=>({resolve:async p=>p,listDir:async()=>[{name:'sample'}],readText:async()=>JSON.stringify({
    id:'sample',title:'Sample',stage:'代码审核',branch:'feature/sample',items:[],
    sonar_policy:{source:'ide-local',token_env:'SONAR_TOKEN',host_url:'https://sonar.example',project_key:'sample'},
    sonar_audit:{gate:'ERROR',checked_at:'2026-10-03T00:00:00Z',target:'main',

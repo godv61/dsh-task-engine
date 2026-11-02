@@ -24,7 +24,7 @@ and programming languages.
 
 ## Validation
 
-The local regression run contains 405 tests: 398 passed, zero failed, seven skipped.
+The local regression run contains 415 tests: 408 passed, zero failed, seven skipped.
 The skips concern the absent historical host seeder package. P0 acceptance adds
 143 assertions. Type checks and the server, browser, and hook builds pass.
 

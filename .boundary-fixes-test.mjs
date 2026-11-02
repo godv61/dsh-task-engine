@@ -31,7 +31,7 @@ async function fixture({ complexity = 'low', risk = 'standard', policy = 'auto',
     writeText: async (target, content) => { mkdirSync(dirname(target.key), { recursive: true }); writeFileSync(target.key, content) },
   }
   let execute, runtime, omitReads = [], implementation = () => { unlinkSync(join(root, old)); if (rename) { mkdirSync(dirname(join(root, target)), { recursive: true }); writeFileSync(join(root, target), 'export const obsolete = true\n') } }
-  const statePath = join(root, '.dsh/task-BOUNDARY.json')
+  const statePath = join(root, '.dsh/tasks/BOUNDARY/task.json')
   const state = () => JSON.parse(readFileSync(statePath, 'utf8'))
   const save = value => writeFileSync(statePath, JSON.stringify(value))
   const starts = [], commands = [], children = new Map()

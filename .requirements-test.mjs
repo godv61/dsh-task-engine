@@ -11,8 +11,9 @@ import Controller from './lib/controller.js'
 const fields = { goal: '让用户按相关人员查找记录', scope: '本期增加一个查询条件', non_goals: '不调整审批流程',
   rules: '主管、经理、总监任一匹配即可命中', exceptions: '空条件保持原查询结果',
   acceptance: '三种角色分别命中；无匹配返回空', dependencies: '复用既有接口；真实环境联调由用户后续完成' }
-function fixture() {
-  const cwd = resolve('requirement-project'), files = new Map([[join(cwd, 'package.json'), '{"name":"requirement-project"}']])
+function fixture({ child = false } = {}) {
+  const project = resolve('requirement-project'), cwd = child ? join(project, 'module') : project
+  const files = new Map([[join(project, 'package.json'), '{"name":"requirement-project"}']])
   const events = [], guards = [], listeners = new Map(), asked = []
   let execute, revision = 0, answer = request => ({ answers: request.questions.map(q => ({ id: q.id, selected: ['确认无误，继续'] })) })
   const key = (path, opts) => join(opts?.cwd ?? cwd, path)
@@ -37,7 +38,7 @@ function fixture() {
   }
   return { cwd, files, fs, ctx, asked, agent, guards, listeners, call,
     set answer(fn) { answer = fn }, get permissionCalls() { return permissionCalls },
-    state: () => JSON.parse(files.get(join(cwd, '.dsh/task-REQ-1.json'))),
+    state: () => JSON.parse(files.get(join(cwd, '.dsh/tasks/REQ-1/task.json'))),
     create: (complexity = 'medium', legacy = false) => call({ operation: 'create', title: '人员搜索', branch: 'test', complexity,
       complexity_reason: '需求与查询规则需要明确', ...(!legacy ? { intent: 'implementation', intent_reason: '用户要求实现' } : {}) }),
     record: (value = fields) => call({ operation: 'record', artifact: 'requirement', fields: value }),
@@ -48,9 +49,33 @@ function fixture() {
 }
 async function draft(f) { await f.create(); await f.load('requirements-analysis'); await f.record(); return f.prepare() }
 
+test('a child workspace keeps its ledger, summary and materials in the same physical task bundle', async () => {
+  const f=fixture({child:true});await f.create();await f.record()
+  assert.equal(f.state().task_directory,'module/.dsh/tasks/REQ-1')
+  const material=JSON.parse(await f.call({operation:'write_requirement_material',material_name:'questions.md',material_content:'Confirm roles'})).material
+  assert.equal(material.path,'module/.dsh/tasks/REQ-1/materials/questions.md')
+  const d=await f.prepare()
+  assert.equal(d.requirement.path,'module/.dsh/tasks/REQ-1/requirement.md')
+  assert.ok(f.files.has(join(f.cwd,'.dsh/tasks/REQ-1/requirement.md')))
+  assert.ok(f.files.has(join(f.cwd,'.dsh/tasks/REQ-1/materials/questions.md')))
+  await f.confirm(d.requirement.hash)
+  const view=await Controller.prototype.readTasks.call({authorizedPath:async p=>p,fs:()=>f.fs},f.cwd)
+  assert.equal(view.tasks[0].requirements.status,'confirmed')
+  assert.equal(view.tasks[0].content.directory,'module/.dsh/tasks/REQ-1')
+})
+
+test('a summary cannot overwrite metadata, another task, or another child workspace',async()=>{
+  const f=fixture();await f.create();await f.record()
+  for(const path of ['.dsh/tasks/OTHER/requirement.md','.dsh/tasks/REQ-1/materials/notes.md','other/.dsh/tasks/REQ-1/requirement.md','.dsh/meta.md'])
+    await assert.rejects(f.prepare({document_path:path}),/document_path/)
+  const state=f.state();state.task_directory='other/.dsh/tasks/REQ-1'
+  f.files.set(join(f.cwd,'.dsh/tasks/REQ-1/task.json'),JSON.stringify(state))
+  await assert.rejects(f.prepare(),/任务目录与当前工作区不一致/)
+})
+
 const formTemplate = '<!doctype html>\n<style>body{color:#123}</style>\n<script type="application/json" id="form-data">{"sample":true}</script>\n<script>window.formUsesOwnLogic=true</script>\n'
-async function materialFixture() {
-  const f = fixture()
+async function materialFixture(options) {
+  const f = fixture(options)
   f.files.set(join(f.cwd, '.dsh/meta.json'), JSON.stringify({ meta_bindings: { 'requirements-analysis': ['form-kit'] } }))
   f.files.set(join(f.cwd, '.dsh/skills/form-kit/SKILL.md'), '---\nname: form-kit\ndescription: Product form\n---\nGenerate a product form with assets/form.html.\n')
   f.files.set(join(f.cwd, '.dsh/skills/form-kit/assets/form.html'), formTemplate)
@@ -60,11 +85,19 @@ async function materialFixture() {
 const templateArgs = json => ({ operation: 'write_requirement_material', material_name: 'product/form-v1.html', material_template: {
   skill_name: 'project:form-kit', path: 'assets/form.html', data_id: 'form-data', json: JSON.stringify(json), identity_field: 'checklist_id' } })
 
+test('a child workspace resolves templates from its genuinely loaded Skill and writes into its own bundle',async()=>{
+  const f=await materialFixture({child:true})
+  await f.call({operation:'load_skill',skill_name:'project:form-kit'})
+  const result=JSON.parse(await f.call(templateArgs({prompt:'Confirm product behavior'})))
+  assert.equal(result.material.path,'module/.dsh/tasks/REQ-1/materials/product/form-v1.html')
+  assert.match(f.files.get(join(f.cwd,'.dsh/tasks/REQ-1/materials/product/form-v1.html')),/Confirm product behavior/)
+})
+
 test('all grades can create task-owned text materials before confirmation without opening native writes or commands', async () => {
   for (const grade of ['low', 'medium', 'high', 'ultra']) {
     const f = fixture(); await f.create(grade)
     const result = JSON.parse(await f.call({ operation: 'write_requirement_material', material_name: '产品/待确认.md', material_content: '# 待确认\r\n请补充角色范围。\r\n' }))
-    assert.equal(result.material.path, 'docs/requirements/REQ-1/产品/待确认.md')
+    assert.equal(result.material.path, '.dsh/tasks/REQ-1/materials/产品/待确认.md')
     assert.equal(f.files.get(join(f.cwd, result.material.path)), '# 待确认\n请补充角色范围。\n')
     assert.equal(f.state().requirements.materials.length, 1)
     assert.equal(f.state().requirement_confirmed, false); assert.deepEqual(f.state().files, [])
@@ -111,32 +144,32 @@ test('retiring an obsolete material preserves its file and history and releases 
 
 test('material writes reject traversal, Windows aliases, instruction files, unsupported formats, excess data and invalid JSON', async () => {
   const f = fixture(); await f.create()
-  const original = f.files.get(join(f.cwd, '.dsh/task-REQ-1.json'))
+  const original = f.files.get(join(f.cwd, '.dsh/tasks/REQ-1/task.json'))
   for (const name of ['../main.html', '/outside.html', 'C:/outside.html', 'a\\b.md', 'a/../b.md', 'a/.hidden.md', 'CON.html', 'a.md.', 'AGENTS.md', 'src/main.ts', 'code.js', 'a:stream.html']) {
     await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: name, material_content: 'bad', sandbox_permissions: 'danger-full-access' }))
   }
   await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: 'a.json', material_content: '{bad}' }), /合法 JSON/)
   await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: 'a.md', material_content: '中'.repeat(350000) }), /1 MiB/)
   await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: 'a.md', material_content: ' ' }), /不能为空/)
-  assert.equal(f.files.get(join(f.cwd, '.dsh/task-REQ-1.json')), original)
+  assert.equal(f.files.get(join(f.cwd, '.dsh/tasks/REQ-1/task.json')), original)
   assert.equal(f.permissionCalls, 0)
 })
 
 test('editing the task root cannot redirect the material writer out of the current project', async () => {
   const f = fixture(); await f.create()
-  const path = join(f.cwd, '.dsh/task-REQ-1.json'), state = f.state()
+  const path = join(f.cwd, '.dsh/tasks/REQ-1/task.json'), state = f.state()
   state.root = resolve(f.cwd, '..')
   f.files.set(path, JSON.stringify(state))
   const original = f.files.get(path)
   await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: 'notes.md', material_content: 'must not escape' }), /项目根与当前工作区不一致/)
   assert.equal(f.files.get(path), original)
-  assert.equal(f.files.has(join(state.root, 'docs/requirements/REQ-1/notes.md')), false)
+  assert.equal(f.files.has(join(state.root, '.dsh/tasks/REQ-1/materials/notes.md')), false)
 })
 
 test('existing unowned material files and human edits are preserved; generated updates require a current hash', async () => {
   const f = fixture(); await f.create()
   const args = { operation: 'write_requirement_material', material_name: 'notes.md', material_content: 'draft 1' }
-  const path = join(f.cwd, 'docs/requirements/REQ-1/notes.md')
+  const path = join(f.cwd, '.dsh/tasks/REQ-1/materials/notes.md')
   f.files.set(path, 'human file')
   await assert.rejects(f.call(args), /人工修改/); assert.equal(f.files.get(path), 'human file')
   f.files.delete(path)
@@ -186,7 +219,7 @@ test('changed or missing approved materials revoke native writes; exact restorat
 test('symlinks reported by the host and competing file writes cannot silently register a material', async () => {
   const f = fixture(); await f.create()
   const oldStat = f.fs.lstat
-  f.fs.lstat = async (path, opts) => path === 'docs/requirements/REQ-1' ? { type: 'symlink', version: 'link' } : oldStat(path, opts)
+  f.fs.lstat = async (path, opts) => path === '.dsh/tasks/REQ-1/materials' ? { type: 'symlink', version: 'link' } : oldStat(path, opts)
   await assert.rejects(f.call({ operation: 'write_requirement_material', material_name: 'notes.md', material_content: 'x' }), /父路径/)
   f.fs.lstat = oldStat
   const oldWrite = f.fs.writeText
@@ -221,7 +254,7 @@ test('recording a complete requirement cannot advance, run commands or start an 
 })
 test('prepare creates a readable document from the artifact and preserves accepted pending integration boundaries', async () => {
   const f = fixture(), d = await draft(f)
-  assert.equal(d.requirement.path, 'docs/requirements/REQ-1.md')
+  assert.equal(d.requirement.path, '.dsh/tasks/REQ-1/requirement.md')
   assert.match(d.content, /业务流程与规则/); assert.match(d.content, /真实环境联调由用户后续完成/)
   assert.equal(f.files.get(join(f.cwd, d.requirement.path)), d.content)
   assert.equal(f.state().requirement_confirmed, false)
@@ -317,7 +350,7 @@ test('unsupported active tasks are readable but cannot mutate, approve, dispatch
   const f = fixture(), d = await draft(f); await f.confirm(d.requirement.hash)
   const old = f.state(); delete old.flow.config.requirement_review
   const { hashConfig } = await import('./lib/snapshot.js'); old.flow.hash = hashConfig(old.flow.config)
-  const path = join(f.cwd,'.dsh/task-REQ-1.json'); f.files.set(path,JSON.stringify(old)); const original = f.files.get(path)
+  const path = join(f.cwd,'.dsh/tasks/REQ-1/task.json'); f.files.set(path,JSON.stringify(old)); const original = f.files.get(path)
   const status = JSON.parse(await f.call({ operation: 'status' }))
   assert.match(status.execution_blocker, /仅可查看.*重新创建/)
   for (const operation of ['record','confirm_requirement','dispatch','verify','complete','revise','scope','advance'])
@@ -333,7 +366,7 @@ test('archived historical records remain readable without being migrated', async
   const old = f.state(); delete old.flow.config.requirement_review
   const { hashConfig } = await import('./lib/snapshot.js'); old.flow.hash = hashConfig(old.flow.config)
   old.completed = { at:'2026-10-30T00:00:00Z' }
-  const path = join(f.cwd,'.dsh/task-REQ-1.json'); f.files.set(path,JSON.stringify(old)); const original = f.files.get(path)
+  const path = join(f.cwd,'.dsh/tasks/REQ-1/task.json'); f.files.set(path,JSON.stringify(old)); const original = f.files.get(path)
   const status=JSON.parse(await f.call({operation:'status'}));assert.equal(status.lifecycle,'archived')
   assert.equal(f.files.get(path), original)
   await assert.rejects(f.call({operation:'record'}), /archived and read-only/)
@@ -344,7 +377,7 @@ test('archived historical records remain readable without being migrated', async
 test('snapshot-less records stay readable even when the live old project config is invalid', async () => {
   const f = fixture(); await f.create()
   const old = f.state(); delete old.flow
-  const path=join(f.cwd,'.dsh/task-REQ-1.json'); f.files.set(path,JSON.stringify(old)); const original=f.files.get(path)
+  const path=join(f.cwd,'.dsh/tasks/REQ-1/task.json'); f.files.set(path,JSON.stringify(old)); const original=f.files.get(path)
   f.files.set(join(f.cwd,'.dsh/eng.json'),'{invalid')
   const status=JSON.parse(await f.call({operation:'status'}))
   assert.match(status.execution_blocker,/重新创建/)
@@ -424,7 +457,7 @@ test('new tasks cannot fall back to an unconfirmed flow by omitting intent or co
   await assert.rejects(f.create('medium', true), /requires explicit intent/)
   await assert.rejects(f.call({ operation: 'create', title: 'missing grade', intent: 'implementation', intent_reason: 'implement' }), /requires complexity/)
   await assert.rejects(f.call({ operation: 'create', title: 'fake caller opt-out', intent: 'implementation', intent_reason: 'implement', requirement_confirmation: 'legacy' }), /requires complexity/)
-  assert.equal(f.files.has(join(f.cwd, '.dsh/task-REQ-1.json')), false)
+  assert.equal(f.files.has(join(f.cwd, '.dsh/tasks/REQ-1/task.json')), false)
   await f.create(); assert.ok(f.state().flow.config.requirement_review)
   assert.match(f.guards[0]({ agent: f.agent, name: 'write' }), /需求尚未由用户确认/)
 })
@@ -478,7 +511,7 @@ test('a failed fallback create cannot unlock another task awaiting requirement c
   const f = fixture(); await f.create()
   const original = f.state()
   await assert.rejects(f.call({ operation: 'create', task_id: 'BYPASS', title: 'missing grade', intent: 'implementation', intent_reason: 'implement' }), /requires complexity/)
-  assert.equal(f.files.has(join(f.cwd, '.dsh/task-BYPASS.json')), false)
+  assert.equal(f.files.has(join(f.cwd, '.dsh/tasks/BYPASS/task.json')), false)
   assert.deepEqual(f.state(), original)
   assert.match(f.guards[0]({ agent: f.agent, name: 'write' }), /需求尚未由用户确认/)
 })

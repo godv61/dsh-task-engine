@@ -27,6 +27,7 @@ import { sonarCommitBlockers } from './sonar.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
 import { groupInputs } from './verification-state.ts'
 import { requirementConfirmed, requirementMaterialPath, taskExecutionProblem } from './requirements.ts'
+import { TASKS_DIRECTORY, taskPath, taskDirectory, validTaskId, isEngineMeta } from './task-paths.ts'
 import { assertRealPath } from './resource-import.ts'
 import { lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 
@@ -80,6 +81,7 @@ function normalizeTask(task: Record<string, unknown>): TaskState {
       verification_groups: (task.verification_groups as TaskState['verification_groups']) ?? {},
       verification_runs: (task.verification_runs as TaskState['verification_runs']) ?? [] } : {}),
     ...(typeof task.root === 'string' ? { root: task.root } : {}),
+    ...(typeof task.task_directory === 'string' ? { task_directory: task.task_directory } : {}),
     ...(task.flow !== undefined ? { flow: task.flow as FlowSnapshot } : {}),
   }
 }
@@ -105,22 +107,29 @@ function loadTasks(): { file: string; task: TaskState }[] {
   const out: { file: string; task: TaskState }[] = []
   const repoRoot = fs.realpathSync.native(process.cwd())
   for (const root of taskRoots(repoRoot)) {
-    const dir = path.join(root, '.dsh')
+    const dir = path.join(root, TASKS_DIRECTORY)
     if (!fs.existsSync(dir)) continue
-    const names = fs.readdirSync(dir).filter(name => name.startsWith('task-') && name.endsWith('.json'))
-    for (const name of names) {
-      const json = readJson(path.join(dir, name))
+    assertRealPath(dir)
+    const ids = fs.readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isDirectory() && validTaskId(entry.name)).map(entry => entry.name)
+    for (const id of ids) {
+      const file = path.join(root, taskPath(id))
+      assertRealPath(file)
+      const json = readJson(file)
       if (json === undefined || json.id === undefined) continue
+      if (json.id !== id) refuse(`任务目录与记录编号不一致：${file}`)
       const task = normalizeTask(json)
       // Git reports long Windows paths while old task roots may use an 8.3 alias.
       const projectRoot = fs.realpathSync.native(task.root === undefined ? root : path.resolve(task.root))
+      const prefix = path.relative(projectRoot, root).replaceAll('\\', '/')
+      const expectedDirectory = prefix ? `${prefix}/${taskDirectory(id)}` : taskDirectory(id)
+      if (task.task_directory !== undefined && task.task_directory !== expectedDirectory) refuse('任务目录与登记的工作区不一致')
       const insideRepo = path.relative(repoRoot, projectRoot)
       const workspaceInsideProject = path.relative(projectRoot, root)
       if (insideRepo.startsWith('..') || path.isAbsolute(insideRepo)
         || workspaceInsideProject.startsWith('..') || path.isAbsolute(workspaceInsideProject)) {
         refuse(`任务 ${task.id} 的项目根目录与钩子登记的工作区不一致`)
       }
-      out.push({ file: path.join(dir, name), task: { ...task, root: projectRoot } })
+      out.push({ file, task: { ...task, root: projectRoot } })
     }
   }
   return out
@@ -223,10 +232,6 @@ function extractTaskId(message: string): string | undefined {
 }
 
 /** Engine-owned state files are exempt from scope and risk checks. */
-function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
-}
-
 function scopeHash(state: TaskState, root: string, includeGovernance = false): string {
   const entries = [...new Set(state.files)].filter(file => includeGovernance || !isEngineMeta(file)).sort().map(file => {
     const target = path.resolve(root, file)
@@ -279,7 +284,7 @@ let state: TaskState | undefined
 if (taskId !== undefined) {
   const found = tasks.filter(({ task }) => task.id === taskId)
   if (found.length === 0) {
-    refuse(`提交消息里的任务 id "${taskId}" 找不到对应的任务记录（.dsh/task-<id>.json）`)
+    refuse(`提交消息里的任务 id "${taskId}" 找不到对应的任务记录（.dsh/tasks/<id>/task.json）`)
   }
   if (found.length > 1) refuse(`任务 id "${taskId}" 在多个工作区重复；请先消除歧义`)
   state = found[0]!.task

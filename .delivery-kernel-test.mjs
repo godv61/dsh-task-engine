@@ -59,7 +59,7 @@ function fixture() {
   const agent={id:'parent',session:{id:'parent',header:{cwd},snapshotEvents:()=>[]}}
   const callRaw=args=>execute(args,{agent,signal:new AbortController().signal})
   const call=args=>callRaw({task_id:'KERNEL',...args})
-  const state=()=>JSON.parse(readFileSync(join(cwd,'.dsh/task-KERNEL.json'),'utf8'))
+  const state=()=>JSON.parse(readFileSync(join(cwd,'.dsh/tasks/KERNEL/task.json'),'utf8'))
   const confirmRequirement=async()=>{
     await call({operation:'record',artifact:'requirement',fields:{goal:'return value',scope:'local fixture',acceptance:'value returns 2'}})
     const summary=JSON.parse(await call({operation:'prepare_requirement'}))

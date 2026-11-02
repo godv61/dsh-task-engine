@@ -18,6 +18,7 @@ import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
 import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
 import { invalidateRequirement, requirementConfirmed, requirementMaterialPath, type RequirementPolicy, type RequirementsState } from './requirements.ts'
+import { isEngineMeta } from './task-paths.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -416,6 +417,8 @@ export interface VerificationReceipt {
 
 export interface TaskState {
   schema: 1
+  /** Project-relative directory of this task's workspace-owned bundle. */
+  task_directory?: string
   /** Absent on legacy snapshots; never inferred or migrated implicitly. */
   delivery?: import('./delivery-contract.ts').DeliveryContract
   id: string
@@ -1204,15 +1207,6 @@ export interface FileScopeResult {
  * `file_scope` is off; an empty declared scope refuses every commit (the task
  * must first declare what it may touch).
  */
-/**
- * Engine bookkeeping files that travel with the branch as team-shared facts
- * (`.dsh/task-*.json`, `.dsh/eng.json`). They are metadata, not deliverables,
- * so the file-scope gate never counts them as out-of-scope.
- */
-function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
-}
-
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }

@@ -59,7 +59,7 @@ async function fixture({ dependencies = [], shared = false, planned = true } = {
   registerDevTask(ctx)
   const session = { id: 'group-fixture', header: { cwd: root }, snapshotEvents: () => events }
   const call = args => execute({ task_id: 'GROUPS', ...args }, { agent: { session }, signal: new AbortController().signal })
-  const path = join(root, '.dsh/task-GROUPS.json')
+  const path = join(root, '.dsh/tasks/GROUPS/task.json')
   const state = () => JSON.parse(readFileSync(path, 'utf8'))
   const save = value => writeFileSync(path, JSON.stringify(value))
   await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', title: 'two complete units', branch: 'fixture', complexity: 'medium', complexity_reason: 'two local units',

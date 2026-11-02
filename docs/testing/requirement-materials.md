@@ -5,7 +5,7 @@ native file-writing, shell or implementation capabilities. This contract applies
 to every repository and complexity grade, at its requirement-owning stage.
 
 `write_requirement_material` accepts either text or an HTML template specification.
-Files live only in `docs/requirements/<task_id>/`. Supported text formats are HTML,
+Files live only in `.dsh/tasks/<task_id>/materials/`. Supported text formats are HTML,
 Markdown, JSON, TXT, CSV and SVG. JSON outputs must parse; limits are 1 MiB per file
 and 64 material records per task. Existing unowned files and human modifications
 are protected. Changing an owned draft needs its current hash and the host's
@@ -46,8 +46,8 @@ Regression coverage lives in `.requirements-test.mjs`, the real commit hook test
 strict browser codec roundtrips and the keyless rc.3 preset probe. The probe uses
 an offline adapter that throws on any model invocation; it must report zero calls.
 
-Local validation: type checks and builds passed; 405 regression tests produced
-398 passes, zero failures and seven historical-host skips, plus 143 P0 assertions.
+Local validation: type checks and builds passed; 415 regression tests produced
+408 passes, zero failures and seven historical-host skips, plus 143 P0 assertions.
 The keyless rc.3 host exercised text material output, a bound Skill template,
 rejected traversal, unchanged native write restrictions before confirmation, and
 permission revocation/restoration after material changes. Its direct registry

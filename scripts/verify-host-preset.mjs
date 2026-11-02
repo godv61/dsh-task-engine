@@ -1,6 +1,6 @@
 /** Boot the published rc.3 host and this packed plugin through its public SDK profile, keylessly. */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -31,9 +31,26 @@ const jsonStart=packed.indexOf('[\n')>=0?packed.indexOf('[\n'):packed.indexOf('[
 assert.ok(jsonStart>=0,'npm pack must return a JSON manifest')
 const artifact=JSON.parse(packed.slice(jsonStart))[0]
 writeFileSync(join(root,'package.json'),JSON.stringify({name:'keyless-preset-host',private:true,type:'module'}))
-command(['install','--ignore-scripts','--no-audit','--no-fund',
-  '@deepseek-ai/dsh@0.2.1-rc.3','@deepseek-ai/dsh-sdk-client@0.2.1-rc.3',
-  '@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3','@deepseek-ai/dsh-tool-subagent@0.2.1-rc.3',join(root,artifact.filename)])
+const cachedModules=process.env.TASK_ENGINE_PRESET_NODE_MODULES
+if(cachedModules){
+  // Reuse installed public dependencies only. The packed plugin, workspace and
+  // DSH_HOME remain fresh, and this code never edits the caller's module tree.
+  const cache=resolve(cachedModules),local=join(root,'node_modules')
+  for(const name of ['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'])
+    assert.equal(JSON.parse(readFileSync(join(cache,'@deepseek-ai',name,'package.json'),'utf8')).version,'0.2.1-rc.3',`cached ${name} must match the pinned host`)
+  mkdirSync(local)
+  for(const entry of readdirSync(cache,{withFileTypes:true}).filter(e=>e.isDirectory()&&!e.name.startsWith('.')&&e.name!=='@godv61'))
+    symlinkSync(join(cache,entry.name),join(local,entry.name),process.platform==='win32'?'junction':'dir')
+  assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
+  const plugin=join(local,'@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
+  const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
+  if(unpack.error)throw unpack.error
+  assert.equal(unpack.status,0,unpack.stderr)
+}else{
+  command(['install','--ignore-scripts','--no-audit','--no-fund',
+    '@deepseek-ai/dsh@0.2.1-rc.3','@deepseek-ai/dsh-sdk-client@0.2.1-rc.3',
+    '@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3','@deepseek-ai/dsh-tool-subagent@0.2.1-rc.3',join(root,artifact.filename)])
+}
 const modules=join(root,'node_modules','@deepseek-ai')
 const probe=join(root,'probe.mjs'),proof=join(root,'proof.json')
 copyFileSync(new URL('./fixtures/preset-probe.mjs',import.meta.url),probe)

@@ -1,4 +1,5 @@
-import { readText, writeText, loadTask, writeTask, taskPath, type WriteFs } from './task-store.ts'
+import { readText, writeText, loadTask, writeTask, taskPath, listTaskIds, taskNamespace, type WriteFs } from './task-store.ts'
+import { isEngineMeta, isTaskLedgerPath, isTaskReviewPath } from './task-paths.ts'
 /**
  * The model-facing `dev_task` tool: the hard engineering-delivery gate.
  *
@@ -337,7 +338,7 @@ async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, ex
       throw new Error('commit abbreviation is ambiguous or does not resolve uniquely to HEAD; use its full OID')
   }
   const before = await scopeFingerprint(fs, state, root)
-  const paths = state.files.filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/u.test(path))
+  const paths = state.files.filter(path => !isEngineMeta(path))
   if (!paths.length) return headHash
   const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`
   // PowerShell and POSIX use different single-quote escapes. Paths have already passed the scope validator.
@@ -1046,7 +1047,7 @@ function instructionPath(ref: ResourceRef, kind: 'skill' | 'rule'): string {
 async function readRequirementTemplate(spec: MaterialTemplate, state: TaskState, fs: Fs, cwd: string | undefined, session: SkillSession | undefined): Promise<string> {
   const entry = bindingsForStage(state.stage, state.flow!.config)?.skills?.find(item => formatResourceRef(item.skill) === spec.skill_name)
   if (!entry || !skillLoadForSession(state, spec.skill_name, session)) throw new Error('模板只能来自当前节点已绑定且在本任务／会话实际加载的 Skill；先 load_skill')
-  const base = dirname(instructionPath(entry.skill, 'skill')), root = state.root ?? cwd ?? process.cwd()
+  const base = dirname(instructionPath(entry.skill, 'skill')), root = cwd ?? state.root ?? process.cwd()
   const target = resolve(root, base, spec.path)
   assertInsideRoot(resolve(root, base), resolve(root, base), spec.path)
   assertRealPath(target)
@@ -1294,7 +1295,7 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
 export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, includeGovernance = false): Promise<string> {
   const entries = []
-  for (const path of [...new Set(state.files)].filter(path => includeGovernance || !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(path)).sort()) {
+  for (const path of [...new Set(state.files)].filter(path => includeGovernance || !isEngineMeta(path)).sort()) {
     assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
     const root = state.root ?? cwd
     const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
@@ -1491,7 +1492,7 @@ async function compactSonarHistory(fs: Fs, state: TaskState, cwd: string | undef
       ...(entry.dispositions ? { dispositions: entry.dispositions.slice(0, 50) } : {}) }); continue }
     if (!entry.report_path && !state.sonar_policy) { compact.push(entry); continue }
     if (!entry.report_path) await writeSonarReport(fs, state, entry, cwd, mode)
-    const detail_path = await storeSonarDetail(fs, entry, cwd, mode)
+    const detail_path = await storeSonarDetail(fs, entry, state.root ?? cwd, mode)
     compact.push({ checked_at: entry.checked_at, gate: entry.gate, target: entry.target,
       scope_hash: entry.scope_hash, report_path: entry.report_path!, detail_path,
       finding_count: entry.findings.length, blocking_count: entry.blocking.length,
@@ -1503,21 +1504,24 @@ async function compactSonarHistory(fs: Fs, state: TaskState, cwd: string | undef
 async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
   mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   if (!state.sonar_policy) throw new Error('SonarQube is not enabled for this task')
-  const path = sonarReportPath(state.id, audit)
-  await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+  const path = sonarReportPath(state.id, audit, state.task_directory)
+  assertRealPath(resolve(state.root ?? cwd ?? process.cwd(), path))
+  await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), state.root ?? cwd, mode,
     { kind: 'createIfAbsent' })
   audit.report_path = path
-  await storeSonarDetail(fs, audit, cwd, mode)
+  await storeSonarDetail(fs, audit, state.root ?? cwd, mode)
 }
 
 async function updateSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
   mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   if (!state.sonar_policy || !audit.report_path) throw new Error('the current Sonar audit has no report to update')
+  if (!isTaskReviewPath(state.id, audit.report_path, state.task_directory)) throw new Error('Sonar report is outside this task bundle')
+  assertRealPath(resolve(state.root ?? cwd ?? process.cwd(), audit.report_path))
   const info = await (fs as unknown as WriteFs).lstat(audit.report_path, cwd === undefined ? undefined : { cwd })
   if (!info) throw new Error('the current Sonar report is missing; rerun sonar_check')
-  await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+  await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), state.root ?? cwd, mode,
     { kind: 'replaceIfVersion', version: info.version })
-  await storeSonarDetail(fs, audit, cwd, mode)
+  await storeSonarDetail(fs, audit, state.root ?? cwd, mode)
 }
 
 async function inspectCompletedSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
@@ -1587,14 +1591,13 @@ export function registerDevTask(ctx: Context): void {
   installDeliveryAccess(ctx, async agent => {
     const cwd = agent.session.header.cwd
     if (!cwd) return undefined
-    const names = await projectProbe(ctx.fs).list?.(cwd, '.dsh') ?? []
     const candidates: TaskState[] = []
-    for (const name of names.filter(name => /^task-.+\.json$/u.test(name))) {
-      const raw = await readText(ctx.fs, `.dsh/${name}`, cwd)
+    for (const id of await listTaskIds(ctx.fs, cwd)) {
+      const raw = await readText(ctx.fs, taskPath(id), cwd)
       if (!raw) continue
       try {
         const task = JSON.parse(raw) as TaskState
-        if (task.delivery?.parent_session === agent.session.id) candidates.push(task)
+        if (task.id === id && task.delivery?.parent_session === agent.session.id) candidates.push(task)
       } catch { /* A bad unrelated record is reported by the ledger, never treated as this session's policy. */ }
     }
     return candidates.sort((a, b) => b.delivery!.created_at.localeCompare(a.delivery!.created_at))[0]
@@ -1604,8 +1607,8 @@ export function registerDevTask(ctx: Context): void {
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
-      document_path: { type: 'string', description: 'prepare_requirement: optional workspace-relative Markdown path. Default docs/requirements/<task_id>.md. Existing human edits are protected.' },
-      material_name: { type: 'string', description: 'write_requirement_material/retire_requirement_material: relative filename under docs/requirements/<task_id>/, e.g. product/checklist-v1.html. Supports html/htm/md/json/txt/csv/svg. Retire only stops using a registered material; files are preserved. Business paths and instruction files are forbidden.' },
+      document_path: { type: 'string', description: 'prepare_requirement: optional workspace-relative Markdown path. Default .dsh/tasks/<task_id>/requirement.md. Existing human edits are protected.' },
+      material_name: { type: 'string', description: 'write_requirement_material/retire_requirement_material: relative filename under .dsh/tasks/<task_id>/materials/, e.g. product/checklist-v1.html. Supports html/htm/md/json/txt/csv/svg. Retire only stops using a registered material; files are preserved. Business paths and instruction files are forbidden.' },
       material_content: { type: 'string', description: 'write_requirement_material: complete UTF-8 text (up to 1 MiB), mutually exclusive with material_template. Does not execute code or approve requirements.' },
       material_template: { type: 'object', additionalProperties: false, description: 'write_requirement_material: render an HTML asset from a currently bound, loaded Skill; replace only an application/json script data block. No scripts or commands execute.', properties: {
         skill_name: { type: 'string', required: true, description: 'Exact bound source:name, e.g. user:product-clarification. Must already be loaded in this task/session.' },
@@ -1745,11 +1748,11 @@ export function registerDevTask(ctx: Context): void {
 
       if (a.operation === 'status' && !a.task_id) {
         const tasks: { id: string; title: string; branch: string; stage: string; lifecycle: 'active' | 'ready_to_close' | 'archived'; completed_at?: string; complexity?: Complexity }[] = []
-        const names = await projectProbe(fs).list?.(cwd ?? '', '.dsh') ?? []
-        for (const name of names.filter(name => /^task-.+\.json$/.test(name))) {
-          const raw = await readText(fs, `.dsh/${name}`, cwd)
+        for (const id of await listTaskIds(fs, cwd)) {
+          const raw = await readText(fs, taskPath(id), cwd)
           if (!raw) continue
           const task = JSON.parse(raw) as TaskState
+          if (task.id !== id) throw new Error(`task id mismatch in ${taskPath(id)}`)
           if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage,
             lifecycle: task.completed ? 'archived' : task.stage === task.flow?.config.stages.at(-1) ? 'ready_to_close' : 'active',
             ...(task.completed ? { completed_at: task.completed.at } : {}),
@@ -2050,6 +2053,7 @@ export function registerDevTask(ctx: Context): void {
           root,
           project_type: await detectType(projectProbe(fs), root),
         })
+        state.task_directory = taskNamespace(state.id, root, cwd ?? root)
         if (a.related_task_id !== undefined) state.related_task = { id: a.related_task_id, kind: a.relation_kind! }
         if (a.intent !== undefined) {
           state.delivery = deliveryContract(a.intent, a.intent_reason ?? '')
@@ -2100,6 +2104,8 @@ export function registerDevTask(ctx: Context): void {
           const currentRoot = await detectRoot(projectProbe(fs), cwd ?? '')
           if (canonical(state.root ?? cwd ?? '') !== canonical(currentRoot)) throw new Error('任务登记的项目根与当前工作区不一致；不能写入需求材料，请核对任务所属项目')
         }
+        if (state.task_directory !== undefined && state.task_directory !== taskNamespace(state.id, state.root ?? cwd ?? '', cwd ?? state.root ?? ''))
+          throw new Error('任务目录与当前工作区不一致；不能重定向需求产物')
         if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? ''))))
           throw new Error('a child dispatch is still active; wait or recover it before changing requirements')
         try { return await executeRequirementCommand(a, { ctx, exec, state, cwd, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
@@ -2431,10 +2437,10 @@ export function registerDevTask(ctx: Context): void {
           .flatMap(entry => unresolvedBlockingFindings(entry)).find(entry => entry.key === a.issue_key)
         if (!issue) for (const entry of state.sonar_history ?? []) {
           if (fullSonarAudit(entry)) continue
-          if (!entry.detail_path.startsWith(`.dsh/reviews/${state.id}/`) || !entry.detail_path.endsWith('.json'))
+          if (!isTaskReviewPath(state.id, entry.detail_path, state.task_directory) || !entry.detail_path.endsWith('.json'))
             throw new Error('invalid Sonar history detail path')
           assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', entry.detail_path)
-          const raw = await readText(fs, entry.detail_path, cwd)
+          const raw = await readText(fs, entry.detail_path, state.root ?? cwd)
           if (!raw) throw new Error('Sonar history detail is unavailable; restore the archived audit')
           issue = unresolvedBlockingFindings(JSON.parse(raw) as SonarAudit).find(finding => finding.key === a.issue_key)
           if (issue) break
@@ -2702,7 +2708,7 @@ export function registerDevTask(ctx: Context): void {
           if (problem) throw new Error(problem)
           for (const file of a.files) {
             assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', file)
-            if (/^\.dsh[\\/]task-[^/\\]+\.json$/u.test(file)) throw new Error('a test group cannot include its own changing task ledger')
+            if (isTaskLedgerPath(file)) throw new Error('a test group cannot include its own changing task ledger')
           }
           for (const id of a.item_ids) requireItem(state, id)
           if (state.items.some(item => ['running', 'starting'].includes(item.dispatch?.status ?? ''))) throw new Error('wait for active children before changing verification plans')

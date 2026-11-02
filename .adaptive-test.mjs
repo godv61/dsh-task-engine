@@ -60,10 +60,10 @@ function fixture(extra = {}, services = {}) {
   const exec = { agent: { session }, signal: new AbortController().signal }
   const call = async args => {
     const text = await execute(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', ...args } : args, exec)
-    if (args.operation === 'create') { const path = join(cwd, `.dsh/task-${args.task_id}.json`); const state = JSON.parse(files.get(path)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(path, JSON.stringify(state)) }
+    if (args.operation === 'create') { const path = join(cwd, `.dsh/tasks/${args.task_id}/task.json`); const state = JSON.parse(files.get(path)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(path, JSON.stringify(state)) }
     return text
   }
-  return { cwd, files, fs, events, call, state: id => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))) }
+  return { cwd, files, fs, events, call, state: id => JSON.parse(files.get(join(cwd, `.dsh/tasks/${id}/task.json`))) }
 }
 
 const PROJECT_META_SKILLS = ['requirements-analysis', 'architecture-design', 'task-orchestration',
@@ -231,7 +231,7 @@ test('task-plan item headings preserve the full implementation sequence', async 
   state.stage = '任务编排'
   state.artifacts['task-plan'] = { steps: '- I1 model\n- I2 service', dependencies: 'I2 after I1', handoffs: 'Model to service' }
   state.items = [{ id: 'I2', title: 'service', status: 'todo' }]
-  f.files.set(join(f.cwd, '.dsh/task-PLAN-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/PLAN-1/task.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status', task_id: 'PLAN-1' }))
   assert.match(status.task_plan_item_blockers[0], /I1/)
   await assert.rejects(f.call({ operation: 'advance', task_id: 'PLAN-1', target_stage: '代码开发' }), /I1/)
@@ -401,7 +401,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
-  f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/LOCAL-1/task.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
   const oldHost = process.env.DSH_SONAR_TRUSTED_HOST
@@ -449,7 +449,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
   state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
-  f.files.set(join(f.cwd, '.dsh/task-S-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/S-1/task.json'), JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
@@ -468,7 +468,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     const check = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'S-1', ce_task_id: 'CE-123456' }))
     assert.equal(check.gate, 'OK')
     assert.equal(check.server_gate, 'ERROR')
-    assert.match(check.report_path, /^\.dsh\/reviews\/S-1\//)
+    assert.match(check.report_path, /^\.dsh\/tasks\/S-1\/reviews\//)
     assert.match(f.files.get(join(f.cwd, check.report_path)), /SonarQube 代码审核/)
     assert.equal(f.state('S-1').sonar_audit.report_path, check.report_path)
     assert.equal(JSON.parse(f.files.get(join(f.cwd, check.report_path.replace(/\.md$/u, '.json')))).analysis_id, 'AN-2')
@@ -494,7 +494,7 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   state.stage = '代码审核'
   state.sonar_audit = { ce_task_id: 'CE-123456', analysis_id: 'AN-9', gate: 'ERROR', checked_at: 'now',
     scope_hash: 'old', findings: [finding], blocking: [finding], target: 'feature' }
-  f.files.set(join(f.cwd, '.dsh/task-L-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/L-1/task.json'), JSON.stringify(state))
   await f.call({ operation: 'revise', task_id: 'L-1', target_stage: '代码开发',
     revision_kind: 'defect', revision_reason: 'Fix the SonarQube issue' })
   assert.equal(f.state('L-1').sonar_history[0].blocking[0].key, 'ISSUE-9')
@@ -720,9 +720,9 @@ test('a local false positive needs human approval, keeps the raw gate, and expir
   state.sonar_audit = { ce_task_id: 'local', analysis_id: 'LOCAL-1', gate: 'ERROR',
     checked_at: '2026-10-05T00:00:00.000Z', scope_hash: state.verification.receipt.scope_hash,
     findings: [finding], blocking: [finding], target: 'main', scanned_files: ['app.js'],
-    report_path: '.dsh/reviews/FP-1/local.md' }
-  f.files.set(join(f.cwd, '.dsh/reviews/FP-1/local.md'), 'original report')
-  f.files.set(join(f.cwd, '.dsh/task-FP-1.json'), JSON.stringify(state))
+    report_path: '.dsh/tasks/FP-1/reviews/local.md' }
+  f.files.set(join(f.cwd, '.dsh/tasks/FP-1/reviews/local.md'), 'original report')
+  f.files.set(join(f.cwd, '.dsh/tasks/FP-1/task.json'), JSON.stringify(state))
   const args = { operation: 'sonar_disposition', task_id: 'FP-1', issue_key: finding.key,
     disposition_reason: '每次循环需要独立实体对象，复用同一个实例会让多条授权记录互相覆盖，属于规则误报。',
     evidence: ['授权实体逐行添加到集合，复用对象会导致所有行指向末次值'] }
@@ -748,7 +748,7 @@ test('archived task is read-only and a follow-up gets a new linked record', asyn
   await f.call({ operation: 'create', task_id: 'DONE-1', title: 'delivered', branch: 'feature', complexity: 'low', complexity_reason: 'small change', files: ['app.js'] })
   const state = f.state('DONE-1')
   state.completed = { at: '2026-10-14T00:00:00.000Z' }
-  f.files.set(join(f.cwd, '.dsh/task-DONE-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/DONE-1/task.json'), JSON.stringify(state))
   assert.match(await f.call({ operation: 'status', task_id: 'DONE-1' }), /archived/)
   await assert.rejects(() => f.call({ operation: 'revise', task_id: 'DONE-1', target_stage: '代码开发', revision_kind: 'defect', revision_reason: 'later bug' }), /archived/)
   await f.call({ operation: 'create', task_id: 'FIX-2', title: 'later bug', branch: 'feature', complexity: 'low', complexity_reason: 'localized', files: ['app.js'], related_task_id: 'DONE-1', relation_kind: 'defect' })

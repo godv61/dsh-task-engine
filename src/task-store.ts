@@ -3,8 +3,29 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-fs'
 import type { TaskState } from './engine.ts'
 import { hashConfig } from './snapshot.ts'
+import { resolve, relative, isAbsolute } from 'node:path'
+import { assertRealPath } from './resource-import.ts'
+import { TASKS_DIRECTORY, taskDirectory, taskPath, validTaskId } from './task-paths.ts'
+export { taskPath } from './task-paths.ts'
 type Fs = Context['fs']
-export const taskPath = (id: string): string => `.dsh/task-${id.replace(/[^0-9a-zA-Z_-]/g, '-')}.json`
+export function taskNamespace(id: string, root: string, cwd: string): string {
+  const prefix = relative(resolve(root), resolve(cwd)).replace(/\\/gu, '/')
+  if (prefix.startsWith('..') || isAbsolute(prefix)) throw new Error('任务工作区越出项目根目录')
+  return prefix ? `${prefix}/${taskDirectory(id)}` : taskDirectory(id)
+}
+/** Direct task directories only; no recursive scan or alternate storage layout. */
+export async function listTaskIds(fs: Fs, cwd?: string): Promise<string[]> {
+  if (typeof fs.listDir !== 'function') return []
+  assertRealPath(resolve(cwd ?? process.cwd(), TASKS_DIRECTORY))
+  try {
+    const target = await fs.resolve(TASKS_DIRECTORY, cwd === undefined ? undefined : { cwd })
+    return (await fs.listDir(target)).filter(entry => validTaskId(entry.name)
+      && (entry.type === undefined || entry.type === 'directory')).map(entry => entry.name).sort((a, b) => a.localeCompare(b, 'en'))
+  } catch (error) {
+    if (['ENOENT', 'FS_NOT_FOUND'].includes((error as { code?: string }).code ?? '')) return []
+    throw error
+  }
+}
 interface WritePolicy {
   mode: 'workspace-write' | 'danger-full-access'
   workspaceRoot: string
@@ -41,6 +62,7 @@ export async function writeText(
 
 
 export async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
+  assertRealPath(resolve(cwd ?? process.cwd(), taskPath(id)))
   const raw = await readText(fs, taskPath(id), cwd)
   if (raw === undefined) throw new Error(`no task "${id}" under ${taskPath(id)}`)
   const state = JSON.parse(raw) as TaskState
@@ -67,6 +89,7 @@ export async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskSt
 
 export async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   const path = taskPath(state.id)
+  assertRealPath(resolve(cwd ?? process.cwd(), path))
   // Friendly fast-fail first: the logical revision must still be the one loaded.
   const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
   const onDiskRaw = await readText(fs, path, cwd)

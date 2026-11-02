@@ -285,6 +285,38 @@ function verificationKey(state2, itemId) {
   return JSON.stringify(requiredGroups(state2, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((group) => [group.id, group.key, latestGroupRun(state2, group.id)?.id]));
 }
 
+// src/task-paths.ts
+var TASKS_DIRECTORY = ".dsh/tasks";
+function validTaskId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(id) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/iu.test(id);
+}
+function taskDirectory(id) {
+  if (!validTaskId(id))
+    throw new Error(
+      "task_id must be a portable 1\u201364 character identifier: letters, digits, hyphens or underscores; device names are forbidden"
+    );
+  return `${TASKS_DIRECTORY}/${id}`;
+}
+var taskPath = (id) => `${taskDirectory(id)}/task.json`;
+function taskArtifactDirectory(id, namespace) {
+  const suffix = taskDirectory(id), value = namespace ?? suffix;
+  if (value !== suffix && !value.endsWith("/" + suffix) || value.split("/").some(
+    (part) => !part || part === "." || part === ".." || /[\\:\x00-\x1f<>"|?*]/u.test(part) || /[. ]$/u.test(part)
+  ))
+    throw new Error("\u4EFB\u52A1\u76EE\u5F55\u4E0D\u662F\u672C\u5DE5\u4F5C\u533A\u5185\u7684\u666E\u901A\u8DEF\u5F84");
+  return value;
+}
+var taskMaterialDirectory = (id, namespace) => `${taskArtifactDirectory(id, namespace)}/materials`;
+function isTaskLedgerPath(value) {
+  const parts = value.replace(/\\/gu, "/").split("/");
+  const tail = parts.slice(-4), prefix = parts.slice(0, -4);
+  return parts.length >= 4 && prefix.every((part) => !!part && part !== "." && part !== ".." && !/[\\:\x00-\x1f<>"|?*]/u.test(part)) && tail[0] === ".dsh" && tail[1] === "tasks" && validTaskId(tail[2]) && tail[3] === "task.json";
+}
+function isEngineMeta(value) {
+  const path2 = value.replace(/\\/gu, "/");
+  return path2 === ".dsh/eng.json" || path2 === ".dsh/meta.json" || isTaskLedgerPath(path2);
+}
+
 // src/requirements.ts
 function materialRelativePath(value) {
   if (!value || value.length > 240 || value.split("/").some((part) => !part || part === "." || part === ".." || /[\\:\x00-\x1f\x7f<>"|?*]/u.test(part) || /[. ]$/u.test(part) || part.startsWith(".") || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/iu.test(part))) throw new Error("\u6750\u6599\u8DEF\u5F84\u5FC5\u987B\u662F\u666E\u901A\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u5141\u8BB8\u8D8A\u754C\u3001\u9690\u85CF\u8DEF\u5F84\u6216\u8BBE\u5907\u540D");
@@ -295,7 +327,7 @@ function requirementMaterialPath(state2, name) {
   if (state2.id.includes("/")) throw new Error("\u9700\u6C42\u6750\u6599\u9700\u8981\u5355\u5C42\u4EFB\u52A1\u6807\u8BC6");
   if (!/\.(?:html?|md|json|txt|csv|svg)$/iu.test(name) || /(?:^|\/)(?:agents|skill)\.md$/iu.test(name))
     throw new Error("\u9700\u6C42\u6750\u6599\u4EC5\u652F\u6301 html\u3001htm\u3001md\u3001json\u3001txt\u3001csv\u3001svg\uFF1B\u4E0D\u80FD\u5199\u5165\u6307\u4EE4\u6587\u4EF6\u6216\u7A0B\u5E8F");
-  return `docs/requirements/${state2.id}/${name}`;
+  return `${taskMaterialDirectory(state2.id, state2.task_directory)}/${name}`;
 }
 function taskExecutionProblem(state2) {
   if (state2.completed || state2.delivery?.intent === "analysis") return void 0;
@@ -448,9 +480,6 @@ function commitCheckpoint(state2, config2) {
   }
   return { allowed: false, reason: "no commit is due at this stage under the current policy" };
 }
-function isEngineMeta(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
-}
 function checkFileScope(state2, committing, config2) {
   if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
   if (state2.files.length === 0) return { ok: false, outside: [], noScope: true };
@@ -487,7 +516,7 @@ var TYPE_MARKERS = {
   rust: ["Cargo.toml"]
 };
 var DEFAULT_RISK_POLICY = {
-  // `.dsh/task-*.json` and `.dsh/eng.json` are protected by the snapshot hash and
+  // `.dsh/tasks/*/task.json` and `.dsh/eng.json` are protected by the snapshot hash and
   // the engine-meta exemption, not by this list; `.dsh/rules` / `.dsh/skills`
   // hold regular project content and stay committable by normal tasks.
   sensitive_paths: [".git", ".env", ".credentials.yaml", "credentials", "secrets"],
@@ -686,6 +715,7 @@ function normalizeTask(task) {
       verification_runs: task.verification_runs ?? []
     } : {},
     ...typeof task.root === "string" ? { root: task.root } : {},
+    ...typeof task.task_directory === "string" ? { task_directory: task.task_directory } : {},
     ...task.flow !== void 0 ? { flow: task.flow } : {}
   };
 }
@@ -708,20 +738,27 @@ function loadTasks() {
   const out = [];
   const repoRoot = import_node_fs3.default.realpathSync.native(process.cwd());
   for (const root of taskRoots(repoRoot)) {
-    const dir = import_node_path3.default.join(root, ".dsh");
+    const dir = import_node_path3.default.join(root, TASKS_DIRECTORY);
     if (!import_node_fs3.default.existsSync(dir)) continue;
-    const names = import_node_fs3.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
-    for (const name of names) {
-      const json = readJson(import_node_path3.default.join(dir, name));
+    assertRealPath(dir);
+    const ids = import_node_fs3.default.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && validTaskId(entry.name)).map((entry) => entry.name);
+    for (const id of ids) {
+      const file = import_node_path3.default.join(root, taskPath(id));
+      assertRealPath(file);
+      const json = readJson(file);
       if (json === void 0 || json.id === void 0) continue;
+      if (json.id !== id) refuse(`\u4EFB\u52A1\u76EE\u5F55\u4E0E\u8BB0\u5F55\u7F16\u53F7\u4E0D\u4E00\u81F4\uFF1A${file}`);
       const task = normalizeTask(json);
       const projectRoot = import_node_fs3.default.realpathSync.native(task.root === void 0 ? root : import_node_path3.default.resolve(task.root));
+      const prefix = import_node_path3.default.relative(projectRoot, root).replaceAll("\\", "/");
+      const expectedDirectory = prefix ? `${prefix}/${taskDirectory(id)}` : taskDirectory(id);
+      if (task.task_directory !== void 0 && task.task_directory !== expectedDirectory) refuse("\u4EFB\u52A1\u76EE\u5F55\u4E0E\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4");
       const insideRepo = import_node_path3.default.relative(repoRoot, projectRoot);
       const workspaceInsideProject = import_node_path3.default.relative(projectRoot, root);
       if (insideRepo.startsWith("..") || import_node_path3.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path3.default.isAbsolute(workspaceInsideProject)) {
         refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
       }
-      out.push({ file: import_node_path3.default.join(dir, name), task: { ...task, root: projectRoot } });
+      out.push({ file, task: { ...task, root: projectRoot } });
     }
   }
   return out;
@@ -800,11 +837,8 @@ function extractTaskId(message2) {
   const match = /^【([^【】\s]+)】/.exec(message2);
   return match ? match[1] : void 0;
 }
-function isEngineMeta2(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
-}
 function scopeHash(state2, root, includeGovernance = false) {
-  const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta2(file)).sort().map((file) => {
+  const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta(file)).sort().map((file) => {
     const target = import_node_path3.default.resolve(root, file);
     const inside = import_node_path3.default.relative(root, target);
     if (inside.startsWith("..") || import_node_path3.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
@@ -821,7 +855,7 @@ function scopeHash(state2, root, includeGovernance = false) {
   return hashText(JSON.stringify(entries2));
 }
 function riskyPaths(entries2) {
-  return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => isSensitivePath(entry.path)).map((entry) => entry.path);
+  return entries2.filter((entry) => !isEngineMeta(entry.path)).filter((entry) => isSensitivePath(entry.path)).map((entry) => entry.path);
 }
 function riskVerified(state2) {
   const receipt = state2.verification.receipt;
@@ -838,7 +872,7 @@ var state;
 if (taskId !== void 0) {
   const found = tasks.filter(({ task }) => task.id === taskId);
   if (found.length === 0) {
-    refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-<id>.json\uFF09`);
+    refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/tasks/<id>/task.json\uFF09`);
   }
   if (found.length > 1) refuse(`\u4EFB\u52A1 id "${taskId}" \u5728\u591A\u4E2A\u5DE5\u4F5C\u533A\u91CD\u590D\uFF1B\u8BF7\u5148\u6D88\u9664\u6B67\u4E49`);
   state = found[0].task;
@@ -930,7 +964,7 @@ if (!scope.ok) {
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
 for (const entry of entries) {
-  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path3.default.relative(cwd, import_node_path3.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
+  if (!isEngineMeta(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path3.default.relative(cwd, import_node_path3.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
 }
 var sensitive = riskyPaths(entries);
 var riskyChanges = entries.filter((entry) => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? "")).map((entry) => `${entry.status}	${entry.path}`);

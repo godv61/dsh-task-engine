@@ -125,3 +125,7 @@ Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分�
 技能回执证明所记录命令实际执行并成功退出，不证明检查覆盖了 Skill 或需求。拒绝明显的固定输出/直接成功退出及常见外壳转发，保留内联断言、lint 与类型检查；任意脚本的有效性仍由可信项目定义和主会话核对，不宣称拒绝名单能证明程序语义。
 
 `npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 安装指定 rc.3 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性及执行限制，零模型调用。它们位于必过的 Ubuntu/Node 22 CI 路径，旧 seeder 的可选实文件探针不代替当前宿主验收。
+
+## 任务目录与台账投影
+
+任务读写、会话权限及提交钩子共用 `task-paths.ts`，工作区按 `.dsh/tasks/<id>/task.json` 查找直接任务目录。`task_directory` 记录相对源码根的命名空间，使子工作区的需求文档、材料、审核产物与其台账物理同目录。台账视图共用 `task-ledger-types.ts`，`task-ledger-content.ts` 只投影已记录产物与文件，`task-ledger-document.ts` 生成可读副本，不增加第二份状态或写接口。正文使用宿主 Markdown 渲染器；历史运行证据集中在 `TaskLedgerAudit.tsx`。见 `docs/testing/task-workspace.md`。

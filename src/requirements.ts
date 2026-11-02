@@ -1,5 +1,6 @@
 /** Browser-safe, version-bound business confirmation. Tool permissions are unrelated. */
 import type { TaskState, WorkflowConfig } from './engine.ts'
+import { taskMaterialDirectory } from './task-paths.ts'
 
 export interface RequirementPolicy { version: 1; stage: string; artifact: string }
 export interface ClarificationQuestion {
@@ -47,12 +48,12 @@ export function materialRelativePath(value: string): void {
     || /[\\:\x00-\x1f\x7f<>"|?*]/u.test(part) || /[. ]$/u.test(part) || part.startsWith('.')
     || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/iu.test(part))) throw new Error('材料路径必须是普通相对路径，不允许越界、隐藏路径或设备名')
 }
-export function requirementMaterialPath(state: Pick<TaskState, 'id'>, name: string): string {
+export function requirementMaterialPath(state: Pick<TaskState, 'id' | 'task_directory'>, name: string): string {
   materialRelativePath(state.id); materialRelativePath(name)
   if (state.id.includes('/')) throw new Error('需求材料需要单层任务标识')
   if (!/\.(?:html?|md|json|txt|csv|svg)$/iu.test(name) || /(?:^|\/)(?:agents|skill)\.md$/iu.test(name))
     throw new Error('需求材料仅支持 html、htm、md、json、txt、csv、svg；不能写入指令文件或程序')
-  return `docs/requirements/${state.id}/${name}`
+  return `${taskMaterialDirectory(state.id, state.task_directory)}/${name}`
 }
 export const REQUIREMENT_FIELDS = {
   goal: '业务目标与当前问题', scope: '本期范围', non_goals: '明确不做', rules: '业务流程与规则',
@@ -94,7 +95,7 @@ export function requirementsView(state: TaskState, stale = false, detail = false
   const doc = state.requirements?.document
   return { status: stale ? 'stale' : pending ? 'clarifying' : !doc ? 'draft'
     : doc.source !== requirementSource(state, policy) ? 'draft' : doc.status,
-    pending_questions: pending, material_root: `docs/requirements/${state.id}/`,
+    pending_questions: pending, material_root: `${taskMaterialDirectory(state.id, state.task_directory)}/`,
     ...(state.requirements?.materials?.length ? { materials: state.requirements.materials } : {}), ...(doc ? { path: doc.path, version: doc.version, hash: doc.hash,
       ...(doc.confirmation ? { confirmed_at: doc.confirmation.at } : {}),
       ...(doc.feedback ? { feedback: doc.feedback } : {}), ...(detail ? { content: doc.content } : {}) } : {}) }

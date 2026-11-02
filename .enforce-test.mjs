@@ -46,7 +46,7 @@ async function project() {
   const exec = { agent: { session: { id: 'e', header: { cwd }, snapshotEvents: () => events } }, signal: new AbortController().signal }
   const call = async args => execute(JSON.parse(JSON.stringify({ task_id: 'E-1', ...args })), exec)
   await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit', title: 't', branch: 'main', files: ['a.js'] })
-  const state = JSON.parse(records.get(join(cwd, '.dsh/task-E-1.json')))
+  const state = JSON.parse(records.get(join(cwd, '.dsh/tasks/E-1/task.json')))
   delete state.flow.hash
   state.flow.config = resolveFlow('standard', { ...adopted, stage_bindings }).config
   delete state.delegation_version; delete state.execution_policy; delete state.verification_version; delete state.delivery
@@ -54,7 +54,7 @@ async function project() {
   confirmedRequirement(state, (p,c) => records.set(join(cwd,p),c))
   state.requirement_confirmed = true
   state.solution_confirmed = true
-  records.set(join(cwd, '.dsh/task-E-1.json'), JSON.stringify(state))
+  records.set(join(cwd, '.dsh/tasks/E-1/task.json'), JSON.stringify(state))
   const load = async name => {
     const skill_name = `project:${name}`
     await call({operation:'load_skill',skill_name})
@@ -62,7 +62,7 @@ async function project() {
     events.push({ type: 'tool/call', data: { name:'dev_task',callId,arguments:JSON.stringify({operation:'load_skill',task_id:'E-1',skill_name}) } })
     events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: callId, isError: false }] } } })
   }
-  const current = () => JSON.parse(records.get(join(cwd, '.dsh/task-E-1.json')))
+  const current = () => JSON.parse(records.get(join(cwd, '.dsh/tasks/E-1/task.json')))
   return { call, records, cwd, load, current, rule: () => join(cwd, '.dsh/rules/mine.md') }
 }
 
@@ -81,7 +81,7 @@ test('enforce: a task WITHOUT frozen resource bodies cannot advance while a boun
   const f = await project()
   const state = f.current()
   delete state.flow.resources
-  f.records.set(join(f.cwd, '.dsh/task-E-1.json'), JSON.stringify(state))
+  f.records.set(join(f.cwd, '.dsh/tasks/E-1/task.json'), JSON.stringify(state))
   await satistfyDevelopment(f)
 
   f.records.delete(f.rule())

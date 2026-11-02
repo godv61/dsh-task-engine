@@ -55,9 +55,9 @@ async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk
   }
   await call({operation:'create', intent:'implementation', intent_reason:'Fixture implementation', complexity:'low', complexity_reason:'Fixture unit', risk_level:risk, title:'execution strategy test',branch:'test',files:['a.mjs','check.test.mjs'],
     execution_policy:policy,items:[{id:'I1',title:'deliver module'}]})
-  { const p=join(cwd,'.dsh/task-POLICY-1.json'); const accepted=JSON.parse(readFileSync(p,'utf8')); confirmedRequirement(accepted,(f,c)=>{mkdirSync(dirname(join(cwd,f)),{recursive:true});writeFileSync(join(cwd,f),c)});writeFileSync(p,JSON.stringify(accepted)) }
+  { const p=join(cwd,'.dsh/tasks/POLICY-1/task.json'); const accepted=JSON.parse(readFileSync(p,'utf8')); confirmedRequirement(accepted,(f,c)=>{mkdirSync(dirname(join(cwd,f)),{recursive:true});writeFileSync(join(cwd,f),c)});writeFileSync(p,JSON.stringify(accepted)) }
   await call({operation:'plan_verification',verification_group:'module',command:'node --test check.test.mjs',files:['a.mjs','check.test.mjs'],item_ids:['I1']})
-  const taskPath = join(cwd,'.dsh/task-POLICY-1.json')
+  const taskPath = join(cwd,'.dsh/tasks/POLICY-1/task.json')
   const state = () => JSON.parse(readFileSync(taskPath,'utf8'))
   const save = s => writeFileSync(taskPath,JSON.stringify(s))
   let verdict = {spec:'pass',quality:'pass',notes:['a.mjs:1 returns 2; check.test.mjs:1 pins acceptance']}, disposed=0, calls=[]

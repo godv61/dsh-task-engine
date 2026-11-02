@@ -10,6 +10,7 @@ import { isSensitivePath } from './project.ts'
 import { loadTask, readText, writeTask, writeText, type WriteFs } from './task-store.ts'
 import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, REQUIREMENT_FIELDS, type ClarificationQuestion } from './requirements.ts'
 import { requirementMaterialProblem, retireRequirementMaterial, writeRequirementMaterial, type MaterialArgs, type MaterialTemplate } from './requirement-materials.ts'
+import { taskRequirementPath, isTaskRequirementPath } from './task-paths.ts'
 
 interface UserQuestions {
   ask(input: { agent: unknown; signal?: AbortSignal; wait?: { callId: unknown };
@@ -59,9 +60,10 @@ export async function executeRequirementCommand(args: {
     if (missing.length) throw new Error(`需求总结尚缺字段：${missing.join(', ')}；先 record requirement`)
     if (state.requirements?.clarifications.some(question => !question.answer)) throw new Error('仍有未回答的澄清问题；先通过 clarify_requirement 获取用户答复')
     const previous = state.requirements?.document
-    const path = args.document_path ?? previous?.path ?? `docs/requirements/${state.id}.md`
-    if (!/^(?![./])[^\r\n\\:*?"<>|]+\.md$/u.test(path) || path.split('/').some(part => !part || part === '..')
-      || path.startsWith('.dsh/') || isSensitivePath(path)) throw new Error('document_path 必须是工作区内的普通 Markdown 路径，例如 docs/requirements/TASK-1.md')
+    const path = args.document_path ?? previous?.path ?? taskRequirementPath(state.id, state.task_directory)
+    const taskOwned = isTaskRequirementPath(state.id, path, state.task_directory)
+    if (!taskOwned && !/^(?![./])[^\r\n\\:*?"<>|]+\.md$/u.test(path) || path.split('/').some(part => !part || part === '..')
+      || path.split('/').includes('.dsh') && !taskOwned || isSensitivePath(path)) throw new Error('document_path 必须是本任务的 requirement.md（或带版本后缀的总结），或 .dsh 之外的普通 Markdown 路径')
     assertInsideRoot(root ?? '', root ?? '', path)
     const source = requirementSource(state, policy)
     const version = previous ? previous.source === source && previous.path === path ? previous.version : previous.version + 1 : 1

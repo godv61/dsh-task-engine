@@ -13,7 +13,7 @@ whenToUse: 自适应任务进入需求分析元技能时。
 1. 对影响本期范围、业务规则或验收结果的问题，用 `clarify_requirement` 的 `clarification_questions` 每批询问 1–3 个关键问题。宿主保存真实用户答复；不能把“建议本期不做”写成“用户确认不做”。用户明确接受的接口待联调等边界可以保留，并写清责任和限制。
    需要交给产品／技术负责人填写的材料时，使用 `write_requirement_material` 在任务专属目录生成 HTML、Markdown、JSON 等文本材料。挂载 Skill 可通过 `material_template` 引用本节点已实际加载的 Skill HTML 资产，只替换指定 JSON 数据区，无需运行脚本。材料路径、版本和指纹由宿主登记；材料生成、页面填完或回填 JSON 都不代表需求已批准。收集并核对实际反馈后再完善需求总结。已有人工修改保留，改用新版本文件名；不再作为本期依据的旧材料可 `retire_requirement_material` 停用，原文件保留。
 2. 使用 `record artifact=requirement` 写目标、本期范围、非目标、流程与规则、异常边界、验收条件、外部依赖及已接受假设；字段严格按快照。验收条件应描述可观察的输入和结果，不能仅写“实现完成”“编译通过”。明确小改使用精简总结；含糊需求不能为了省流程归为低复杂度。
-3. 调用 `prepare_requirement` 生成可审阅的需求总结，默认 `docs/requirements/<task_id>.md`，项目可指定普通 Markdown 路径。向用户展示文档和本期范围；已有清晰规格可引用整理，不重复访谈，不臆测缺失信息。
+3. 调用 `prepare_requirement` 生成可审阅的需求总结，默认 `.dsh/tasks/<task_id>/requirement.md`，项目可指定普通 Markdown 路径。向用户展示文档和本期范围；已有清晰规格可引用整理，不重复访谈，不臆测缺失信息。
 4. 调用 `confirm_requirement expected_hash=<本版返回值>`，由宿主展示全文并收集用户确认。用户要求修改就先修订或澄清，再生成新版本；取消或无答复保持当前阶段，不原样反复申请。确认前不实施、不执行项目命令；自动工具权限不代表需求确认。
 5. 仅当前版本已确认才交接到下一阶段。之后改变范围、业务规则或验收条件，先 `revise revision_kind=requirement` 返回需求所属阶段，修订并重新确认；不要沿用旧版同意。
 

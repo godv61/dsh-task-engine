@@ -69,7 +69,7 @@ async function fixture(flow = 'standard', config = {}, diskRoot, createArgs = {}
   const session = { id: 'assessment', header: { cwd }, snapshotEvents: () => events }
   const call = args => execute({ task_id: 'ASSESS-1', ...(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit' } : {}), ...args }, { agent: { session }, signal: new AbortController().signal })
   await call({ operation: 'create', title: 'isolated assessment', branch: 'main', files: ['a.js'], ...createArgs })
-  const path = join(cwd, '.dsh/task-ASSESS-1.json')
+  const path = join(cwd, '.dsh/tasks/ASSESS-1/task.json')
   { const initial = JSON.parse(records.get(path)); initial.flow.config = resolveFlow(flow, { flow, ...config }).config; initial.stage = initial.flow.config.start_stage; initial.flow.resources = undefined; delete initial.flow.hash; delete initial.delegation_version; delete initial.execution_policy; delete initial.verification_version; delete initial.delivery; confirmedRequirement(initial, (p,c) => records.set(join(cwd,p),c)); records.set(path,JSON.stringify(initial)) }
   const current = () => JSON.parse(records.get(path))
   const save = state => records.set(path, JSON.stringify(state))
@@ -165,7 +165,7 @@ test('new Sonar task captures the real dirty baseline before writing its record'
     source: 'ide-local', host_url: 'https://sonar.example.invalid', project_key: 'fixture', reference_branch: 'HEAD' } }))
   await f.call({ operation: 'create', task_id: 'BASELINE', title: 'baseline wiring', branch: 'main',
     complexity: 'medium', complexity_reason: 'fixture for actual creation baseline', files: ['a.js'] })
-  const created = JSON.parse(f.records.get(join(root, '.dsh/task-BASELINE.json')))
+  const created = JSON.parse(f.records.get(join(root, '.dsh/tasks/BASELINE/task.json')))
   assert.equal(created.sonar_baseline.reference, 'HEAD')
   assert.equal(created.sonar_baseline.files.find(file => file.path === 'preexisting.xml').hash, hashText('<existing/>\n'))
 })
@@ -232,12 +232,12 @@ test('ledger isolates corruption and marks changed verification stale', async ()
   const read = () => Controller.prototype.readTasks.call(receiver, f.cwd)
   assert.equal((await read()).tasks[0].evidence_status, 'valid')
   f.records.set(join(f.cwd, 'a.js'), 'changed')
-  f.records.set(join(f.cwd, '.dsh/task-BAD.json'), '{')
+  f.records.set(join(f.cwd, '.dsh/tasks/BAD/task.json'), '{')
   const ledger = await read()
   assert.equal(ledger.tasks.length, 1)
   assert.equal(ledger.tasks[0].evidence_status, 'stale')
   assert.equal(ledger.tasks[0].verification_passed, false)
-  assert.equal(ledger.errors[0].file, 'task-BAD.json')
+  assert.equal(ledger.errors[0].file, '.dsh/tasks/BAD/task.json')
 })
 
 test('ledger explains a real commit checkpoint instead of asking to repeat an already valid review', async () => {
@@ -496,7 +496,7 @@ test('ledger cursor reads at most 100 records and does not lose or duplicate rem
   const f = await fixture()
   for (let i = 0; i < 130; i++) {
     const id = `PAGE-${String(i).padStart(3, '0')}`
-    f.records.set(join(f.cwd, `.dsh/task-${id}.json`), JSON.stringify({ ...f.current(), id }))
+    f.records.set(join(f.cwd, `.dsh/tasks/${id}/task.json`), JSON.stringify({ ...f.current(), id, task_directory: `.dsh/tasks/${id}` }))
   }
   const receiver = { authorizedPath: async p => p, fs: () => f.fs }
   const first = await Controller.prototype.readTasks.call(receiver, f.cwd)

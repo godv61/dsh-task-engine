@@ -46,7 +46,7 @@ export function apply(ctx){
       for(const name of ['dev_task','read','glob','grep'])assert.ok(tools().includes(name),name)
       const accepted=await invoke('dev_task',{operation:'submit_analysis',task_id:'PRESET-PROBE',conclusion:'Fixture source is readable',proposal:'No implementation required',limitations:[],source_evidence:[{file:'proof.txt',start_line:1,end_line:1,quote:'Native'}]})
       assert.equal(accepted.isError,false,JSON.stringify(accepted))
-      const state=JSON.parse(readFileSync(join(agent.session.header.cwd,'.dsh/task-PRESET-PROBE.json'),'utf8'))
+      const state=JSON.parse(readFileSync(join(agent.session.header.cwd,'.dsh/tasks/PRESET-PROBE/task.json'),'utf8'))
       const snapshot=state.delivery.result.evidence[0]
       assert.equal(snapshot.quote,'Native preset composition fixture')
       assert.equal(snapshot.highlight,'Native')
@@ -81,7 +81,7 @@ export function apply(ctx){
       await call({operation:'load_skill',skill_name:'project:preset-form'})
       const templateResult=await invoke('dev_task',{task_id:requirementTask,operation:'write_requirement_material',material_name:'product/form.html',material_template:{skill_name:'project:preset-form',path:'assets/form.html',data_id:'fixture-data',json:'{"title":"Product decisions"}',identity_field:'id'}})
       assert.equal(templateResult.isError,false,JSON.stringify(templateResult))
-      assert.match(readFileSync(join(agent.session.header.cwd,`docs/requirements/${requirementTask}/product/form.html`),'utf8'),/Product decisions/)
+      assert.match(readFileSync(join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/materials/product/form.html`),'utf8'),/Product decisions/)
       await call({operation:'record',artifact:'requirement',fields:{goal:'write fixture',scope:'one file',acceptance:'fixture exists'}})
       const summary=JSON.parse(await call({operation:'prepare_requirement'}))
       assert.match(summary.content,/product\/questions.json/)
@@ -89,7 +89,7 @@ export function apply(ctx){
       const questionCount=requirementQuestions
       await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
       assert.equal(requirementQuestions,questionCount)
-      const approved=JSON.parse(readFileSync(join(agent.session.header.cwd,`.dsh/task-${requirementTask}.json`),'utf8'))
+      const approved=JSON.parse(readFileSync(join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/task.json`),'utf8'))
       assert.equal(approved.requirements.document.confirmation.hash,summary.requirement.hash)
       assert.equal((await invoke('write',{file_path:'approved-fixture.txt',content:'after human confirmation'})).isError,false)
       writeFileSync(join(agent.session.header.cwd,material.path),'changed product material')
@@ -107,7 +107,7 @@ export function apply(ctx){
       assert.equal(requirementQuestions,questionCount)
       writeFileSync(join(agent.session.header.cwd,summary.requirement.path),'changed again')
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'must still be denied'})).isError,true)
-      const taskPath=join(agent.session.header.cwd,`.dsh/task-${requirementTask}.json`)
+      const taskPath=join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/task.json`)
       delete approved.flow.config.requirement_review
       approved.flow.hash=createHash('sha256').update(JSON.stringify(approved.flow.config)).digest('hex')
       const oldRecord=JSON.stringify(approved);writeFileSync(taskPath,oldRecord)

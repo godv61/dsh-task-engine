@@ -76,7 +76,7 @@ export interface RiskPolicy {
 }
 
 export const DEFAULT_RISK_POLICY: RiskPolicy = {
-  // `.dsh/task-*.json` and `.dsh/eng.json` are protected by the snapshot hash and
+  // `.dsh/tasks/*/task.json` and `.dsh/eng.json` are protected by the snapshot hash and
   // the engine-meta exemption, not by this list; `.dsh/rules` / `.dsh/skills`
   // hold regular project content and stay committable by normal tasks.
   sensitive_paths: ['.git', '.env', '.credentials.yaml', 'credentials', 'secrets'],

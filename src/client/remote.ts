@@ -271,6 +271,11 @@ const taskLedgerViewSchema = z.object({
   next_cursor: z.string().optional(), total_count: z.number().optional(),
   errors: z.array(z.object({ file: z.string(), message: z.string() })).optional(),
   tasks: z.array(z.object({
+    content: z.object({ directory: z.string(), ledger_path: z.string(), stages: z.array(z.string()), files: z.array(z.string()),
+      artifacts: z.array(z.object({ id: z.string(), name: z.string(), stage: z.string(),
+        fields: z.array(z.object({ key: z.string(), label: z.string(), value: z.string() })) })),
+      verification_inputs: z.array(z.object({ group_id: z.string(), files: z.array(z.string()), item_ids: z.array(z.string()) })),
+    }).optional(),
     requirements: z.object({ status: z.enum(['clarifying', 'draft', 'awaiting_confirmation', 'confirmed', 'changes_requested', 'stale']),
       pending_questions: z.number(), path: z.string().optional(), version: z.number().optional(), hash: z.string().optional(),
       confirmed_at: z.string().optional(), feedback: z.string().optional(), content: z.string().optional(),

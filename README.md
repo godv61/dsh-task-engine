@@ -150,11 +150,11 @@ pnpm dsh web --no-open
 
 需求分析交付目标、范围、非目标和可验证的验收条件；架构设计交付边界、影响与取舍；任务编排交付按实现先后排列的实施项 ID、依赖和交接产物；开发交付文件与逐项审查；测试交付真实命令；代码审核交付结论和可选 Sonar 报告。**实施项体现推进顺序，不是按人数分派工作。** 风险等级由模型另外判断，不等同复杂度。
 
-新建显式 `intent=implementation` 的自适应任务执行“澄清 → 需求总结 → 用户确认 → 实施”。关键疑问通过 `clarify_requirement` 收集真实用户答复，`record requirement` 整理当前阶段字段，`prepare_requirement` 从同份内容生成 `docs/requirements/<任务编号>.md`（可用 `document_path` 指定普通 Markdown 路径），`confirm_requirement expected_hash` 展示该版本全文并询问用户。台账显示文档、版本、确认状态和修改意见。低档仍保持原阶段数，先在初始阶段给精简总结；中/高/超高档整理目标、范围、非目标、业务规则、异常、验收和依赖。明确需求可直接整理，不重复访谈；含糊需求不能归为低档跳过澄清。
+新建显式 `intent=implementation` 的自适应任务执行“澄清 → 需求总结 → 用户确认 → 实施”。关键疑问通过 `clarify_requirement` 收集真实用户答复，`record requirement` 整理当前阶段字段，`prepare_requirement` 从同份内容生成 `.dsh/tasks/<任务编号>/requirement.md`（可用 `document_path` 指定普通 Markdown 路径），`confirm_requirement expected_hash` 展示该版本全文并询问用户。台账显示文档、版本、确认状态和修改意见。低档仍保持原阶段数，先在初始阶段给精简总结；中/高/超高档整理目标、范围、非目标、业务规则、异常、验收和依赖。明确需求可直接整理，不重复访谈；含糊需求不能归为低档跳过澄清。
 
 用户确认前只允许查阅、澄清和整理需求，业务写入、项目命令和实施委派会被限制；自动执行权限不代表业务确认。问题未答、用户要求修改或审阅期间版本变化均不放行。范围或验收变化须 `revise revision_kind=requirement` 修订后重新确认；文档的人工修改受保护，不会静默覆盖。用户明确接受的待联调事项可写入总结后确认，不要求所有外部依赖已就绪。文档可按项目约定随任务提交，由需求版本门禁单独核对，不自动加入业务测试文件范围。重复确认同一有效版本会复用原回执；文档恢复为已确认的原始内容后，工具展示与执行权限会同步恢复。
 
-确认前的原生写文件工具和终端仍受限制，需求总结由 `prepare_requirement` 写入。挂载 Skill 可用 `write_requirement_material` 生成 HTML、Markdown、JSON、TXT、CSV、SVG 等文本材料，统一保存在 `docs/requirements/<任务编号>/`，台账记录路径、版本和指纹；单份最多 1 MiB，每任务最多登记 64 份。生成材料、填写表单或导出答复都不自动批准需求。材料变更或丢失会阻止确认与业务写入，Git 钩子也核对有效材料；修改需求字段及材料后重新生成总结并请用户确认。
+确认前的原生写文件工具和终端仍受限制，需求总结由 `prepare_requirement` 写入。挂载 Skill 可用 `write_requirement_material` 生成 HTML、Markdown、JSON、TXT、CSV、SVG 等文本材料，统一保存在 `.dsh/tasks/<任务编号>/materials/`，台账记录路径、版本和指纹；单份最多 1 MiB，每任务最多登记 64 份。生成材料、填写表单或导出答复都不自动批准需求。材料变更或丢失会阻止确认与业务写入，Git 钩子也核对有效材料；修改需求字段及材料后重新生成总结并请用户确认。
 
 直接写正文与 HTML 模板渲染共用入口。模板必须是当前节点已绑定且本任务／会话实际加载的 Skill 的 `assets/` HTML 文件；插件仅替换指定的 `application/json` 数据区，不运行脚本，不把模板全文重复注入模型。可用 `identity_field` 把内容相关的材料标识填入模板数据字段，隔离改题前后的表单缓存。已有未登记文件或人工修改不会被覆盖；修改未确认的已生成材料须提供当前 `expected_hash`。旧稿不再作为本期依据时，用 `retire_requirement_material`、`material_name` 与当前指纹停用登记，文件及历史元信息保留。多角色签署、任意 Skill 指令的自动完成校验仍未包含在内。
 
@@ -290,7 +290,7 @@ Sonar 的非秘密配置保存在项目 `.dsh/meta.json`；Token **不会写入�
 
 ### 查看审核、处理误报、沉淀 Rule
 
-代码审核元技能自动调用 `dev_task sonar_check`。在**任务台账**展开最近一次审核，可查看原始结果、规则、严重程度、文件位置、分析器状态、人工复核状态和未解决数量。每次扫描在项目 `.dsh/reviews/<任务 ID>/` 生成 Markdown 报告；最近一次结构化结果写入 `.dsh/task-<任务 ID>.json`，历次完整结果另存于 `.dsh/reviews/<任务 ID>/` 中的 JSON 详情文件；主台账仅保留历史索引。
+代码审核元技能自动调用 `dev_task sonar_check`。在**任务台账**展开最近一次审核，可查看原始结果、规则、严重程度、文件位置、分析器状态、人工复核状态和未解决数量。每次扫描在项目 `.dsh/tasks/<任务 ID>/reviews/` 生成 Markdown 报告；最近一次结构化结果写入 `.dsh/tasks/<任务 ID>/task.json`，历次完整结果另存于 `.dsh/tasks/<任务 ID>/reviews/` 中的 JSON 详情文件；主台账仅保留历史索引。
 
 - **真实问题：** 修复代码，重新测试并复扫。真实、已修复且可复用的案例，可以通过 `learn_rule phase=propose → apply` 预览并沉淀为项目 Rule，供之后创建的任务使用。
 - **疑似本地规则误报：** 用 `sonar_disposition` 指定本次报告的 `issue_key`，提供具体理由与源码证据，由人逐条批准。原始告警仍保留；未批准、证据不足、代码变化或重新扫描后都不能沿用处置。已确认误报不会自动转成 Rule。
@@ -298,14 +298,20 @@ Sonar 的非秘密配置保存在项目 `.dsh/meta.json`；Token **不会写入�
 
 ## 任务台账与项目文件
 
+每个任务使用一个目录 `.dsh/tasks/<id>/`：`task.json` 是唯一状态来源，`requirement.md` 保存需求总结，`materials/` 保存确认材料，`reviews/` 保存逐次审核报告。按需创建产物，不预建空目录。项目级配置、Skill 和 Rule 仍属于整个项目。业务代码及业务测试保留在原来的源码、测试目录。
+
+台账采用左侧任务列表、右侧详情的工作台。可分别阅读概览、需求与方案、实施计划、登记文件、验证与审核，也可切换“文档阅读”连续查阅，或下载 Markdown 阅读副本。导出不写回任务状态，也不产生新的需求批准。登记文件与测试输入分开显示，登记范围不等于实际 Git 变更；阶段条仅标记当前阶段，不推断之前的阶段均已完成。
+
 “待开始”表示实施项还未执行；“实施中”表示已记录开始；“待审查”表示缺少该项的规格或质量审查；“代码审核”则是整个任务的后续阶段。它们不是团队成员分派状态。任务完成后调用 dev_task complete 即归档并变为只读；同一会话后续出现新需求或上线后的修复时，新建任务 ID。可用 related_task_id 和 relation_kind 关联已归档任务；归属不清时先让使用者选择。台账默认显示进行中与待归档任务，可切换查看已归档记录。
 
 | 位置 | 内容 | 团队共享建议 |
 | --- | --- | --- |
 | `.dsh/meta.json` | 项目元技能挂载及 Sonar 非秘密配置 | 审阅后提交 |
 | `.dsh/skills/`、`.dsh/rules/` | 项目 Skill、Rule 与 Skill 的 `profile.json` | 审阅后提交 |
-| `.dsh/task-<id>.json` | 任务阶段、实施项、测试和审核回执 | 按团队留痕策略决定 |
-| `.dsh/reviews/` | 逐次 Sonar 报告与误报处置 | 可加入 `.gitignore` 留在本机 |
+| `.dsh/tasks/<id>/task.json` | 任务阶段、实施项、测试和审核回执 | 按团队留痕策略决定 |
+| `.dsh/tasks/<id>/requirement.md` | 需求总结及本版确认依据 | 可随任务提交 |
+| `.dsh/tasks/<id>/materials/` | 产品、技术待确认材料等 | 按材料共享范围决定 |
+| `.dsh/tasks/<id>/reviews/` | 逐次 Sonar 报告与误报处置 | 可加入 `.gitignore` 留在本机 |
 | 本机 DSH 凭据存储 | 按工作区隔离的 Sonar Token | 不提交、不分享 |
 
 ## 常见问题
