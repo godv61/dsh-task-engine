@@ -26,7 +26,8 @@ import { DEFAULT_RISK_POLICY, isSensitivePath } from './project.ts'
 import { sonarCommitBlockers } from './sonar.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
 import { groupInputs } from './verification-state.ts'
-import { requirementConfirmed, taskExecutionProblem } from './requirements.ts'
+import { requirementConfirmed, requirementMaterialPath, taskExecutionProblem } from './requirements.ts'
+import { assertRealPath } from './resource-import.ts'
 import { lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 
 const messageFile = process.argv[2]
@@ -322,6 +323,16 @@ if (config.requirement_review) {
   try {
     if (outside(fs.realpathSync(documentPath)) || hashText(fs.readFileSync(documentPath, 'utf8')) !== doc.hash) refuse('需求文档已变化；请修订并重新确认')
   } catch { refuse('需求文档无法核对；请修订并重新确认') }
+  for (const material of state.requirements?.materials ?? []) {
+    if (material.retired_at) continue
+    try {
+      if (material.path !== requirementMaterialPath(state, material.name)) refuse('需求材料登记路径不合法')
+      const target = path.resolve(workspace, material.path)
+      assertRealPath(target)
+      if (outside(fs.realpathSync(target)) || !fs.lstatSync(target).isFile()
+        || hashText(fs.readFileSync(target, 'utf8').replace(/\r\n/gu, '\n')) !== material.hash) refuse('需求材料已变化；请修订并重新确认')
+    } catch { refuse('需求材料无法核对；请修订并重新确认') }
+  }
 }
 const checkpoint = commitCheckpoint(state, config)
 if (!checkpoint.allowed) {

@@ -17,7 +17,7 @@ import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
 import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
-import { invalidateRequirement, requirementConfirmed, type RequirementPolicy, type RequirementsState } from './requirements.ts'
+import { invalidateRequirement, requirementConfirmed, requirementMaterialPath, type RequirementPolicy, type RequirementsState } from './requirements.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -1217,7 +1217,10 @@ export function checkFileScope(state: TaskState, committing: string[], config: W
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }
   const requirementDocument = config.requirement_review ? state.requirements?.document?.path : undefined
-  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !isEngineMeta(file))
+  const materialPaths = new Set(config.requirement_review ? (state.requirements?.materials ?? []).filter(m => {
+    try { return !m.retired_at && m.path === requirementMaterialPath(state, m.name) } catch { return false }
+  }).map(m => m.path) : [])
+  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !materialPaths.has(file) && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }

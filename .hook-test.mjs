@@ -44,10 +44,19 @@ test('hook preserves versioned business confirmation and refuses a changed requi
     assert.match(tryCommit(root, 'feat: fixture').stderr, /需求版本尚未由用户确认/)
     doc.status = 'confirmed'; doc.confirmation = { hash: doc.hash, version: 1, at: '2026-10-30T00:00:00Z', session_id: 'human' }
     task.requirement_confirmed = true
+    const material = { name: 'product.html', path: 'docs/requirements/REQ-HOOK/product.html', id: 'fixture', version: 1,
+      hash: hashText('<p>Approved product decisions</p>\n'), bytes: 34, updated_at: '2026-11-02T00:00:00Z' }
+    task.requirements.materials = [material]
+    doc.source = requirementSource(task, config.requirement_review)
+    mkdirSync(join(root, 'docs/requirements/REQ-HOOK'), { recursive: true })
+    writeFileSync(join(root, material.path), '<p>Approved product decisions</p>\n')
     writeFileSync(join(root, '.dsh/task-REQ-HOOK.json'), JSON.stringify(task))
     writeFileSync(join(root, doc.path), '# Changed')
     assert.match(tryCommit(root, 'feat: fixture').stderr, /需求文档已变化/)
-    writeFileSync(join(root, doc.path), body); git(root, ['add', doc.path])
+    writeFileSync(join(root, doc.path), body); git(root, ['add', doc.path, material.path])
+    writeFileSync(join(root, material.path), 'changed product decision')
+    assert.match(tryCommit(root, 'feat: fixture').stderr, /需求材料/)
+    writeFileSync(join(root, material.path), '<p>Approved product decisions</p>\n')
     const allowed = tryCommit(root, 'feat: fixture')
     assert.equal(allowed.allowed, true, allowed.stderr)
   } finally { rmSync(root, { recursive: true, force: true }) }

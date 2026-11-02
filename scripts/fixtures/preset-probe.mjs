@@ -1,9 +1,9 @@
 // Loaded only by verify-host-preset; no credentials and no model requests.
 import assert from 'node:assert/strict'
-import { writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 
 export const name='task-engine-keyless-preset-probe'
 export const inject=['llm','agentPresets','tools','systemPrompt']
@@ -25,7 +25,18 @@ export function apply(ctx){
     await ctx.agentPresets.select(agent,preset)
     await agent.ctx.systemPrompt.assemble({scope:agent})
     const tools=()=>agent.ctx.tools.schemas(agent).map(t=>t.name)
-    const invoke=(name,args)=>agent.ctx.tools.execute({name,arguments:args,agent,signal:new AbortController().signal,callId:`probe-${name}`})
+    let invocation=0
+    const invoke=async(name,args)=>{
+      const callId=ToolCallId(`probe-${name}-${invocation++}`)
+      // Registry.execute omits the agent-loop journal. Record the actual loader
+      // call/result through the public session API; never fabricate a success.
+      const logged=name==='dev_task'&&args.operation==='load_skill'
+      const call=logged?agent.session.append('tool/call',{turn:1,step:1,callId,name,arguments:JSON.stringify(args)}):undefined
+      const result=await agent.ctx.tools.execute({name,arguments:args,agent,signal:new AbortController().signal,callId})
+      if(call)agent.session.append('tool/result',{turn:1,step:1,message:createToolResultMessage({callId,content:result.content,isError:result.isError})},
+        {surfaceOp:'append',sourceEventSeqs:[call.seq]})
+      return result
+    }
     if(preset==='eng'){
       assert.ok(tools().includes('dev_task'))
       assert.ok(!tools().includes('read'),'repository work must select a contract first')
@@ -51,6 +62,11 @@ export function apply(ctx){
       const disabled=await invoke('dev_task',{operation:'create',task_id:'DISABLED-REQUIREMENT',title:'removed opt-out',intent:'implementation',intent_reason:'fixture',complexity:'low',complexity_reason:'fixture'})
       assert.equal(disabled.isError,true)
       unlinkSync(metaPath)
+      const materialSkill=join(agent.session.header.cwd,'.dsh/skills/preset-form')
+      mkdirSync(join(materialSkill,'assets'),{recursive:true})
+      writeFileSync(join(materialSkill,'SKILL.md'),'---\nname: preset-form\ndescription: Keyless material fixture\n---\nUse assets/form.html to collect product decisions.\n')
+      writeFileSync(join(materialSkill,'assets/form.html'),'<html><script id="fixture-data" type="application/json">{}</script><script>window.fixture=true</script></html>')
+      writeFileSync(metaPath,JSON.stringify({meta_bindings:{'code-development':['preset-form']}}))
       const call=async args=>{
         const output=await invoke('dev_task',{task_id:requirementTask,...args})
         assert.equal(output.isError,false,JSON.stringify(output))
@@ -58,8 +74,17 @@ export function apply(ctx){
       }
       await call({operation:'create',title:'Requirement confirmation fixture',intent:'implementation',intent_reason:'Keyless confirmation check',complexity:'low',complexity_reason:'One fixture file'})
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'before human confirmation'})).isError,true)
+      const material=JSON.parse(await call({operation:'write_requirement_material',material_name:'product/questions.json',material_content:'{"question":"Which role may approve?"}'})).material
+      assert.equal(readFileSync(join(agent.session.header.cwd,material.path),'utf8'),'{"question":"Which role may approve?"}')
+      assert.equal((await invoke('dev_task',{task_id:requirementTask,operation:'write_requirement_material',material_name:'../../outside.html',material_content:'must not write'})).isError,true)
+      assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'materials must not unlock implementation'})).isError,true)
+      await call({operation:'load_skill',skill_name:'project:preset-form'})
+      const templateResult=await invoke('dev_task',{task_id:requirementTask,operation:'write_requirement_material',material_name:'product/form.html',material_template:{skill_name:'project:preset-form',path:'assets/form.html',data_id:'fixture-data',json:'{"title":"Product decisions"}',identity_field:'id'}})
+      assert.equal(templateResult.isError,false,JSON.stringify(templateResult))
+      assert.match(readFileSync(join(agent.session.header.cwd,`docs/requirements/${requirementTask}/product/form.html`),'utf8'),/Product decisions/)
       await call({operation:'record',artifact:'requirement',fields:{goal:'write fixture',scope:'one file',acceptance:'fixture exists'}})
       const summary=JSON.parse(await call({operation:'prepare_requirement'}))
+      assert.match(summary.content,/product\/questions.json/)
       await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
       const questionCount=requirementQuestions
       await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
@@ -67,6 +92,11 @@ export function apply(ctx){
       const approved=JSON.parse(readFileSync(join(agent.session.header.cwd,`.dsh/task-${requirementTask}.json`),'utf8'))
       assert.equal(approved.requirements.document.confirmation.hash,summary.requirement.hash)
       assert.equal((await invoke('write',{file_path:'approved-fixture.txt',content:'after human confirmation'})).isError,false)
+      writeFileSync(join(agent.session.header.cwd,material.path),'changed product material')
+      assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'material changed'})).isError,true)
+      writeFileSync(join(agent.session.header.cwd,material.path),'{"question":"Which role may approve?"}')
+      await agent.ctx.systemPrompt.assemble({scope:agent})
+      assert.equal((await invoke('write',{file_path:'restored-material-fixture.txt',content:'exact material restored'})).isError,false)
       // An external edit must revoke native writes before a later dev_task call.
       writeFileSync(join(agent.session.header.cwd,summary.requirement.path),'changed requirement')
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'stale confirmation'})).isError,true)
@@ -98,7 +128,7 @@ export function apply(ctx){
     const read=await invoke('read',{file_path:'proof.txt'})
     assert.equal(read.isError,false,JSON.stringify(read))
     observations.push({preset,tools:tools(),read_succeeded:true,write_denied:true,
-      ...(preset==='eng'?{requirement_questions:requirementQuestions,removed_opt_out_rejected:true,old_task_readonly:true,history_readonly:true,new_task_after_history:true}: {})})
+      ...(preset==='eng'?{requirement_questions:requirementQuestions,requirement_materials:true,bound_template_rendered:true,material_change_revokes_writes:true,removed_opt_out_rejected:true,old_task_readonly:true,history_readonly:true,new_task_after_history:true}: {})})
     assert.equal(modelCalls,0)
     writeFileSync(process.env.TASK_ENGINE_PRESET_PROBE_RESULT,JSON.stringify({model_calls:modelCalls,observations},null,2))
   })

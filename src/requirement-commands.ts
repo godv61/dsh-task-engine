@@ -9,13 +9,14 @@ import { assertInsideRoot } from './path-guard.ts'
 import { isSensitivePath } from './project.ts'
 import { loadTask, readText, writeTask, writeText, type WriteFs } from './task-store.ts'
 import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, REQUIREMENT_FIELDS, type ClarificationQuestion } from './requirements.ts'
+import { requirementMaterialProblem, retireRequirementMaterial, writeRequirementMaterial, type MaterialArgs, type MaterialTemplate } from './requirement-materials.ts'
 
 interface UserQuestions {
   ask(input: { agent: unknown; signal?: AbortSignal; wait?: { callId: unknown };
     questions: (ClarificationQuestion & { header?: string; detail?: string })[] }):
     Promise<{ answers: { id: string; selected: string[]; custom?: string }[] }>
 }
-export const REQUIREMENT_OPERATIONS = ['clarify_requirement', 'prepare_requirement', 'confirm_requirement'] as const
+export const REQUIREMENT_OPERATIONS = ['clarify_requirement', 'prepare_requirement', 'confirm_requirement', 'write_requirement_material', 'retire_requirement_material'] as const
 const APPROVE = '确认无误，继续'
 
 export async function requirementDocumentProblem(fs: Context['fs'], state: TaskState, cwd?: string): Promise<string | undefined> {
@@ -23,16 +24,18 @@ export async function requirementDocumentProblem(fs: Context['fs'], state: TaskS
   if (!state.flow?.config.requirement_review || !doc) return undefined
   assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', doc.path)
   const raw = await readText(fs, doc.path, state.root ?? cwd)
-  return raw === undefined || hashText(raw) !== doc.hash ? '需求文档已变更或丢失；请核对并重新 prepare_requirement，再确认当前版本' : undefined
+  return raw === undefined || hashText(raw) !== doc.hash ? '需求文档已变更或丢失；请核对并重新 prepare_requirement，再确认当前版本'
+    : await requirementMaterialProblem(fs, state, cwd)
 }
 
 interface Environment {
   ctx: Context; exec: ToolRunContext; state: TaskState; cwd: string | undefined; mutationPath: string
   writeMode(): Promise<'workspace-write' | 'danger-full-access'>
+  readTemplate(template: MaterialTemplate): Promise<string>
 }
 export async function executeRequirementCommand(args: {
   operation: string; document_path?: string; expected_hash?: string; clarification_questions?: ClarificationQuestion[]
-}, env: Environment): Promise<string> {
+} & MaterialArgs, env: Environment): Promise<string> {
   const { ctx, exec, state, cwd, mutationPath } = env, fs = ctx.fs
   const policy = state.flow?.config.requirement_review
   if (!policy) throw new Error('此任务缺少新版需求确认结构；请重新创建 intent=implementation 任务后整理并确认需求')
@@ -41,9 +44,15 @@ export async function executeRequirementCommand(args: {
     return JSON.stringify({ requirement: requirementsView(state), reused: true, next_action: '当前版本已确认，复用原回执；无需再次询问用户。' })
   }
   if (state.stage !== policy.stage) throw new Error(`需求修订请先 revise revision_kind=requirement 返回 ${policy.stage}`)
+  if (args.operation === 'write_requirement_material') return writeRequirementMaterial(args, { fs, state, cwd,
+    writeMode: env.writeMode, readTemplate: env.readTemplate })
+  if (args.operation === 'retire_requirement_material') return retireRequirementMaterial(args, { fs, state, cwd,
+    writeMode: env.writeMode, readTemplate: env.readTemplate })
   const root = state.root ?? cwd
   const mode = await env.writeMode()
   if (args.operation === 'prepare_requirement') {
+    const materialProblem = await requirementMaterialProblem(fs, state, cwd)
+    if (materialProblem) throw new Error(materialProblem)
     const def = state.flow!.config.artifacts.find(item => item.id === policy.artifact)!
     const fields = state.artifacts[policy.artifact] ?? {}
     const missing = def.fields.filter(key => !fields[key]?.trim())
@@ -149,7 +158,9 @@ function renderRequirement(state: TaskState, version: number): string {
   const sections = Object.entries(REQUIREMENT_FIELDS).filter(([key]) => fields[key]?.trim())
     .map(([key, title]) => `## ${title}\n\n${fields[key]!.trim()}`)
   const answers = (state.requirements?.clarifications ?? []).map(q => `- 问：${q.question}\n  用户答复：${[...(q.answer?.selected ?? []), q.answer?.custom].filter(Boolean).join('；')}`)
+  const materials = (state.requirements?.materials ?? []).filter(m => !m.retired_at).map(m => `- ${m.name} · v${m.version} · ${m.path} · SHA-256：${m.hash}`)
   return [`# 需求总结：${state.title}`, `任务：${state.id} · 版本：${version}`, ...sections,
     ...(answers.length ? ['## 澄清记录\n\n' + answers.join('\n')] : []),
+    ...(materials.length ? ['## 需求材料\n\n' + materials.join('\n') + '\n\n材料及其中的填写结果用于完善需求；不单独代表最终需求批准。'] : []),
     '## 确认说明\n\n此文件是待审阅的需求版本；实际确认状态与本版本指纹记录在任务台账。列明的待联调事项不代表已完成联调。'].join('\n\n') + '\n'
 }

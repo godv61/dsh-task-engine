@@ -54,7 +54,7 @@ export function analysisAccessProblem(agent: object | undefined, name: string, a
     && !['status', 'config', 'assess', 'create'].includes(operation ?? '')))
     return '此任务为历史记录，仅可查看；继续工作请创建新任务。'
   if (agent && modes.get(agent) === 'requirements' && (!readTools.has(name) || name === 'dev_task'
-    && !['status', 'assess', 'config', 'create', 'load_skill', 'record', 'scope', 'revise', 'advance', 'clarify_requirement', 'prepare_requirement', 'confirm_requirement'].includes(operation ?? '')))
+    && !['status', 'assess', 'config', 'create', 'load_skill', 'record', 'scope', 'revise', 'advance', 'clarify_requirement', 'prepare_requirement', 'confirm_requirement', 'write_requirement_material', 'retire_requirement_material'].includes(operation ?? '')))
     return '需求尚未由用户确认；可以查阅、澄清和整理需求，不能修改业务文件、执行命令或启动实施'
   if (agent && modes.get(agent) === 'requirements' && name === 'dev_task' && operation === 'create'
     && !['analysis', 'implementation'].includes((args as { intent?: string }).intent ?? '')) return '当前处于需求确认阶段，新任务必须明确 intent=analysis|implementation，不能退回旧调用绕过确认'

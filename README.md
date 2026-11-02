@@ -154,7 +154,17 @@ pnpm dsh web --no-open
 
 用户确认前只允许查阅、澄清和整理需求，业务写入、项目命令和实施委派会被限制；自动执行权限不代表业务确认。问题未答、用户要求修改或审阅期间版本变化均不放行。范围或验收变化须 `revise revision_kind=requirement` 修订后重新确认；文档的人工修改受保护，不会静默覆盖。用户明确接受的待联调事项可写入总结后确认，不要求所有外部依赖已就绪。文档可按项目约定随任务提交，由需求版本门禁单独核对，不自动加入业务测试文件范围。重复确认同一有效版本会复用原回执；文档恢复为已确认的原始内容后，工具展示与执行权限会同步恢复。
 
-当前确认前的原生文件写入工具也受限制，需求总结由 `prepare_requirement` 写入。自定义 Skill 的多文档产物和多角色确认尚未接入这套门禁；挂载 Skill 不会自动创建相应产物校验。
+确认前的原生写文件工具和终端仍受限制，需求总结由 `prepare_requirement` 写入。挂载 Skill 可用 `write_requirement_material` 生成 HTML、Markdown、JSON、TXT、CSV、SVG 等文本材料，统一保存在 `docs/requirements/<任务编号>/`，台账记录路径、版本和指纹；单份最多 1 MiB，每任务最多登记 64 份。生成材料、填写表单或导出答复都不自动批准需求。材料变更或丢失会阻止确认与业务写入，Git 钩子也核对有效材料；修改需求字段及材料后重新生成总结并请用户确认。
+
+直接写正文与 HTML 模板渲染共用入口。模板必须是当前节点已绑定且本任务／会话实际加载的 Skill 的 `assets/` HTML 文件；插件仅替换指定的 `application/json` 数据区，不运行脚本，不把模板全文重复注入模型。可用 `identity_field` 把内容相关的材料标识填入模板数据字段，隔离改题前后的表单缓存。已有未登记文件或人工修改不会被覆盖；修改未确认的已生成材料须提供当前 `expected_hash`。旧稿不再作为本期依据时，用 `retire_requirement_material`、`material_name` 与当前指纹停用登记，文件及历史元信息保留。多角色签署、任意 Skill 指令的自动完成校验仍未包含在内。
+
+```json
+{"operation":"write_requirement_material","task_id":"FIX-1","material_name":"product/questions.md","material_content":"# 待产品确认\n驳回后是否保留填写内容？"}
+```
+
+```json
+{"operation":"write_requirement_material","task_id":"FIX-1","material_name":"product/checklist-v1.html","material_template":{"skill_name":"user:product-clarification","path":"assets/confirmation-checklist-v1.html","data_id":"card-data","identity_field":"task_id","json":"{\"engine_task_id\":\"FIX-1\",\"revision\":\"v1\",\"title\":\"产品确认 v1\",\"questions\":[{\"kind\":\"逻辑遗漏\",\"question\":\"驳回后是否保留填写内容？\",\"evidence\":\"需求未描述驳回结果\",\"need\":\"请确定驳回后的业务结果\"}]}"}}
+```
 
 实施任务统一使用新版需求确认：`create` 必须明确 `intent`、`complexity` 和相应理由，没有兼容模式或关闭开关，漏传参数也不能退回旧流程。缺少新版需求确认结构的未完成任务仅可查看，继续工作需使用新的 `task_id` 重新创建；已有代码和历史台账不自动修改，也不迁移旧确认。已归档记录继续只读展示。普通分析任务仍只交付原因与方案。
 

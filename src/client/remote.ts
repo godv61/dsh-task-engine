@@ -273,7 +273,9 @@ const taskLedgerViewSchema = z.object({
   tasks: z.array(z.object({
     requirements: z.object({ status: z.enum(['clarifying', 'draft', 'awaiting_confirmation', 'confirmed', 'changes_requested', 'stale']),
       pending_questions: z.number(), path: z.string().optional(), version: z.number().optional(), hash: z.string().optional(),
-      confirmed_at: z.string().optional(), feedback: z.string().optional(), content: z.string().optional() }).optional(),
+      confirmed_at: z.string().optional(), feedback: z.string().optional(), content: z.string().optional(),
+      material_root: z.string().optional(), materials: z.array(z.object({ name: z.string(), path: z.string(), id: z.string(), version: z.number(),
+        hash: z.string(), bytes: z.number(), updated_at: z.string(), retired_at: z.string().optional(), template: z.object({ skill_name: z.string(), path: z.string(), hash: z.string(), data_id: z.string() }).optional() })).optional() }).optional(),
     delivery: deliveryViewSchema.optional(),
     evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
     verification_groups: z.array(z.object({ id: z.string(), command: z.string(),

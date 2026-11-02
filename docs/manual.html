@@ -191,6 +191,7 @@ pnpm dsh web --no-open</code></pre>
           <tr><td><code>.dsh/skills/</code>、<code>.dsh/rules/</code></td><td>项目 Skill、Rule 与各 Skill 的 <code>profile.json</code>。</td><td>审阅后提交。</td></tr>
           <tr><td><code>.dsh/task-&lt;id&gt;.json</code></td><td>该任务的阶段、实施项、回执和审核状态。</td><td>按团队任务留痕政策决定。</td></tr>
           <tr><td><code>docs/requirements/&lt;id&gt;.md</code></td><td>新实施任务的需求总结；台账展示版本、用户确认及修改意见。确认前不能实施，需求变更后重新确认；同一有效版本复用回执，精确恢复原文后权限同步恢复。</td><td>可按团队要求提交；路径可在生成时指定，人工修改受保护。</td></tr>
+          <tr><td><code>docs/requirements/&lt;id&gt;/</code></td><td>用 <code>write_requirement_material</code> 生成产品／技术确认等文本材料；支持已加载 Skill 的 HTML 模板 JSON 数据区渲染。无需开放终端，材料生成不代表需求获批。</td><td>台账登记版本与文本指纹；人工修改保留。材料变化后重新确认；旧稿用 <code>retire_requirement_material</code> 停用引用，文件保留。</td></tr>
           <tr><td><code>.dsh/reviews/</code></td><td>逐次 Sonar Markdown 报告、结构化详情及误报处置。</td><td>可忽略，保留本机；不含 Token。</td></tr>
           <tr><td>本机 DSH 项目凭据</td><td>Sonar Token。</td><td>不提交、不回显。</td></tr>
         </tbody></table></div>

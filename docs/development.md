@@ -65,7 +65,7 @@ npm run verify:package
 
 实施任务统一使用 adaptive v2 的 `requirement_review`，必须明确 intent、complexity 及其理由。创建无旧流程回退，项目没有关闭或兼容选项；`taskExecutionProblem` 在工具、原生工具权限及 Git hook 上拒绝缺少新版结构的活动任务。旧记录只读，不迁移；没有流程快照的记录展示历史视图，不执行项目当前 eng.json。需求产物为唯一结构化来源，`prepare_requirement` 生成版本文档，`confirm_requirement` 通过宿主 `userQuestions.ask` 收集实际答复，独立于工具权限 approval；相同且有效的已确认版本返回 `reused: true`，不重复询问。澄清、确认等待不持有任务锁；回复只接受同一来源内容、文档指纹与问题实例。`tools/pre-execute` 与每次 `system-prompt/assemble` 重查文档并双向更新工具展示和执行模式；`tools.guard` 保持同步限制。修改文档会收回权限，精确恢复原文可复用确认，需求修订仍须重新确认。`.requirements-test.mjs` 和真实宿主 keyless preset probe 覆盖此闭环。该机制校验确认来源和版本一致性，不能机械保证需求语义已穷尽。
 
-当前需求阶段只通过内置 `prepare_requirement` 写总结文件，确认前原生写工具仍受限。自定义 Skill 多文档生成、独立产物声明及多角色签署不在当前实现范围内；不能把必读门禁解释为对任意 Skill 正文要求的自动完成校验。
+需求阶段由 `prepare_requirement` 写最终总结，`write_requirement_material` 写任务目录下的文本材料；后者支持正文或当前绑定且实际加载 Skill 的 HTML 模板数据区渲染，不开放命令执行。材料版本和指纹参与 `requirementSource`，摘要、实际材料与提交钩子共同核对当前批准依据；原生写工具仍受确认门禁限制。写入使用宿主 sandbox 与文件版本 CAS，拒绝越界、链接、未登记文件及人工修改；已生成内容修订需要当前指纹。`retire_requirement_material` 仅停用本期引用，保留原文件及记录，便于替换缺失或过时材料后重新确认。多角色签署、独立的任意 Skill 产物声明不在当前实现范围内；必读门禁不等于任意正文要求已自动验收。见 `docs/testing/requirement-materials.md`。
 
 Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺省保留旧强制语义；自适应 `meta_bindings` 同时接受旧名称字符串和 `{name, loading}`。核心元技能固定强制，`profile.json` 的 Rule 与 evidence 仍由 Skill 自己拥有。compact/adoption、浏览器严格 codec 和冻结任务均保留挂载策略。
 

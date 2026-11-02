@@ -26,8 +26,8 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/hook.ts
 var import_node_child_process3 = require("node:child_process");
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 
 // src/command-words.ts
 function commandWords(command) {
@@ -286,17 +286,30 @@ function verificationKey(state2, itemId) {
 }
 
 // src/requirements.ts
+function materialRelativePath(value) {
+  if (!value || value.length > 240 || value.split("/").some((part) => !part || part === "." || part === ".." || /[\\:\x00-\x1f\x7f<>"|?*]/u.test(part) || /[. ]$/u.test(part) || part.startsWith(".") || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/iu.test(part))) throw new Error("\u6750\u6599\u8DEF\u5F84\u5FC5\u987B\u662F\u666E\u901A\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u5141\u8BB8\u8D8A\u754C\u3001\u9690\u85CF\u8DEF\u5F84\u6216\u8BBE\u5907\u540D");
+}
+function requirementMaterialPath(state2, name) {
+  materialRelativePath(state2.id);
+  materialRelativePath(name);
+  if (state2.id.includes("/")) throw new Error("\u9700\u6C42\u6750\u6599\u9700\u8981\u5355\u5C42\u4EFB\u52A1\u6807\u8BC6");
+  if (!/\.(?:html?|md|json|txt|csv|svg)$/iu.test(name) || /(?:^|\/)(?:agents|skill)\.md$/iu.test(name))
+    throw new Error("\u9700\u6C42\u6750\u6599\u4EC5\u652F\u6301 html\u3001htm\u3001md\u3001json\u3001txt\u3001csv\u3001svg\uFF1B\u4E0D\u80FD\u5199\u5165\u6307\u4EE4\u6587\u4EF6\u6216\u7A0B\u5E8F");
+  return `docs/requirements/${state2.id}/${name}`;
+}
 function taskExecutionProblem(state2) {
   if (state2.completed || state2.delivery?.intent === "analysis") return void 0;
   return state2.flow?.config.requirement_review?.version === 1 ? void 0 : "\u6B64\u4EFB\u52A1\u7F3A\u5C11\u65B0\u7248\u9700\u6C42\u786E\u8BA4\u7ED3\u6784\uFF0C\u4EC5\u53EF\u67E5\u770B\uFF1B\u8BF7\u4F7F\u7528\u65B0\u7684 task_id \u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\uFF0C\u6574\u7406\u9700\u6C42\u603B\u7ED3\u5E76\u7531\u7528\u6237\u786E\u8BA4\u540E\u7EE7\u7EED\u3002\u4E0D\u4F1A\u8FC1\u79FB\u65E7\u56DE\u6267\u6216\u6539\u52A8\u5DF2\u6709\u4EE3\u7801\u3002";
 }
 function requirementSource(state2, policy) {
   const fields = state2.artifacts[policy.artifact] ?? {};
+  const materials = (state2.requirements?.materials ?? []).filter((m) => !m.retired_at);
   return JSON.stringify({
     task: state2.id,
     title: state2.title,
     fields: Object.keys(fields).sort().map((key) => [key, fields[key]]),
-    clarifications: (state2.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer }))
+    clarifications: (state2.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer })),
+    ...materials.length ? { materials: materials.map(({ path: path2, hash, version }) => ({ path: path2, hash, version })) } : {}
   });
 }
 function requirementConfirmed(state2, config2) {
@@ -442,7 +455,14 @@ function checkFileScope(state2, committing, config2) {
   if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
   if (state2.files.length === 0) return { ok: false, outside: [], noScope: true };
   const requirementDocument = config2.requirement_review ? state2.requirements?.document?.path : void 0;
-  const outside = committing.filter((file) => !state2.files.includes(file) && file !== requirementDocument && !isEngineMeta(file));
+  const materialPaths = new Set(config2.requirement_review ? (state2.requirements?.materials ?? []).filter((m) => {
+    try {
+      return !m.retired_at && m.path === requirementMaterialPath(state2, m.name);
+    } catch {
+      return false;
+    }
+  }).map((m) => m.path) : []);
+  const outside = committing.filter((file) => !state2.files.includes(file) && file !== requirementDocument && !materialPaths.has(file) && !isEngineMeta(file));
   return outside.length === 0 ? { ok: true, outside: [], noScope: false } : { ok: false, outside, noScope: false };
 }
 
@@ -530,12 +550,34 @@ function reviewEvidenceBlockers(state2, currentScopeHash) {
   return [];
 }
 
+// src/resource-import.ts
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var IMPORT_LIMITS = { files: 1e3, bytes: 100 * 1024 * 1024, fileBytes: 20 * 1024 * 1024, depth: 20 };
+function assertRealPath(path2) {
+  let cursor = (0, import_node_path.resolve)(path2);
+  for (; ; ) {
+    try {
+      const linked = (0, import_node_fs.lstatSync)(cursor).isSymbolicLink();
+      const actual = import_node_fs.realpathSync.native(cursor);
+      const key = (value) => process.platform === "win32" ? value.replace(/\\/gu, "/").toLowerCase() : value;
+      if (linked || process.platform !== "win32" && key(actual) !== key(cursor)) throw new Error("\u4E0D\u5141\u8BB8\u7B26\u53F7\u94FE\u63A5\u6216\u76EE\u5F55\u8054\u63A5\uFF1A" + cursor);
+      if (key(actual) === key(cursor)) return;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const parent = (0, import_node_path.dirname)(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+}
+
 // src/sonarlint-local.ts
 var import_node_child_process2 = require("node:child_process");
 var import_node_crypto2 = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_os = require("node:os");
-var import_node_path = require("node:path");
+var import_node_path2 = require("node:path");
 var import_node_util2 = require("node:util");
 
 // src/sonarlint-install.ts
@@ -548,9 +590,9 @@ var BASE = `https://repo.maven.apache.org/maven2/org/sonarsource/sonarlint/core/
 // src/sonarlint-local.ts
 var run2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
 function localStateDir(policy, root) {
-  const cacheKey = `${(0, import_node_path.resolve)(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`;
-  return (0, import_node_path.join)(
-    process.env.DSH_HOME ?? (0, import_node_path.join)((0, import_node_os.homedir)(), ".dsh"),
+  const cacheKey = `${(0, import_node_path2.resolve)(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`;
+  return (0, import_node_path2.join)(
+    process.env.DSH_HOME ?? (0, import_node_path2.join)((0, import_node_os.homedir)(), ".dsh"),
     "sonarlint-cache",
     (0, import_node_crypto2.createHash)("sha256").update(cacheKey).digest("hex").slice(0, 24)
   );
@@ -560,7 +602,7 @@ function lastLocalRuleUpdate(policy, root) {
 }
 function currentBinding(stateDir) {
   try {
-    const binding = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(stateDir, "dsh-binding.json"), "utf8"));
+    const binding = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(stateDir, "dsh-binding.json"), "utf8"));
     if (/^project-[0-9a-f-]{36}$/u.test(binding.connection_id) && !Number.isNaN(Date.parse(binding.updated_at))) {
       return binding;
     }
@@ -573,9 +615,9 @@ function connectionCachePath(stateDir, connectionId) {
   if (connectionId !== "project" && !/^project-[0-9a-f-]{36}$/u.test(connectionId)) {
     throw new Error("\u65E0\u6548\u7684\u672C\u5730 SonarQube \u8FDE\u63A5\u6807\u8BC6");
   }
-  const path2 = (0, import_node_path.resolve)(stateDir, Buffer.from(connectionId).toString("hex"));
-  const relativePath = (0, import_node_path.relative)((0, import_node_path.resolve)(stateDir), path2);
-  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${import_node_path.sep}`) || relativePath.startsWith(import_node_path.sep)) {
+  const path2 = (0, import_node_path2.resolve)(stateDir, Buffer.from(connectionId).toString("hex"));
+  const relativePath = (0, import_node_path2.relative)((0, import_node_path2.resolve)(stateDir), path2);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${import_node_path2.sep}`) || relativePath.startsWith(import_node_path2.sep)) {
     throw new Error("\u672C\u5730 SonarQube \u7F13\u5B58\u8DEF\u5F84\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
   }
   return path2;
@@ -584,7 +626,7 @@ function localRulesFingerprint(policy, root, connectionId) {
   const stateDir = localStateDir(policy, root);
   const id = connectionId ?? currentBinding(stateDir)?.connection_id ?? "project";
   try {
-    const config2 = (0, import_node_fs.readFileSync)((0, import_node_path.join)(
+    const config2 = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(
       connectionCachePath(stateDir, id),
       "projects",
       Buffer.from(policy.project_key).toString("hex"),
@@ -608,7 +650,7 @@ function refuse(reason) {
 }
 function readJson(abs) {
   try {
-    return JSON.parse(import_node_fs2.default.readFileSync(abs, "utf8"));
+    return JSON.parse(import_node_fs3.default.readFileSync(abs, "utf8"));
   } catch {
     return void 0;
   }
@@ -649,37 +691,37 @@ function normalizeTask(task) {
 }
 function taskRoots(repoRoot) {
   const roots = /* @__PURE__ */ new Set([repoRoot]);
-  const configPath = import_node_path2.default.join(__dirname, "dsh-task-roots.json");
+  const configPath = import_node_path3.default.join(__dirname, "dsh-task-roots.json");
   const config2 = readJson(configPath);
-  if (import_node_fs2.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
+  if (import_node_fs3.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
   if (config2?.roots !== void 0 && !Array.isArray(config2.roots)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6548");
   for (const value of config2?.roots ?? []) {
-    if (typeof value !== "string" || import_node_path2.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
-    const root = import_node_path2.default.resolve(repoRoot, value);
-    const inside = import_node_path2.default.relative(repoRoot, root);
-    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
+    if (typeof value !== "string" || import_node_path3.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
+    const root = import_node_path3.default.resolve(repoRoot, value);
+    const inside = import_node_path3.default.relative(repoRoot, root);
+    if (inside.startsWith("..") || import_node_path3.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
     roots.add(root);
   }
   return [...roots];
 }
 function loadTasks() {
   const out = [];
-  const repoRoot = import_node_fs2.default.realpathSync.native(process.cwd());
+  const repoRoot = import_node_fs3.default.realpathSync.native(process.cwd());
   for (const root of taskRoots(repoRoot)) {
-    const dir = import_node_path2.default.join(root, ".dsh");
-    if (!import_node_fs2.default.existsSync(dir)) continue;
-    const names = import_node_fs2.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
+    const dir = import_node_path3.default.join(root, ".dsh");
+    if (!import_node_fs3.default.existsSync(dir)) continue;
+    const names = import_node_fs3.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
     for (const name of names) {
-      const json = readJson(import_node_path2.default.join(dir, name));
+      const json = readJson(import_node_path3.default.join(dir, name));
       if (json === void 0 || json.id === void 0) continue;
       const task = normalizeTask(json);
-      const projectRoot = import_node_fs2.default.realpathSync.native(task.root === void 0 ? root : import_node_path2.default.resolve(task.root));
-      const insideRepo = import_node_path2.default.relative(repoRoot, projectRoot);
-      const workspaceInsideProject = import_node_path2.default.relative(projectRoot, root);
-      if (insideRepo.startsWith("..") || import_node_path2.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path2.default.isAbsolute(workspaceInsideProject)) {
+      const projectRoot = import_node_fs3.default.realpathSync.native(task.root === void 0 ? root : import_node_path3.default.resolve(task.root));
+      const insideRepo = import_node_path3.default.relative(repoRoot, projectRoot);
+      const workspaceInsideProject = import_node_path3.default.relative(projectRoot, root);
+      if (insideRepo.startsWith("..") || import_node_path3.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path3.default.isAbsolute(workspaceInsideProject)) {
         refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
       }
-      out.push({ file: import_node_path2.default.join(dir, name), task: { ...task, root: projectRoot } });
+      out.push({ file: import_node_path3.default.join(dir, name), task: { ...task, root: projectRoot } });
     }
   }
   return out;
@@ -723,9 +765,9 @@ function stagedEntries() {
 function assertIndexMatchesWorktree(repoRoot, file) {
   const staged = (0, import_node_child_process3.execFileSync)("git", ["ls-files", "--stage", "-z", "--", file], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
   const exact = staged.filter((line) => line.endsWith(`	${file}`));
-  const target = import_node_path2.default.resolve(repoRoot, file);
+  const target = import_node_path3.default.resolve(repoRoot, file);
   if (exact.length === 0) {
-    if (import_node_fs2.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
+    if (import_node_fs3.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
     return;
   }
   if (exact.length !== 1) refuse(`\u6682\u5B58\u533A\u5B58\u5728\u672A\u89E3\u51B3\u51B2\u7A81\uFF1A${file}`);
@@ -733,7 +775,7 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (!match) refuse(`\u6682\u5B58\u6587\u4EF6\u7C7B\u578B\u4E0D\u53D7\u652F\u6301\uFF1A${file}`);
   let info;
   try {
-    info = import_node_fs2.default.lstatSync(target);
+    info = import_node_fs3.default.lstatSync(target);
   } catch {
     refuse(`\u6682\u5B58\u533A\u4E0E\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
   }
@@ -752,7 +794,7 @@ function pickTask(tasks2, branch2) {
   return candidates[0]?.task;
 }
 function readCommitMessage(file) {
-  return import_node_fs2.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
+  return import_node_fs3.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
 }
 function extractTaskId(message2) {
   const match = /^【([^【】\s]+)】/.exec(message2);
@@ -763,14 +805,14 @@ function isEngineMeta2(file) {
 }
 function scopeHash(state2, root, includeGovernance = false) {
   const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta2(file)).sort().map((file) => {
-    const target = import_node_path2.default.resolve(root, file);
-    const inside = import_node_path2.default.relative(root, target);
-    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
+    const target = import_node_path3.default.resolve(root, file);
+    const inside = import_node_path3.default.relative(root, target);
+    if (inside.startsWith("..") || import_node_path3.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
     try {
-      const info = import_node_fs2.default.lstatSync(target);
+      const info = import_node_fs3.default.lstatSync(target);
       if (!info.isFile()) refuse(`\u4EFB\u52A1\u8303\u56F4\u542B\u975E\u666E\u901A\u6587\u4EF6: ${file}`);
       const executable = process.platform === "win32" ? false : (info.mode & 73) !== 0;
-      return [file, hashBytes(import_node_fs2.default.readFileSync(target)), executable];
+      return [file, hashBytes(import_node_fs3.default.readFileSync(target)), executable];
     } catch (error) {
       if (error.code === "ENOENT") return [file, null, null];
       refuse(`\u65E0\u6CD5\u8BFB\u53D6\u4EFB\u52A1\u6587\u4EF6 ${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -789,7 +831,7 @@ if (!messageFile) {
   process.exit(0);
 }
 var message = readCommitMessage(messageFile);
-var cwd = import_node_fs2.default.realpathSync.native(process.cwd());
+var cwd = import_node_fs3.default.realpathSync.native(process.cwd());
 var tasks = loadTasks();
 var taskId = extractTaskId(message);
 var state;
@@ -829,15 +871,26 @@ if (!verdict.ok) {
 if (config.requirement_review) {
   if (!requirementConfirmed(state, config)) refuse("\u5F53\u524D\u9700\u6C42\u7248\u672C\u5C1A\u672A\u7531\u7528\u6237\u786E\u8BA4");
   const doc = state.requirements.document, workspace2 = state.root ?? cwd;
-  const documentPath = import_node_path2.default.resolve(workspace2, doc.path);
+  const documentPath = import_node_path3.default.resolve(workspace2, doc.path);
   const outside = (file) => {
-    const rel = import_node_path2.default.relative(import_node_fs2.default.realpathSync(workspace2), file);
-    return rel.startsWith("..") || import_node_path2.default.isAbsolute(rel);
+    const rel = import_node_path3.default.relative(import_node_fs3.default.realpathSync(workspace2), file);
+    return rel.startsWith("..") || import_node_path3.default.isAbsolute(rel);
   };
   try {
-    if (outside(import_node_fs2.default.realpathSync(documentPath)) || hashText(import_node_fs2.default.readFileSync(documentPath, "utf8")) !== doc.hash) refuse("\u9700\u6C42\u6587\u6863\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+    if (outside(import_node_fs3.default.realpathSync(documentPath)) || hashText(import_node_fs3.default.readFileSync(documentPath, "utf8")) !== doc.hash) refuse("\u9700\u6C42\u6587\u6863\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
   } catch {
     refuse("\u9700\u6C42\u6587\u6863\u65E0\u6CD5\u6838\u5BF9\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+  }
+  for (const material of state.requirements?.materials ?? []) {
+    if (material.retired_at) continue;
+    try {
+      if (material.path !== requirementMaterialPath(state, material.name)) refuse("\u9700\u6C42\u6750\u6599\u767B\u8BB0\u8DEF\u5F84\u4E0D\u5408\u6CD5");
+      const target = import_node_path3.default.resolve(workspace2, material.path);
+      assertRealPath(target);
+      if (outside(import_node_fs3.default.realpathSync(target)) || !import_node_fs3.default.lstatSync(target).isFile() || hashText(import_node_fs3.default.readFileSync(target, "utf8").replace(/\r\n/gu, "\n")) !== material.hash) refuse("\u9700\u6C42\u6750\u6599\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+    } catch {
+      refuse("\u9700\u6C42\u6750\u6599\u65E0\u6CD5\u6838\u5BF9\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+    }
   }
 }
 var checkpoint = commitCheckpoint(state, config);
@@ -861,8 +914,8 @@ if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].
 }
 var workspace = state.root ?? cwd;
 var entries = stagedEntries().map((entry) => {
-  const absolute = import_node_path2.default.resolve(cwd, entry.path);
-  const relativePath = import_node_path2.default.relative(workspace, absolute).replaceAll("\\", "/");
+  const absolute = import_node_path3.default.resolve(cwd, entry.path);
+  const relativePath = import_node_path3.default.relative(workspace, absolute).replaceAll("\\", "/");
   return { ...entry, path: relativePath };
 });
 var scope = checkFileScope(state, entries.map((entry) => entry.path), config);
@@ -877,7 +930,7 @@ if (!scope.ok) {
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
 for (const entry of entries) {
-  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path2.default.relative(cwd, import_node_path2.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
+  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path3.default.relative(cwd, import_node_path3.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
 }
 var sensitive = riskyPaths(entries);
 var riskyChanges = entries.filter((entry) => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? "")).map((entry) => `${entry.status}	${entry.path}`);

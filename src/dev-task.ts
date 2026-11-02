@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -73,6 +73,8 @@ import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
 import { bindTaskDelivery, installDeliveryAccess } from './delivery-access.ts'
 import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, taskExecutionProblem, type ClarificationQuestion } from './requirements.ts'
 import { executeRequirementCommand, requirementDocumentProblem, REQUIREMENT_OPERATIONS } from './requirement-commands.ts'
+import { MATERIAL_MAX_BYTES, type MaterialArgs, type MaterialTemplate } from './requirement-materials.ts'
+import { assertRealPath } from './resource-import.ts'
 import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
 import type {} from '@deepseek-ai/dsh-working-directory'
 import { isFullOid, isOidInput } from './git-oid.ts'
@@ -1040,6 +1042,28 @@ function instructionPath(ref: ResourceRef, kind: 'skill' | 'rule'): string {
   return ref.source === 'user' ? join(dshHome(), relative) : fileURLToPath(new URL(`../${relative}`, import.meta.url))
 }
 
+/** Only a currently bound and genuinely loaded Skill can supply a document template. */
+async function readRequirementTemplate(spec: MaterialTemplate, state: TaskState, fs: Fs, cwd: string | undefined, session: SkillSession | undefined): Promise<string> {
+  const entry = bindingsForStage(state.stage, state.flow!.config)?.skills?.find(item => formatResourceRef(item.skill) === spec.skill_name)
+  if (!entry || !skillLoadForSession(state, spec.skill_name, session)) throw new Error('模板只能来自当前节点已绑定且在本任务／会话实际加载的 Skill；先 load_skill')
+  const base = dirname(instructionPath(entry.skill, 'skill')), root = state.root ?? cwd ?? process.cwd()
+  const target = resolve(root, base, spec.path)
+  assertInsideRoot(resolve(root, base), resolve(root, base), spec.path)
+  assertRealPath(target)
+  let content: string | undefined
+  if (entry.skill.source === 'project' || entry.skill.source === 'codex-project') {
+    const path = join(base, spec.path), info = await fs.lstat(path, { cwd: root })
+    if (!info || info.type !== 'file' || (info.size ?? 0) > MATERIAL_MAX_BYTES) throw new Error('模板必须是最多 1 MiB 的普通文件')
+    content = await readText(fs, path, root)
+  } else {
+    const info = lstatSync(target)
+    if (!info.isFile() || info.size > MATERIAL_MAX_BYTES) throw new Error('模板必须是最多 1 MiB 的普通文件')
+    content = readFileSync(target, 'utf8')
+  }
+  if (content === undefined) throw new Error('无法读取已加载 Skill 的模板文件')
+  return content
+}
+
 async function skillIndexForBinding(binding: StageBinding | undefined, fs: Fs, cwd?: string, state?: TaskState, session?: SkillSession) {
   return Promise.all((binding?.skills ?? []).map(async entry => {
     const content = await readSkillAt(entry.skill, fs, cwd)
@@ -1158,7 +1182,7 @@ async function reviewBindings(state: TaskState, workflow: WorkflowConfig, fs: Fs
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
-export interface OpArgs {
+export interface OpArgs extends MaterialArgs {
   document_path?: string
   clarification_questions?: ClarificationQuestion[]
   operation: string
@@ -1537,7 +1561,7 @@ interface ApprovalAsk {
 const OPERATIONS = ['status', 'assess', 'create', ...REQUIREMENT_OPERATIONS, 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
-  'New intent=implementation adaptive tasks require a human-confirmed requirement version before business writes: clarify_requirement asks actual business questions; record requirement fields; prepare_requirement writes a summary Markdown; confirm_requirement expected_hash asks the human to accept that exact version. Ordinary tool approval never supplies business consent. ' +
+  'New intent=implementation adaptive tasks require a human-confirmed requirement version before business writes: clarify_requirement asks actual business questions; write_requirement_material saves task-owned text or HTML template materials without running commands; record requirement fields; prepare_requirement writes a summary Markdown; confirm_requirement expected_hash asks the human to accept that exact version. Material generation or returned form data never supplies approval. Ordinary tool approval never supplies business consent. ' +
   'First select the user deliverable: diagnosis/proposal creates intent=analysis with task_id, title, intent_reason (branch optional), investigates directly, then submit_analysis accepts exact source_evidence and a conclusion/proposal/limitations in one transaction. ' +
   'Minimal analysis create: {"operation":"create","task_id":"TRACE-1","title":"Trace a missing field","intent":"analysis","intent_reason":"User requested cause and proposal only"}. ' +
   'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Unsupported task records are read-only; create a new task instead of resuming an old gate. ' +
@@ -1581,6 +1605,15 @@ export function registerDevTask(ctx: Context): void {
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
       document_path: { type: 'string', description: 'prepare_requirement: optional workspace-relative Markdown path. Default docs/requirements/<task_id>.md. Existing human edits are protected.' },
+      material_name: { type: 'string', description: 'write_requirement_material/retire_requirement_material: relative filename under docs/requirements/<task_id>/, e.g. product/checklist-v1.html. Supports html/htm/md/json/txt/csv/svg. Retire only stops using a registered material; files are preserved. Business paths and instruction files are forbidden.' },
+      material_content: { type: 'string', description: 'write_requirement_material: complete UTF-8 text (up to 1 MiB), mutually exclusive with material_template. Does not execute code or approve requirements.' },
+      material_template: { type: 'object', additionalProperties: false, description: 'write_requirement_material: render an HTML asset from a currently bound, loaded Skill; replace only an application/json script data block. No scripts or commands execute.', properties: {
+        skill_name: { type: 'string', required: true, description: 'Exact bound source:name, e.g. user:product-clarification. Must already be loaded in this task/session.' },
+        path: { type: 'string', required: true, description: 'HTML asset path relative to that Skill, e.g. assets/confirmation-checklist-v1.html.' },
+        data_id: { type: 'string', required: true, description: 'id of the template application/json script block, e.g. card-data.' },
+        json: { type: 'string', required: true, description: 'Valid JSON text to embed. HTML-sensitive characters are escaped.' },
+        identity_field: { type: 'string', description: 'Optional top-level JSON key to fill with a host-generated, content-specific material id, e.g. task_id. Prevents reuse of cached answers across changed forms.' },
+      } },
       clarification_questions: { type: 'array', description: 'clarify_requirement: 1–3 business questions that affect scope or acceptance; the host asks the human and stores real answers.', items: {
         type: 'object', additionalProperties: false, properties: {
           id: { type: 'string', required: true }, question: { type: 'string', required: true },
@@ -1685,7 +1718,7 @@ export function registerDevTask(ctx: Context): void {
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
-      expected_hash: { type: 'string', description: 'confirm_requirement: the exact hash returned by prepare_requirement. init apply: the content hash returned by init phase=propose.' },
+      expected_hash: { type: 'string', description: 'confirm_requirement: exact summary hash from prepare_requirement. write_requirement_material/retire_requirement_material: current material hash required for updating or retiring a generated file; human edits are never overwritten. init apply: hash returned by init propose.' },
       existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
       sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result/local Sonar scanner command. Commands otherwise use the session policy. Retry a denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
@@ -2062,9 +2095,15 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if ((REQUIREMENT_OPERATIONS as readonly string[]).includes(a.operation)) {
+        if (a.operation === 'write_requirement_material' || a.operation === 'retire_requirement_material') {
+          const canonical = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+          const currentRoot = await detectRoot(projectProbe(fs), cwd ?? '')
+          if (canonical(state.root ?? cwd ?? '') !== canonical(currentRoot)) throw new Error('任务登记的项目根与当前工作区不一致；不能写入需求材料，请核对任务所属项目')
+        }
         if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? ''))))
           throw new Error('a child dispatch is still active; wait or recover it before changing requirements')
-        try { return await executeRequirementCommand(a, { ctx, exec, state, cwd, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec) }) }
+        try { return await executeRequirementCommand(a, { ctx, exec, state, cwd, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
+          readTemplate: spec => readRequirementTemplate(spec, state, fs, cwd, session) }) }
         finally { await bindTaskDelivery(ctx, exec.agent, await loadTask(fs, state.id, cwd)) }
       }
       if (workflow.requirement_review && !state.completed) {

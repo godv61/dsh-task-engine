@@ -23,7 +23,12 @@ export interface RequirementDocument {
   feedback?: string
   confirmation?: { hash: string; version: number; at: string; session_id: string }
 }
-export interface RequirementsState { clarifications: Clarification[]; document?: RequirementDocument }
+export interface RequirementMaterial {
+  name: string; path: string; id: string; version: number; hash: string; bytes: number; updated_at: string
+  template?: { skill_name: string; path: string; hash: string; data_id: string }
+  retired_at?: string
+}
+export interface RequirementsState { clarifications: Clarification[]; document?: RequirementDocument; materials?: RequirementMaterial[] }
 export interface RequirementsView {
   status: 'clarifying' | 'draft' | 'awaiting_confirmation' | 'confirmed' | 'changes_requested' | 'stale'
   pending_questions: number
@@ -33,6 +38,21 @@ export interface RequirementsView {
   confirmed_at?: string
   feedback?: string
   content?: string
+  material_root?: string
+  materials?: RequirementMaterial[]
+}
+/** Portable task-owned text paths, shared with the independent commit hook. */
+export function materialRelativePath(value: string): void {
+  if (!value || value.length > 240 || value.split('/').some(part => !part || part === '.' || part === '..'
+    || /[\\:\x00-\x1f\x7f<>"|?*]/u.test(part) || /[. ]$/u.test(part) || part.startsWith('.')
+    || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/iu.test(part))) throw new Error('材料路径必须是普通相对路径，不允许越界、隐藏路径或设备名')
+}
+export function requirementMaterialPath(state: Pick<TaskState, 'id'>, name: string): string {
+  materialRelativePath(state.id); materialRelativePath(name)
+  if (state.id.includes('/')) throw new Error('需求材料需要单层任务标识')
+  if (!/\.(?:html?|md|json|txt|csv|svg)$/iu.test(name) || /(?:^|\/)(?:agents|skill)\.md$/iu.test(name))
+    throw new Error('需求材料仅支持 html、htm、md、json、txt、csv、svg；不能写入指令文件或程序')
+  return `docs/requirements/${state.id}/${name}`
 }
 export const REQUIREMENT_FIELDS = {
   goal: '业务目标与当前问题', scope: '本期范围', non_goals: '明确不做', rules: '业务流程与规则',
@@ -48,9 +68,11 @@ export function taskExecutionProblem(state: TaskState): string | undefined {
 
 export function requirementSource(state: TaskState, policy: RequirementPolicy): string {
   const fields = state.artifacts[policy.artifact] ?? {}
+  const materials = (state.requirements?.materials ?? []).filter(m => !m.retired_at)
   return JSON.stringify({ task: state.id, title: state.title,
     fields: Object.keys(fields).sort().map(key => [key, fields[key]]),
-    clarifications: (state.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer })) })
+    clarifications: (state.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer })),
+    ...(materials.length ? { materials: materials.map(({ path, hash, version }) => ({ path, hash, version })) } : {}) })
 }
 export function requirementConfirmed(state: TaskState, config: WorkflowConfig): boolean {
   if (!config.requirement_review) return false
@@ -72,7 +94,8 @@ export function requirementsView(state: TaskState, stale = false, detail = false
   const doc = state.requirements?.document
   return { status: stale ? 'stale' : pending ? 'clarifying' : !doc ? 'draft'
     : doc.source !== requirementSource(state, policy) ? 'draft' : doc.status,
-    pending_questions: pending, ...(doc ? { path: doc.path, version: doc.version, hash: doc.hash,
+    pending_questions: pending, material_root: `docs/requirements/${state.id}/`,
+    ...(state.requirements?.materials?.length ? { materials: state.requirements.materials } : {}), ...(doc ? { path: doc.path, version: doc.version, hash: doc.hash,
       ...(doc.confirmation ? { confirmed_at: doc.confirmation.at } : {}),
       ...(doc.feedback ? { feedback: doc.feedback } : {}), ...(detail ? { content: doc.content } : {}) } : {}) }
 }
