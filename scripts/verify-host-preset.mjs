@@ -1,10 +1,15 @@
-/** Boot the published rc.3 host and this packed plugin through its public SDK profile, keylessly. */
+/** Boot a declared supported host and this packed plugin through its public SDK profile, keylessly. */
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { spawnSync } from 'node:child_process'
+
+const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'))
+const hostVersion=process.env.TASK_ENGINE_DSH_VERSION??manifest.devDependencies['@deepseek-ai/dsh-typert-protocol']
+const supported=manifest.peerDependencies['@deepseek-ai/dsh-typert-protocol'].split('||').map(version=>version.trim())
+assert.ok(supported.includes(hostVersion),`DSH ${hostVersion} is not declared supported`)
 
 const root=mkdtempSync(join(tmpdir(),'task-engine-preset-host-'))
 // This exact directory was created by this invocation; never remove a caller-supplied path.
@@ -37,7 +42,7 @@ if(cachedModules){
   // DSH_HOME remain fresh, and this code never edits the caller's module tree.
   const cache=resolve(cachedModules),local=join(root,'node_modules')
   for(const name of ['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'])
-    assert.equal(JSON.parse(readFileSync(join(cache,'@deepseek-ai',name,'package.json'),'utf8')).version,'0.2.1-rc.3',`cached ${name} must match the pinned host`)
+    assert.equal(JSON.parse(readFileSync(join(cache,'@deepseek-ai',name,'package.json'),'utf8')).version,hostVersion,`cached ${name} must match DSH ${hostVersion}`)
   mkdirSync(local)
   for(const entry of readdirSync(cache,{withFileTypes:true}).filter(e=>e.isDirectory()&&!e.name.startsWith('.')&&e.name!=='@godv61'))
     symlinkSync(join(cache,entry.name),join(local,entry.name),process.platform==='win32'?'junction':'dir')
@@ -48,8 +53,7 @@ if(cachedModules){
   assert.equal(unpack.status,0,unpack.stderr)
 }else{
   command(['install','--ignore-scripts','--no-audit','--no-fund',
-    '@deepseek-ai/dsh@0.2.1-rc.3','@deepseek-ai/dsh-sdk-client@0.2.1-rc.3',
-    '@deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.3','@deepseek-ai/dsh-tool-subagent@0.2.1-rc.3',join(root,artifact.filename)])
+    ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`),join(root,artifact.filename)])
 }
 const modules=join(root,'node_modules','@deepseek-ai')
 const probe=join(root,'probe.mjs'),proof=join(root,'proof.json')
@@ -77,5 +81,5 @@ try{
   const result=JSON.parse(readFileSync(proof,'utf8'))
   assert.equal(result.model_calls,0);assert.equal(result.observations.length,2)
   assert.ok(!existsSync(join(project,'forbidden.txt')))
-  console.log(JSON.stringify({host:'0.2.1-rc.3',...result},null,2))
+  console.log(JSON.stringify({host:hostVersion,...result},null,2))
 }finally{await harness.close()}

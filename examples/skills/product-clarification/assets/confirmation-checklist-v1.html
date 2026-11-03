@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>待确认事项</title>
+<!--
+  确认清单模板，选项版。模板版本：V1.0
+  在确认清单模板上，接上 OQC 产品回复的选项交互。
+  运行时不读取本文件。换题目时只改 #card-data。
+
+  每题：
+  - 有 options 时，按 options 出选项。
+  - 没有 options 时，用 recommendation 出「采用建议」。
+  - 每题都有「自己填写」。
+  - 点选项会把说法带进输入框，之后仍可改字。
+  - 不点选项、直接打字，也算自己填写。
+  - 一项算完成，只看输入框里有没有最终这句话。
+
+  options 每项：title、text。
+  选填：evidence、need、sources（[{label, text}]，长对照放这里）。
+  kind 只能是：逻辑冲突、逻辑遗漏、材料不对齐、原型与文档冲突、其他。
+
+  全部完成后导出 01-确认结果.json。
+  answer 是输入框里的最终文字，可直接交给 submit_clarification_answers。
+  choice、choice_title 只说明当时点了哪一项。
+-->
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --paper: #fff;
+    --ink: #1f2328;
+    --muted: #5c6570;
+    --line: #d8dde3;
+    --accent: #0b57d0;
+    --accent-soft: #e8f0fe;
+    --warn: #8a5a00;
+    --ok: #0d6b3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.55 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header, main {
+    width: min(820px, calc(100% - 32px));
+    margin: 0 auto;
+  }
+  header { padding: 28px 0 4px; }
+  main { padding-bottom: 120px; }
+  h1 { font-size: 28px; line-height: 1.3; margin: 0 0 8px; }
+  .lead { color: var(--muted); margin: 0 0 12px; }
+  .version { margin: 0 0 8px; color: var(--muted); font-size: 13px; }
+  .stats, .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+  .stat {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 12px;
+    min-width: 88px;
+  }
+  .stat b { display: block; font-size: 18px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .filters button, .clear {
+    font: inherit;
+    border: 1px solid var(--line);
+    background: var(--paper);
+    color: var(--ink);
+    border-radius: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .filters button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .card {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 0 0 16px;
+  }
+  .head { display: flex; gap: 10px; align-items: center; }
+  .kind {
+    display: inline-block;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: #3730a3;
+  }
+  .badge { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .badge.done { color: var(--ok); }
+  .badge.need { color: var(--warn); }
+  .q { font-size: 18px; margin: 10px 0; }
+  .meta { color: var(--muted); font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
+  details { margin: 10px 0; }
+  summary { cursor: pointer; color: var(--accent); font-size: 13px; }
+  .source { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  .choice {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    cursor: pointer;
+  }
+  .choice:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .choice input { margin-top: 4px; }
+  .choice b { display: block; }
+  .choice span { color: var(--muted); font-size: 13px; }
+  textarea {
+    width: 100%;
+    min-height: 88px;
+    margin-top: 8px;
+    font: inherit;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .reply-line { margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .clear { margin-top: 8px; font-size: 13px; }
+  .empty-filter { color: var(--muted); }
+  footer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid var(--line);
+  }
+  .bar {
+    width: min(820px, calc(100% - 32px));
+    margin: 0 auto;
+    padding: 12px 0;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  #export {
+    background: #111827;
+    color: #fff;
+    border: 0;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font: inherit;
+    cursor: pointer;
+  }
+  #export:disabled { background: #9ca3af; cursor: not-allowed; }
+</style>
+</head>
+<body>
+<header>
+  <h1>待确认事项</h1>
+  <p class="version">模板版本：V1.0</p>
+  <p class="lead" id="lead"></p>
+  <div class="stats" id="stats"></div>
+  <div class="filters" id="filters">
+    <button type="button" data-filter="all" aria-pressed="true">全部</button>
+    <button type="button" data-filter="open" aria-pressed="false">未完成</button>
+    <button type="button" data-filter="done" aria-pressed="false">已确认</button>
+  </div>
+</header>
+<main>
+  <div id="cards"></div>
+  <p class="empty-filter" id="empty-filter" hidden></p>
+</main>
+<footer>
+  <div class="bar">
+    <span id="progress">已确认 0 / 0</span>
+    <button id="export" type="button" disabled>导出确认结果</button>
+  </div>
+</footer>
+<script id="card-data" type="application/json">
+{
+  "task_id": "示例任务",
+  "title": "示例需求",
+  "questions": [
+    {
+      "kind": "逻辑遗漏",
+      "question": "驳回后，本次新增的数据如何处理？",
+      "evidence": "现网已有驳回。方案和原型都没有写驳回后新增数据的结果。",
+      "need": "请确认驳回后新增数据是保留、清空，还是回到上一状态。",
+      "recommendation": "驳回后保留已填写内容，状态回到待提交，不删除本次新增数据。"
+    },
+    {
+      "kind": "材料不对齐",
+      "question": "新字段放在现有主表，还是另建一张表？",
+      "evidence": "主表已有同一组业务字段。方案写了新表，但没有说明为什么不放在主表。",
+      "need": "请确认新字段加在现有主表，还是单独建表。",
+      "options": [
+        {
+          "title": "做法 1",
+          "text": "加在现有主表，不新建表，也不复制主表已有列。"
+        },
+        {
+          "title": "做法 2",
+          "text": "另建一张表，只存本次新增字段，不复制主表已有列。"
+        }
+      ],
+      "sources": [
+        { "label": "方案", "text": "写了新建一张表，字段包含主表上已经有的同一组列。" },
+        { "label": "现网", "text": "主表已经有这组业务字段，同一张单上直接改这些列。" }
+      ]
+    }
+  ]
+}
+</script>
+<script>
+const data = JSON.parse(document.getElementById("card-data").textContent);
+const storageKey = "ai-coding-choice-answers-" + data.task_id;
+let saved = normalizeSaved(readSaved());
+let filter = "all";
+
+document.getElementById("lead").textContent = data.title + "。每项可以点一个做法，也可以自己写。点了做法之后，下面的文字还能改。全部确认后导出 01-确认结果.json，交回给开发，再交给 AI。";
+
+function readSaved() {
+  try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); }
+  catch (error) { return {}; }
+}
+function normalizeSaved(raw) {
+  const next = {};
+  Object.keys(raw || {}).forEach((key) => {
+    const value = raw[key];
+    if (typeof value === "string") {
+      next[key] = { choice: value.trim() ? "custom" : "", text: value };
+    } else if (value && typeof value === "object") {
+      next[key] = { choice: value.choice || "", text: value.text || "" };
+    }
+  });
+  return next;
+}
+function persist() {
+  localStorage.setItem(storageKey, JSON.stringify(saved));
+}
+function optionsOf(item) {
+  if (Array.isArray(item.options) && item.options.length) {
+    return item.options.map((option, offset) => ({
+      value: String(offset + 1),
+      title: option.title || ("做法 " + (offset + 1)),
+      text: option.text || ""
+    }));
+  }
+  if (item.recommendation) {
+    return [{ value: "1", title: "采用建议", text: item.recommendation }];
+  }
+  return [];
+}
+function stateOf(index) {
+  return saved[index] || { choice: "", text: "" };
+}
+function finalText(state) {
+  return (state.text || "").trim();
+}
+function statusOf(state) {
+  const text = finalText(state);
+  if (!state.choice && !text) return "empty";
+  if (!text) return "need";
+  return "done";
+}
+function choiceTitle(item, state) {
+  if (state.choice === "custom") return "自己填写";
+  const option = optionsOf(item).find((entry) => entry.value === state.choice);
+  return option ? option.title : "";
+}
+function badgeText(item, state) {
+  const text = finalText(state);
+  if (!state.choice && !text) return "未选";
+  if (!text) return "待填写";
+  if (state.choice === "custom") return "已填写";
+  const option = optionsOf(item).find((entry) => entry.value === state.choice);
+  if (option && text === option.text.trim()) return "已选";
+  return "已改写";
+}
+function placeholderFor(item, state) {
+  if (state.choice === "custom") return "写一整句要定的口径";
+  if (state.choice) return "这是所选做法。可以直接用，也可以改字";
+  return "点上面的选项会带入这句话，也可以直接在这里写";
+}
+
+const root = document.getElementById("cards");
+data.questions.forEach((item, offset) => {
+  const index = offset + 1;
+  const card = document.createElement("section");
+  card.className = "card";
+  card.id = "item-" + index;
+  card.dataset.index = String(index);
+
+  const head = document.createElement("div");
+  head.className = "head";
+  const kind = document.createElement("div");
+  kind.className = "kind";
+  kind.textContent = index + ". " + item.kind;
+  const badge = document.createElement("div");
+  badge.className = "badge";
+  head.append(kind, badge);
+
+  const question = document.createElement("div");
+  question.className = "q";
+  question.textContent = item.question;
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const lines = [];
+  if (item.evidence) lines.push("依据：" + item.evidence);
+  if (item.need) lines.push("需要决定：" + item.need);
+  meta.textContent = lines.join("\n");
+  meta.hidden = lines.length === 0;
+
+  let details = null;
+  if (Array.isArray(item.sources) && item.sources.length) {
+    details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "展开依据对照";
+    details.append(summary);
+    item.sources.forEach((source) => {
+      const line = document.createElement("p");
+      line.className = "source";
+      const label = document.createElement("b");
+      label.textContent = (source.label || "依据") + "：";
+      line.append(label, document.createTextNode(source.text || ""));
+      details.append(line);
+    });
+  }
+
+  const choices = document.createElement("div");
+  optionsOf(item).forEach((option) => {
+    choices.append(choiceLabel(index, option.value, option.title, option.text));
+  });
+  choices.append(choiceLabel(index, "custom", "自己填写", "上面的选项都不合适，或要改成自己的说法。在下面写一整句。"));
+
+  const input = document.createElement("textarea");
+  input.dataset.index = String(index);
+  const reply = document.createElement("div");
+  reply.className = "reply-line";
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.className = "clear";
+  clear.dataset.clear = String(index);
+  clear.textContent = "清除这项";
+
+  card.append(head, question, meta);
+  if (details) card.append(details);
+  card.append(choices, input, reply, clear);
+  root.append(card);
+  paintCard(index, true);
+});
+
+function choiceLabel(index, value, title, text) {
+  const label = document.createElement("label");
+  label.className = "choice";
+  const input = document.createElement("input");
+  input.type = "radio";
+  input.name = "q-" + index;
+  input.value = value;
+  const body = document.createElement("div");
+  const heading = document.createElement("b");
+  heading.textContent = title;
+  const detail = document.createElement("span");
+  detail.textContent = text;
+  body.append(heading, detail);
+  label.append(input, body);
+  return label;
+}
+
+function paintCard(index, syncText) {
+  const item = data.questions[index - 1];
+  const state = stateOf(index);
+  const card = document.getElementById("item-" + index);
+  const status = statusOf(state);
+  const badge = card.querySelector(".badge");
+  badge.textContent = badgeText(item, state);
+  badge.className = "badge" + (status === "done" ? " done" : status === "need" ? " need" : "");
+  card.querySelectorAll('input[type="radio"]').forEach((input) => {
+    input.checked = input.value === state.choice;
+  });
+  const area = card.querySelector("textarea");
+  area.placeholder = placeholderFor(item, state);
+  if (syncText) area.value = state.text || "";
+  const reply = card.querySelector(".reply-line");
+  const text = finalText(state);
+  if (status === "done") {
+    const picked = choiceTitle(item, state);
+    reply.hidden = false;
+    reply.textContent = "将导出" + (picked ? "（" + picked + "）" : "") + "：" + text;
+  } else {
+    reply.hidden = true;
+    reply.textContent = "";
+  }
+  card.querySelector(".clear").hidden = !state.choice && !state.text;
+  const done = status === "done";
+  card.hidden = (filter === "done" && !done) || (filter === "open" && done);
+}
+
+function rows() {
+  return data.questions.map((item, offset) => {
+    const index = offset + 1;
+    const state = stateOf(index);
+    return { index, item, state, status: statusOf(state), answer: finalText(state) };
+  });
+}
+function paintChrome() {
+  const list = rows();
+  const done = list.filter((row) => row.status === "done").length;
+  const need = list.filter((row) => row.status === "need").length;
+  const empty = list.filter((row) => row.status === "empty").length;
+  document.getElementById("stats").replaceChildren(
+    stat(done + " / " + list.length, "已确认"),
+    stat(String(need), "待填写"),
+    stat(String(empty), "未选")
+  );
+  document.getElementById("progress").textContent = "已确认 " + done + " / " + list.length;
+  document.getElementById("export").disabled = done !== list.length;
+  const visible = list.filter((row) => !document.getElementById("item-" + row.index).hidden).length;
+  const emptyFilter = document.getElementById("empty-filter");
+  if (!visible) {
+    emptyFilter.hidden = false;
+    emptyFilter.textContent = filter === "open" ? "各项都已确认。可以导出确认结果。" : "还没有已确认的项。";
+  } else {
+    emptyFilter.hidden = true;
+  }
+}
+function stat(value, label) {
+  const box = document.createElement("div");
+  box.className = "stat";
+  const strong = document.createElement("b");
+  strong.textContent = value;
+  const span = document.createElement("span");
+  span.textContent = label;
+  box.append(strong, span);
+  return box;
+}
+
+root.addEventListener("change", (event) => {
+  const input = event.target;
+  if (input.type !== "radio" || !input.name.startsWith("q-")) return;
+  const index = Number(input.name.slice(2));
+  const item = data.questions[index - 1];
+  const prev = stateOf(index);
+  let text = prev.text || "";
+  if (input.value === "custom") {
+    const sameAsOption = optionsOf(item).some((option) => option.text.trim() === text.trim());
+    if (sameAsOption) text = "";
+  } else {
+    const option = optionsOf(item).find((entry) => entry.value === input.value);
+    text = option ? option.text : "";
+  }
+  saved[index] = { choice: input.value, text: text };
+  persist();
+  paintCard(index, true);
+  paintChrome();
+});
+root.addEventListener("input", (event) => {
+  const index = Number(event.target.dataset.index || 0);
+  if (!index) return;
+  const prev = stateOf(index);
+  const text = event.target.value;
+  const choice = prev.choice || (text.trim() ? "custom" : "");
+  saved[index] = { choice: choice, text: text };
+  persist();
+  paintCard(index, false);
+  paintChrome();
+});
+root.addEventListener("click", (event) => {
+  const index = Number(event.target.dataset.clear || 0);
+  if (!index) return;
+  delete saved[index];
+  persist();
+  paintCard(index, true);
+  paintChrome();
+});
+document.getElementById("filters").addEventListener("click", (event) => {
+  const next = event.target.getAttribute("data-filter");
+  if (!next) return;
+  filter = next;
+  document.querySelectorAll("#filters button").forEach((button) => {
+    button.setAttribute("aria-pressed", button.getAttribute("data-filter") === filter ? "true" : "false");
+  });
+  data.questions.forEach((item, offset) => paintCard(offset + 1, false));
+  paintChrome();
+});
+document.getElementById("export").addEventListener("click", () => {
+  const answers = rows().map((row) => ({
+    index: row.index,
+    kind: row.item.kind,
+    question: row.item.question,
+    choice: row.state.choice,
+    choice_title: choiceTitle(row.item, row.state),
+    answer: row.answer
+  }));
+  const blob = new Blob([JSON.stringify({
+    task_id: data.task_id,
+    passed_by_card: true,
+    answers: answers
+  }, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "01-确认结果.json";
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+paintChrome();
+</script>
+</body>
+</html>

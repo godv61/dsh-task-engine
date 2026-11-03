@@ -1,5 +1,31 @@
 import { goTestEvidence } from './go-test-evidence.ts'
 import { skillReceiptProblem } from './skill-command.ts'
+import { commandName, commandWords } from './command-words.ts'
+
+/** Python's standard-library runner, with a completed final summary on stderr. */
+export function unittestTestEvidence(command: string, output: string): { count: number | null } | undefined {
+  const words = commandWords(command)
+  if (!words) return undefined
+  const name = commandName(words[0])
+  if (!/^python(?:\d+(?:\.\d+)*)?$/u.test(name) && name !== 'py') return undefined
+  let index = 1
+  if (name === 'py' && /^-\d+(?:\.\d+)*$/u.test(words[index] ?? '')) index++
+  while (['-B', '-E', '-I', '-O', '-OO', '-s', '-S', '-u'].includes(words[index] ?? '')) index++
+  if (words[index] !== '-m' || words[index + 1] !== 'unittest') return undefined
+  const summary = output.replace(/\r\n/gu, '\n').trimEnd()
+    .match(/(?:^|\n)Ran (\d+) tests? in \d+(?:\.\d+)?s\n\n(OK|FAILED|NO TESTS RAN)(?: \(([^\n]*)\))?$/u)
+  if (!summary) return { count: null }
+  if (summary[2] === 'FAILED') return { count: 0 }
+  const total = Number(summary[1])
+  if (summary[2] === 'NO TESTS RAN') return { count: total === 0 ? 0 : null }
+  let excluded = 0
+  for (const field of summary[3]?.split(',') ?? []) {
+    const counter = field.trim().match(/^(?:skipped|expected failures)=(\d+)$/u)
+    if (!counter) return { count: null }
+    excluded += Number(counter[1])
+  }
+  return { count: Number.isSafeInteger(total) && Number.isSafeInteger(excluded) && excluded <= total ? total - excluded : null }
+}
 
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
 export function mavenTestEvidence(command: string, output: string): { count: number | null } | null {
@@ -53,6 +79,8 @@ export function testEvidence(command: string, output: string): { count: number |
   if (maven) return maven
   const go = goTestEvidence(command, output)
   if (go) return go
+  const unittest = unittestTestEvidence(command, output)
+  if (unittest) return unittest
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]

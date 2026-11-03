@@ -768,7 +768,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
   if (commitRequired(config) && config.commit.policy !== 'manual'
     && config.commit.checkpoints.includes(state.stage)
     && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
-    return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
+    return { ok: false, errors: ['commit required before leaving this checkpoint: inspect status.commit, call commit with message and files, perform the authorized Git commit, then record its actual hash with the same message/files'] }
   }
   return { ok: true }
 }
@@ -940,7 +940,7 @@ export function commitCheckpoint(state: TaskState, config: WorkflowConfig): Comm
     }
   }
 
-  return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
+  return { allowed: false, reason: `no commit is due at stage ${state.stage}; configured checkpoint stages: ${checkpoints.join(', ') || '(none)'}. Follow the current stage gates before calling commit.` }
 }
 
 /**

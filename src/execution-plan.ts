@@ -141,7 +141,9 @@ export function executionItemBlockers(state: TaskState, item: TaskItem): string[
   const plan = item.execution_plan
   if (!plan) return [`item ${item.id}: call plan_execution before dispatch (record boundary, files, acceptance and reason)`]
   const blockers: string[] = []
-  if (!item.dispatch) blockers.push(`item ${item.id}: implementation has not been dispatched`)
+  if (!item.dispatch) blockers.push(plan.mode === 'direct'
+    ? `item ${item.id}: direct implementation is not accepted; run verify, ${plan.review === 'independent' ? 'review_dispatch, then ' : ''}accept_item (no implementation dispatch is required)`
+    : `item ${item.id}: implementation has not been dispatched`)
   if (item.dispatch?.status && item.dispatch.status !== 'completed') blockers.push(`item ${item.id}: implementation child is not completed`)
   if (item.review?.spec.outcome !== 'pass' || (state.flow?.config.review_depth !== 'single' && item.review.quality?.outcome !== 'pass'))
     blockers.push(`item ${item.id}: item review is missing or failed before done`)

@@ -110,7 +110,7 @@ if (wantsSchema) {
 // The shipped composition must not retain removed prompt variables or one-shot/Job configuration.
 const patchPath = join(pluginRoot, 'cordis.patch.yml')
 const patchText = readFileSync(patchPath, 'utf8')
-check('preset uses rc.3 directory context and activation configuration', !/\{\{cwd\}\}|backgroundMode:|enableRunInBackground:|toolFilter:/u.test(patchText))
+check('preset uses managed directory context and activation configuration', !/\{\{cwd\}\}|backgroundMode:|enableRunInBackground:|toolFilter:/u.test(patchText))
 check('preset declares the guarded readonly reviewer', patchText.includes('id: task-engine-review') && patchText.includes('@godv61/dsh-task-engine/reviewer'))
 const subagentTypePath = join(dshRoot, 'packages', 'subagent', 'subagent', 'src', 'index.ts')
 if (existsSync(subagentTypePath)) check('host exposes managed startActivation', /startActivation\(/u.test(readFileSync(subagentTypePath, 'utf8')))
@@ -121,8 +121,9 @@ if (existsSync(subagentTypePath)) check('host exposes managed startActivation', 
 //    consumer running this script from the installed tarball has no copy, and
 //    the whole point of this check is to run against whatever DSH is present.
 const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
-const range = pkg.peerDependencies['@deepseek-ai/dsh-typert-protocol'] ?? ''
-check(`peer range admits DSH ${protocol.version}`, rangeAdmits(range, protocol.version), range)
+for (const [name, range] of Object.entries(pkg.peerDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))) {
+  check(`${name} peer range admits DSH ${protocol.version}`, rangeAdmits(range, protocol.version), range)
+}
 
 /**
  * Whether one of a `||`-joined range's comparators admits `version`.
