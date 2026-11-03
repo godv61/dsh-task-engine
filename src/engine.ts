@@ -17,7 +17,8 @@ import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
 import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
-import { invalidateRequirement, requirementConfirmed, type RequirementPolicy, type RequirementsState } from './requirements.ts'
+import { invalidateRequirement, requirementConfirmed, requirementMaterialPath, type RequirementPolicy, type RequirementsState } from './requirements.ts'
+import { isEngineMeta } from './task-paths.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -416,6 +417,8 @@ export interface VerificationReceipt {
 
 export interface TaskState {
   schema: 1
+  /** Project-relative directory of this task's workspace-owned bundle. */
+  task_directory?: string
   /** Absent on legacy snapshots; never inferred or migrated implicitly. */
   delivery?: import('./delivery-contract.ts').DeliveryContract
   id: string
@@ -765,7 +768,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
   if (commitRequired(config) && config.commit.policy !== 'manual'
     && config.commit.checkpoints.includes(state.stage)
     && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
-    return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
+    return { ok: false, errors: ['commit required before leaving this checkpoint: inspect status.commit, call commit with message and files, perform the authorized Git commit, then record its actual hash with the same message/files'] }
   }
   return { ok: true }
 }
@@ -937,7 +940,7 @@ export function commitCheckpoint(state: TaskState, config: WorkflowConfig): Comm
     }
   }
 
-  return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
+  return { allowed: false, reason: `no commit is due at stage ${state.stage}; configured checkpoint stages: ${checkpoints.join(', ') || '(none)'}. Follow the current stage gates before calling commit.` }
 }
 
 /**
@@ -1204,20 +1207,14 @@ export interface FileScopeResult {
  * `file_scope` is off; an empty declared scope refuses every commit (the task
  * must first declare what it may touch).
  */
-/**
- * Engine bookkeeping files that travel with the branch as team-shared facts
- * (`.dsh/task-*.json`, `.dsh/eng.json`). They are metadata, not deliverables,
- * so the file-scope gate never counts them as out-of-scope.
- */
-function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
-}
-
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }
   const requirementDocument = config.requirement_review ? state.requirements?.document?.path : undefined
-  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !isEngineMeta(file))
+  const materialPaths = new Set(config.requirement_review ? (state.requirements?.materials ?? []).filter(m => {
+    try { return !m.retired_at && m.path === requirementMaterialPath(state, m.name) } catch { return false }
+  }).map(m => m.path) : [])
+  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !materialPaths.has(file) && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }

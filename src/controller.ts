@@ -11,7 +11,7 @@
 
 import { constants, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, type Dirent } from 'node:fs'
 import { authorizedWorkspace } from './workspace-access.ts'
-import { deliveryView, type DeliveryView } from './delivery-contract.ts'
+import { deliveryView } from './delivery-contract.ts'
 import { assertRealPath, prepareImport, commitImport } from './resource-import.ts'
 import type { ResourceImportRequest, ResourcePreview } from './resource-types.ts'
 import { homedir } from 'node:os'
@@ -39,7 +39,7 @@ import { listSonarProjectRules, projectAnalyzedLanguages, type SonarProjectRuleV
 import { reviewedProfileCoverage } from './sonar-report.ts'
 import { codeGraphEvidence, codeGraphInitHint, codeGraphStatus, prepareCodeGraph, type CodeGraphState } from './codegraph-init.ts'
 import { scopeFingerprint, verificationInputHashes } from './dev-task.ts'
-import { groupEvidenceBlockers, verificationGroupViews, type VerificationGroupView } from './verification-state.ts'
+import { groupEvidenceBlockers, verificationGroupViews } from './verification-state.ts'
 import { initJob, type InitJobView } from './init-jobs.ts'
 import { INIT_ATTEMPT_TIMEOUT_MS, initTimeBudget, withInitTimeout } from './init-timeout.ts'
 import { renderInitStepPrompt } from './init-prompt.ts'
@@ -49,6 +49,9 @@ import { reviewEvidenceBlockers } from './evidence-gate.ts'
 import { appendInitMount, mountLoading, mountName, validMetaMount } from './skill-loading.ts'
 import { requirementsView, taskExecutionProblem } from './requirements.ts'
 import { requirementDocumentProblem } from './requirement-commands.ts'
+import { listTaskIds, taskPath } from './task-store.ts'
+import { taskLedgerContent } from './task-ledger-content.ts'
+import type { TaskLedgerEntry, TaskLedgerView } from './task-ledger-types.ts'
 
 export interface AdaptiveProjectConfig {
   meta_bindings?: Partial<Record<MetaSkill, import('./skill-loading.ts').MetaSkillMount[]>>
@@ -311,70 +314,7 @@ export interface ReadRuleResult {
   error?: string
 }
 
-/** One implementation item's audit trail, projected for the task ledger view. */
-export interface TaskLedgerItem {
-  id: string
-  title: string
-  status: string
-  execution_plan?: import('./execution-plan.ts').ExecutionPlan
-  independent_review?: import('./execution-plan.ts').IndependentReview
-  /** Subagent dispatch audit; absent until the item has been dispatched. */
-  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string; metrics?: import('./delivery-contract.ts').RunMetrics }
-  dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]
-  /** Two-stage review audit; absent until the item has been reviewed. */
-  review?: {
-    independent_run_id?: string
-    spec: { outcome: 'pass' | 'fail'; notes?: string[] }
-    quality: { outcome: 'pass' | 'fail'; notes?: string[] }
-  }
-}
-
-/** One task's ledger projection: identity, stage, and the per-item audit trail. */
-export interface TaskLedgerEntry {
-  delivery?: DeliveryView
-  evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
-  verification_groups?: VerificationGroupView[]
-  review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'
-  risk_level?: string
-  updated_at?: string
-  lifecycle: "active" | "ready_to_close" | "archived"
-  completed_at?: string
-  related_task?: { id: string; kind: string }
-  items_done: number
-  next_action: string
-  verification_passed?: boolean
-  review_outcome?: string
-  sonar?: {
-    source: string
-    audit?: {
-      gate: string
-      review_gate?: string
-      checked_at: string
-      target: string
-      findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
-      blocking_count: number
-      unresolved_count?: number
-      uncovered_files: string[]
-      dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
-      report_path?: string
-      scanned_files?: string[]
-      profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
-    }
-  }
-  task_id: string
-  title: string
-  stage: string
-  branch: string
-  items: TaskLedgerItem[]
-}
-
-/** `readTasks` result: every task record under the workspace's `.dsh/`. */
-export interface TaskLedgerView {
-  tasks: TaskLedgerEntry[]
-  errors?: { file: string; message: string }[]
-  next_cursor?: string
-  total_count?: number
-}
+export type { TaskLedgerItem, TaskLedgerEntry, TaskLedgerView } from './task-ledger-types.ts'
 
 /** `readInit` result: the workspace's root `AGENTS.md`, or absent. */
 export interface InitView {
@@ -1055,25 +995,23 @@ export default class TaskEngineController extends TypertRemoteService {
     let nextCursor: string | undefined
     let totalCount = 0
     try {
-      const dshDir = await fs.resolve('.dsh', { cwd: path })
-      const all = (await fs.listDir(dshDir)).filter(entry => entry.name.startsWith('task-') && entry.name.endsWith('.json'))
-        .sort((a, b) => a.name.localeCompare(b.name, 'en'))
+      const all = await listTaskIds(fs, path)
       totalCount = all.length
-      const remaining = cursor ? all.filter(entry => entry.name.localeCompare(cursor, 'en') > 0) : all
+      const remaining = cursor ? all.filter(id => id.localeCompare(cursor, 'en') > 0) : all
       const entries = remaining.slice(0, 100)
-      if (remaining.length > entries.length) nextCursor = entries.at(-1)!.name
-      for (const entry of entries) {
-        if (!entry.name.startsWith('task-') || !entry.name.endsWith('.json')) continue
+      if (remaining.length > entries.length) nextCursor = entries.at(-1)!
+      for (const id of entries) {
         try {
-        const raw = await fs.readText(await fs.resolve(`.dsh/${entry.name}`, { cwd: path }))
-        if (raw === undefined) continue
+        assertRealPath(resolve(path, taskPath(id)))
+        const raw = await fs.readText(await fs.resolve(taskPath(id), { cwd: path }))
+        if (raw === undefined) throw new Error('任务目录的 task.json 不存在或无法读取')
         let state: TaskState
         try {
           state = JSON.parse(raw) as TaskState
         } catch {
-          throw new Error('任务记录无法解析：' + entry.name)
+          throw new Error('任务记录无法解析：' + taskPath(id))
         }
-        if (!state || ['id', 'title', 'stage', 'branch'].some(key => typeof (state as unknown as Record<string, unknown>)[key] !== 'string') || (state.items !== undefined && !Array.isArray(state.items))) throw new Error('任务记录格式无效：' + entry.name)
+        if (!state || state.id !== id || ['id', 'title', 'stage', 'branch'].some(key => typeof (state as unknown as Record<string, unknown>)[key] !== 'string') || (state.items !== undefined && !Array.isArray(state.items))) throw new Error('任务记录格式无效或编号与目录不一致：' + taskPath(id))
         let evidenceStatus: TaskLedgerEntry['evidence_status'] = state.completed ? 'historical' : !state.verification?.receipt ? 'missing' : !state.verification.passed ? 'failed' : 'unknown'
         let currentScope: string | undefined
           let groupHashes: Record<string, string> | undefined
@@ -1103,6 +1041,7 @@ export default class TaskEngineController extends TypertRemoteService {
             && assertAdvance(state, edge.to, state.flow!.config).errors?.some(error => error.startsWith('commit required before leaving')))
         const requirements = requirementsView(state, !state.completed && !!await requirementDocumentProblem(fs, state, path), true)
         tasks.push({
+          content: taskLedgerContent(state),
           ...(requirements ? { requirements } : {}),
           ...(state.delivery ? { delivery: deliveryView(state)! } : {}),
           evidence_status: evidenceStatus,
@@ -1153,7 +1092,7 @@ export default class TaskEngineController extends TypertRemoteService {
             ...(item.review === undefined ? {} : { review: item.review }),
           })),
         })
-        } catch (error) { errors.push({ file: entry.name, message: error instanceof Error ? error.message : String(error) }) }
+        } catch (error) { errors.push({ file: taskPath(id), message: error instanceof Error ? error.message : String(error) }) }
       }
     } catch (error) {
       // Only an absent directory is an empty ledger; denied access and corruption remain visible.

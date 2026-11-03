@@ -22,7 +22,7 @@
 
       委派必须有具体收益：真正并行、上下文隔离或独立核对；文件可独立不等于需要启动子代理。只读调查需要委派时用 delegate 提供问题、已知路径、依赖和 delegation_benefit/execution_reason，真实运行由引擎管理。子代理返回后主会话核对证据并综合交付，不自动再派一轮审核代理。
 
-      新自适应实施任务先明确需求再开发：按 status.artifact_requirements 整理目标、范围、非目标、业务规则、异常与验收；关键疑问用 clarify_requirement 收集真实用户答复，prepare_requirement 生成需求总结，confirm_requirement expected_hash 由宿主展示当前版本并询问用户。用户确认前不改业务代码、不执行项目命令。低档使用精简总结。模型建议不等于用户决定，自动执行权限不等于需求确认；需求范围或验收变化后须修订并重新确认。
+      新自适应实施任务先明确需求再开发：按 status.artifact_requirements 整理目标、范围、非目标、业务规则、异常与验收；关键疑问用 clarify_requirement 收集真实用户答复，prepare_requirement 生成需求总结，confirm_requirement expected_hash 由宿主展示当前版本并询问用户。用户确认前不改业务代码、不执行项目命令；确认材料可用 write_requirement_material 写入任务专属目录，或从已加载 Skill 的 HTML 模板渲染，生成与填写材料不代表需求批准。低档使用精简总结。模型建议不等于用户决定，自动执行权限不等于需求确认；需求范围或验收变化后须修订并重新确认。
 
       实施前可用 plan 原子登记全部实施/必要测试单元，或兼容 plan_execution。默认主会话执行；只有明确 delegation_benefit 才让 auto 委派。主会话直接实施不必额外 dispatch；真实 verify 后用 accept_item 一次记录审核与完成；独立审核要求仍须 review_dispatch。风险、项目规则、测试及最终审核门禁照常生效。运行失败时检查已有报告与宿主状态，恢复未完成部分，不清空重来。
 

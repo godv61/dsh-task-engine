@@ -1,4 +1,4 @@
-// Actual rc.3 tool registry, scope and prompt assembly; controlled activation/query lifecycle adapters.
+// Installed DSH tool registry, scope and prompt assembly; controlled activation/query lifecycle adapters.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'

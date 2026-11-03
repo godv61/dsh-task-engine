@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { test } from 'node:test'
 
 const HOOK = resolve('hooks/commit-msg')
@@ -34,20 +34,29 @@ test('hook preserves versioned business confirmation and refuses a changed requi
     flow: { flow: 'fixture', version: 2, config, hash: hashConfig(config) }, artifacts: { requirement: { goal: 'one local change' } },
     items: [], files: ['src/app.js'], commits: [], verification: { passed: false, evidence: [] }, review: { outcome: 'pending' },
     requirement_confirmed: false, solution_confirmed: false, requirements: { clarifications: [] } }
-  const body = '# Requirement fixture\n', doc = { version: 1, path: 'docs/requirements/REQ-HOOK.md', hash: hashText(body), content: body,
+  const body = '# Requirement fixture\n', doc = { version: 1, path: '.dsh/tasks/REQ-HOOK/requirement.md', hash: hashText(body), content: body,
     status: 'awaiting_confirmation', source: requirementSource(task, config.requirement_review) }
   task.requirements.document = doc
   const root = await repo('requirement-review', task)
   assert.ok(root.startsWith(join(tmpdir(), 'engine-hook-')))
   try {
-    mkdirSync(join(root, 'docs/requirements'), { recursive: true }); writeFileSync(join(root, doc.path), body)
+    mkdirSync(join(root, '.dsh/tasks/REQ-HOOK'), { recursive: true }); writeFileSync(join(root, doc.path), body)
     assert.match(tryCommit(root, 'feat: fixture').stderr, /需求版本尚未由用户确认/)
     doc.status = 'confirmed'; doc.confirmation = { hash: doc.hash, version: 1, at: '2026-10-30T00:00:00Z', session_id: 'human' }
     task.requirement_confirmed = true
-    writeFileSync(join(root, '.dsh/task-REQ-HOOK.json'), JSON.stringify(task))
+    const material = { name: 'product.html', path: '.dsh/tasks/REQ-HOOK/materials/product.html', id: 'fixture', version: 1,
+      hash: hashText('<p>Approved product decisions</p>\n'), bytes: 34, updated_at: '2026-11-02T00:00:00Z' }
+    task.requirements.materials = [material]
+    doc.source = requirementSource(task, config.requirement_review)
+    mkdirSync(join(root, '.dsh/tasks/REQ-HOOK/materials'), { recursive: true })
+    writeFileSync(join(root, material.path), '<p>Approved product decisions</p>\n')
+    writeFileSync(join(root, '.dsh/tasks/REQ-HOOK/task.json'), JSON.stringify(task))
     writeFileSync(join(root, doc.path), '# Changed')
     assert.match(tryCommit(root, 'feat: fixture').stderr, /需求文档已变化/)
-    writeFileSync(join(root, doc.path), body); git(root, ['add', doc.path])
+    writeFileSync(join(root, doc.path), body); git(root, ['add', doc.path, material.path])
+    writeFileSync(join(root, material.path), 'changed product decision')
+    assert.match(tryCommit(root, 'feat: fixture').stderr, /需求材料/)
+    writeFileSync(join(root, material.path), '<p>Approved product decisions</p>\n')
     const allowed = tryCommit(root, 'feat: fixture')
     assert.equal(allowed.allowed, true, allowed.stderr)
   } finally { rmSync(root, { recursive: true, force: true }) }
@@ -57,7 +66,7 @@ test('hook refuses a task without the current requirement contract even when its
   const { hashConfig } = await import('./lib/snapshot.js')
   const root = await repo('old-contract', approvedTask({flow:{flow:'standard',version:1,config:await standardConfig()}}))
   try {
-    const file=join(root,'.dsh/task-HOOK-1.json'), task=JSON.parse(readFileSync(file,'utf8'))
+    const file=join(root,'.dsh/tasks/HOOK-1/task.json'), task=JSON.parse(readFileSync(file,'utf8'))
     delete task.flow.config.requirement_review
     task.flow.hash=hashConfig(task.flow.config);task.requirement_confirmed=true
     writeFileSync(file,JSON.stringify(task))
@@ -122,7 +131,7 @@ async function repo(name, task) {
   git(root, ['config', 'user.email', 'test@example.com'])
   git(root, ['config', 'user.name', 'Test'])
   git(root, ['config', 'commit.gpgsign', 'false'])
-  mkdirSync(join(root, '.dsh'), { recursive: true })
+  mkdirSync(join(root, '.dsh', 'tasks', task.id), { recursive: true })
   mkdirSync(join(root, 'src'), { recursive: true })
   // The gate body stays byte-identical to the shipped hook; only the shebang is
   // replaced, so the test exercises the real gate under a runnable interpreter.
@@ -130,10 +139,10 @@ async function repo(name, task) {
   writeFileSync(join(root, '.git', 'hooks', 'commit-msg'), `#!${NODE}\n${gate}`, { mode: 0o755 })
   writeFileSync(join(root, '.git', 'hooks', 'package.json'), '{\n  "type": "commonjs"\n}\n')
   if (task.id !== 'REQ-HOOK' && task.flow?.config && !task.requirements?.document) confirmedRequirement(task, (p,c) => { mkdirSync(join(root,p,'..'),{recursive:true}); writeFileSync(join(root,p),c) })
-  writeFileSync(join(root, '.dsh', `task-${task.id}.json`), JSON.stringify(task, null, 2))
+  writeFileSync(join(root, '.dsh', 'tasks', `${task.id}`, 'task.json'), JSON.stringify(task, null, 2))
   writeFileSync(join(root, 'src', 'app.js'), 'console.log(1)\n')
   git(root, ['add', 'src/app.js'])
-  if (task.verification.passed) await stampReceipt(root, join(root, '.dsh', `task-${task.id}.json`))
+  if (task.verification.passed) await stampReceipt(root, join(root, '.dsh', 'tasks', `${task.id}`, 'task.json'))
   return root
 }
 
@@ -195,11 +204,11 @@ test('read-only old tasks on the same branch do not prevent selecting the curren
   const config=await standardConfig();config.commit.message_pattern='';config.commit.message_hint=''
   const root=await repo('old-and-current',approvedTask({flow:{flow:'standard',version:2,config}}))
   try {
-    const task=JSON.parse(readFileSync(join(root,'.dsh/task-HOOK-1.json'),'utf8'))
+    const task=JSON.parse(readFileSync(join(root,'.dsh/tasks/HOOK-1/task.json'),'utf8'))
     const old={...task,id:'OLD',flow:{...task.flow,config:structuredClone(task.flow.config)}}
     delete old.flow.config.requirement_review;delete old.flow.hash
-    const oldPath=join(root,'.dsh/task-OLD.json'), oldBytes=JSON.stringify(old)
-    writeFileSync(oldPath,oldBytes)
+    const oldPath=join(root,'.dsh/tasks/OLD/task.json'), oldBytes=JSON.stringify(old)
+    mkdirSync(dirname(oldPath),{recursive:true}); writeFileSync(oldPath,oldBytes)
     const result=tryCommit(root,'feat: current task delivery')
     assert.equal(result.allowed,true,result.stderr)
     assert.equal(readFileSync(oldPath,'utf8'),oldBytes)
@@ -262,10 +271,10 @@ test('the installed hook finds a registered task in a monorepo subdirectory', as
     writeFileSync(join(root, '.git', 'hooks', 'dsh-task-roots.json'), '{ "roots": ["module"] }\n')
     const task = approvedTask({root:sub,files:['src/app.js'],flow:{flow:'standard',version:2,config}})
     confirmedRequirement(task,(p,c)=>{mkdirSync(join(sub,p,'..'),{recursive:true});writeFileSync(join(sub,p),c)})
-    writeFileSync(join(sub,'.dsh/task-HOOK-1.json'),JSON.stringify(task))
+    writeFileSync(join(sub,'.dsh/tasks/HOOK-1/task.json'),JSON.stringify(task))
     writeFileSync(join(sub, 'src', 'app.js'), 'console.log(1)\n')
     git(root, ['add', 'module/src/app.js'])
-    await stampReceipt(sub, join(sub, '.dsh', 'task-HOOK-1.json'))
+    await stampReceipt(sub, join(sub, '.dsh', 'tasks', 'HOOK-1', 'task.json'))
     const result = tryCommit(sub, '【HOOK-1】【TASK】probe subdirectory')
     assert.equal(result.allowed, true, `registered subdirectory task should commit: ${result.stderr}`)
   } finally {
@@ -284,6 +293,26 @@ test('the installed hook fails closed on a damaged workspace registry', async ()
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('a child workspace can commit its bundled metadata when the source project is its parent', async () => {
+  const config=await standardConfig(),root=mkdtempSync(join(tmpdir(),'engine-hook-parent-project-'))
+  try {
+    git(root,['init','-q','-b','main']);git(root,['config','user.email','fixture@example.invalid']);git(root,['config','user.name','Fixture']);git(root,['config','commit.gpgsign','false'])
+    const sub=join(root,'module'),record=join(sub,'.dsh/tasks/HOOK-1/task.json')
+    mkdirSync(join(sub,'src'),{recursive:true})
+    const gate=readFileSync(HOOK,'utf8').replace(/^#![^\n]*\n/u,'')
+    writeFileSync(join(root,'.git/hooks/commit-msg'),`#!${NODE}\n${gate}`,{mode:0o755})
+    writeFileSync(join(root,'.git/hooks/package.json'),'{"type":"commonjs"}')
+    writeFileSync(join(root,'.git/hooks/dsh-task-roots.json'),'{"roots":["module"]}')
+    const task=approvedTask({root,task_directory:'module/.dsh/tasks/HOOK-1',files:['module/src/app.js'],flow:{flow:'standard',version:2,config}})
+    confirmedRequirement(task,(p,c)=>{mkdirSync(dirname(join(root,p)),{recursive:true});writeFileSync(join(root,p),c)})
+    writeFileSync(record,JSON.stringify(task));writeFileSync(join(sub,'src/app.js'),'console.log(1)\n')
+    await stampReceipt(root,record)
+    git(root,['add','module/src/app.js','module/.dsh/tasks/HOOK-1'])
+    const result=tryCommit(sub,'【HOOK-1】【TASK】child task bundle')
+    assert.equal(result.allowed,true,result.stderr)
+  } finally {rmSync(root,{recursive:true,force:true})}
 })
 
 test('a message that violates the configured pattern is refused', async () => {
@@ -348,7 +377,7 @@ test('touching a sensitive path without a high-risk receipt is refused', async (
   try {
     writeFileSync(join(root, '.env'), 'SECRET=1\n')
     git(root, ['add', '.env'])
-    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
+    await stampReceipt(root, join(root, '.dsh', 'tasks', 'HOOK-1', 'task.json'))
     const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
     assert.equal(result.allowed, false, 'a sensitive path without a high-risk receipt must be refused')
     assert.match(result.stderr, /敏感路径/, 'the refusal names the sensitive path')
@@ -384,7 +413,7 @@ test('common credential filenames also require a high-risk receipt', async () =>
     try {
       writeFileSync(join(root, filename), 'secret=1\n')
       git(root, ['add', filename])
-      await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
+      await stampReceipt(root, join(root, '.dsh', 'tasks', 'HOOK-1', 'task.json'))
       const result = tryCommit(root, '【HOOK-1】【TASK】probe the hook')
       assert.equal(result.allowed, false, filename)
       assert.match(result.stderr, /敏感路径/, filename)
@@ -399,7 +428,7 @@ test('deleting a scoped file needs a high-risk task and fresh verification', asy
     git(root, ['-c', 'core.hooksPath=missing-hooks', 'commit', '-m', 'seed'])
     rmSync(join(root, 'src', 'app.js'))
     git(root, ['add', '-u'])
-    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-1.json'))
+    await stampReceipt(root, join(root, '.dsh', 'tasks', 'HOOK-1', 'task.json'))
     const result = tryCommit(root, '【HOOK-1】【TASK】remove app')
     assert.equal(result.allowed, false)
     assert.match(result.stderr, /高风险操作/)
@@ -449,8 +478,8 @@ test('a pattern-less commit cannot guess between two active tasks on one branch'
   const root = await repo('ambiguous', approvedTask({ stage: '测试', flow: { flow: 'adaptive-low', version: 1, config } }))
   try {
     const second = approvedTask({ id: 'HOOK-2', stage: '测试', flow: { flow: 'adaptive-low', version: 1, config } })
-    writeFileSync(join(root, '.dsh', 'task-HOOK-2.json'), JSON.stringify(second))
-    await stampReceipt(root, join(root, '.dsh', 'task-HOOK-2.json'))
+    mkdirSync(join(root, '.dsh', 'tasks', 'HOOK-2'), {recursive:true}); writeFileSync(join(root, '.dsh', 'tasks', 'HOOK-2', 'task.json'), JSON.stringify(second))
+    await stampReceipt(root, join(root, '.dsh', 'tasks', 'HOOK-2', 'task.json'))
     const result = tryCommit(root, 'unqualified task commit')
     assert.equal(result.allowed, false)
     assert.match(result.stderr, /多个未完成任务/)
@@ -464,7 +493,7 @@ test('approved local Sonar false positives retain the raw error but allow a firs
     flow: { flow: 'standard', version: 2, config },
   }))
   try {
-    const taskFile = join(root, '.dsh', 'task-HOOK-1.json')
+    const taskFile = join(root, '.dsh', 'tasks', 'HOOK-1', 'task.json')
     const task = JSON.parse(readFileSync(taskFile, 'utf8'))
     const finding = { key: 'issue-1', rule: 'java:S1', message: 'false positive', severity: 'MAJOR', file: 'src/app.js' }
     task.sonar_audit = { ce_task_id: 'local', analysis_id: 'local', gate: 'ERROR',

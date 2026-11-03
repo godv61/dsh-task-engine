@@ -57,7 +57,7 @@ async function created(flow) {
   registerDevTask(ctx)
   const exec = { agent: { session }, signal: new AbortController().signal }
   await execute({ task_id: 'FZ-1', operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', complexity: grade, complexity_reason: 'Fixture grade', title: 'freeze', branch: 'main', files: ['a.js'] }, exec)
-  return JSON.parse(records.get(join(cwd, '.dsh/task-FZ-1.json')))
+  return JSON.parse(records.get(join(cwd, '.dsh/tasks/FZ-1/task.json')))
 }
 
 test('freeze: task creation captures every skill and rule body it will use', async () => {
@@ -146,7 +146,7 @@ async function atDevelopmentWithProjectRule() {
   const exec = { agent: { session: { id: 'f', header: { cwd }, snapshotEvents: () => [] } }, signal: new AbortController().signal }
   const call = async args => execute(JSON.parse(JSON.stringify({ task_id: 'FZ-2', ...args })), exec)
   await call({ operation: 'create', intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit', title: 'freeze', branch: 'main', files: ['a.js'] })
-  const state = JSON.parse(records.get(join(cwd, '.dsh/task-FZ-2.json')))
+  const state = JSON.parse(records.get(join(cwd, '.dsh/tasks/FZ-2/task.json')))
   delete state.flow.hash
   state.flow.config = resolveFlow('standard', project).config
   state.flow.resources = [{kind:'skill',ref:{source:'project',name:'my-implementation'},content:'# Implementation skill',hash:hashText('# Implementation skill')},{kind:'rule',ref:{source:'project',name:'mine'},content:'ORIGINAL RULE',hash:hashText('ORIGINAL RULE')}]
@@ -155,7 +155,7 @@ async function atDevelopmentWithProjectRule() {
   confirmedRequirement(state, (p,c) => records.set(join(cwd,p),c))
   state.requirement_confirmed = true
   state.solution_confirmed = true
-  records.set(join(cwd, '.dsh/task-FZ-2.json'), JSON.stringify(state))
+  records.set(join(cwd, '.dsh/tasks/FZ-2/task.json'), JSON.stringify(state))
   return {
     call,
     records,
@@ -197,9 +197,9 @@ test('freeze: an unfrozen task falls back to live resolution and reports a missi
   // deleted rule must be reported as missing rather than silently unbound — the
   // two paths are distinguishable and neither silently degrades into the other.
   const f = await atDevelopmentWithProjectRule()
-  const state = JSON.parse(f.records.get(join(f.cwd, '.dsh/task-FZ-2.json')))
+  const state = JSON.parse(f.records.get(join(f.cwd, '.dsh/tasks/FZ-2/task.json')))
   delete state.flow.resources
-  f.records.set(join(f.cwd, '.dsh/task-FZ-2.json'), JSON.stringify(state))
+  f.records.set(join(f.cwd, '.dsh/tasks/FZ-2/task.json'), JSON.stringify(state))
 
   const live = await f.disclosed()
   assert.equal(live.mine?.content, 'ORIGINAL RULE', 'an unfrozen task reads the live file')

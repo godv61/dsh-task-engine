@@ -55,9 +55,9 @@ async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk
   }
   await call({operation:'create', intent:'implementation', intent_reason:'Fixture implementation', complexity:'low', complexity_reason:'Fixture unit', risk_level:risk, title:'execution strategy test',branch:'test',files:['a.mjs','check.test.mjs'],
     execution_policy:policy,items:[{id:'I1',title:'deliver module'}]})
-  { const p=join(cwd,'.dsh/task-POLICY-1.json'); const accepted=JSON.parse(readFileSync(p,'utf8')); confirmedRequirement(accepted,(f,c)=>{mkdirSync(dirname(join(cwd,f)),{recursive:true});writeFileSync(join(cwd,f),c)});writeFileSync(p,JSON.stringify(accepted)) }
+  { const p=join(cwd,'.dsh/tasks/POLICY-1/task.json'); const accepted=JSON.parse(readFileSync(p,'utf8')); confirmedRequirement(accepted,(f,c)=>{mkdirSync(dirname(join(cwd,f)),{recursive:true});writeFileSync(join(cwd,f),c)});writeFileSync(p,JSON.stringify(accepted)) }
   await call({operation:'plan_verification',verification_group:'module',command:'node --test check.test.mjs',files:['a.mjs','check.test.mjs'],item_ids:['I1']})
-  const taskPath = join(cwd,'.dsh/task-POLICY-1.json')
+  const taskPath = join(cwd,'.dsh/tasks/POLICY-1/task.json')
   const state = () => JSON.parse(readFileSync(taskPath,'utf8'))
   const save = s => writeFileSync(taskPath,JSON.stringify(s))
   let verdict = {spec:'pass',quality:'pass',notes:['a.mjs:1 returns 2; check.test.mjs:1 pins acceptance']}, disposed=0, calls=[]
@@ -172,6 +172,58 @@ test('new adaptive work requires a recorded plan; local work stays in the main s
   await f.call({operation:'plan_execution',item_id:'I1',...planInput,task_boundary:'local'})
   await f.call({operation:'dispatch',item_id:'I1'})
   assert.equal(f.state().items[0].dispatch.execution,'direct');assert.equal(f.calls.length,0)
+})
+test('verified direct implementation enters independent review and acceptance without an implementation dispatch', async () => {
+  const f = await fixture()
+  await f.call({ operation: 'plan_execution', item_id: 'I1', ...planInput, execution: 'direct' })
+  await assert.rejects(() => f.call({ operation: 'review_dispatch', item_id: 'I1' }), /verify/)
+  assert.equal(f.state().items[0].dispatch, undefined)
+  assert.equal(f.calls.length, 0)
+  await f.call({ operation: 'verify', verification_group: 'module' })
+  await f.call({ operation: 'review_dispatch', item_id: 'I1' })
+  assert.equal(f.calls.length, 1)
+  assert.equal(f.calls[0].reviewer, true)
+  assert.equal(f.state().items[0].dispatch.execution, 'direct')
+  const identity = f.state().items[0].dispatch.at
+  assert.equal(f.state().items[0].independent_review.dispatch_at, identity)
+  await f.call({ operation: 'accept_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass', notes: ['Current real tests and independent evidence accepted'] })
+  assert.equal(f.state().items[0].status, 'done')
+  assert.equal(f.state().items[0].dispatch.at, identity)
+  assert.deepEqual(todosBlockers(f.state(), f.state().flow.config), [])
+  writeFileSync(join(f.cwd, 'a.mjs'), 'export const value = () => 3\n')
+  await assert.rejects(() => f.call({ operation: 'accept_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass' }), /stale/)
+})
+test('independent review receives real receipt facts without duplicating verbose successful test output', async () => {
+  const f = await fixture()
+  await f.call({ operation: 'plan_execution', item_id: 'I1', ...planInput, execution: 'direct' })
+  await f.call({ operation: 'verify', verification_group: 'module' })
+  const state = f.state(), checked = state.verification_runs.at(-1)
+  checked.receipt.stdout += '\n' + 'VERBOSE_TEST_TRACE\n'.repeat(3000)
+  f.save(state)
+  await f.call({ operation: 'review_dispatch', item_id: 'I1' })
+  const prompt = f.calls[0].request.prompt[0].text
+  assert.doesNotMatch(prompt, /VERBOSE_TEST_TRACE/)
+  assert.match(prompt, /"test_summary":\{"count":1\}/)
+  assert.ok(prompt.includes(checked.receipt.scope_hash))
+  assert.ok(prompt.includes(checked.id))
+  assert.equal(f.state().verification_runs.at(-1).receipt.stdout, checked.receipt.stdout)
+  assert.equal(f.state().items[0].independent_review.read_coverage.length, planInput.files.length)
+})
+test('direct review still requires accepted dependencies and cannot override an independent failure', async () => {
+  const f = await fixture()
+  await f.call({ operation: 'items', items: [{ id: 'I2', title: 'dependent work' }] })
+  await f.call({ operation: 'plan_execution', item_id: 'I1', ...planInput, execution: 'direct' })
+  await f.call({ operation: 'plan_execution', item_id: 'I2', ...planInput, execution: 'direct', depends_on: ['I1'] })
+  await assert.rejects(() => f.call({ operation: 'review_dispatch', item_id: 'I2' }), /dependencies/)
+  assert.equal(f.state().items[1].dispatch, undefined)
+  assert.equal(f.calls.length, 0)
+  // I2 shares this input for the dependency gate test, so declare its required check as well.
+  await f.call({ operation: 'plan_verification', verification_group: 'dependent', command: 'node --test check.test.mjs', files: planInput.files, item_ids: ['I2'] })
+  await f.call({ operation: 'verify', verification_group: 'module' })
+  f.verdict = { spec: 'fail', quality: 'fail', notes: ['a.mjs:1 missing required behavior'] }
+  await f.call({ operation: 'review_dispatch', item_id: 'I1' })
+  await assert.rejects(() => f.call({ operation: 'accept_item', item_id: 'I1', spec_outcome: 'pass', quality_outcome: 'pass' }), /cannot override/)
+  assert.notEqual(f.state().items[0].status, 'done')
 })
 test('automatic child implementation requires an independent verdict and real parent verification', async () => {
   const f=await fixture()

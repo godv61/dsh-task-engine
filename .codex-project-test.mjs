@@ -87,7 +87,7 @@ test('a bound Codex Skill loads its attached DSH Rule and reads edits next time'
   events.push({ type: 'tool/call', data: { name: 'dev_task', callId: 'load-1', arguments: JSON.stringify({ operation: 'load_skill', task_id: 'T1', skill_name: 'codex-project:sample' }) } })
   events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'load-1', isError: false }] } } })
   assert.equal(loadedSkills(session).get('T1#codex-project:sample'), 'load-1')
-  const state = JSON.parse(readFileSync(join(root, '.dsh/task-T1.json'), 'utf8'))
+  const state = JSON.parse(readFileSync(join(root, '.dsh/tasks/T1/task.json'), 'utf8'))
   assert.deepEqual(skillBlockers(state, state.flow.config, session), [])
   assert.match(skillBlockers({ ...state, id: 'T2' }, state.flow.config, session).join('; '), /load_skill/,
     'loading a Skill for one task must not satisfy another task with a different Rule profile')

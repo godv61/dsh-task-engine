@@ -1,15 +1,16 @@
 /** Human-readable, credential-free record of one SonarQube review run. */
 import { localReviewGate, unresolvedBlockingFindings, type SonarAudit, type SonarPolicy } from './sonar.ts'
 import { eastEightFileStamp, formatEastEightTime } from './time.ts'
+import { taskReviewDirectory } from './task-paths.ts'
 
 function line(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     .replace(/[\r\n]+/gu, ' ').replaceAll('`', '\\`').replaceAll('|', '\\|')
 }
 
-export function sonarReportPath(taskId: string, audit: SonarAudit): string {
+export function sonarReportPath(taskId: string, audit: SonarAudit, namespace?: string): string {
   const stamp = eastEightFileStamp(audit.checked_at)
-  return `.dsh/reviews/${taskId}/${stamp}-${audit.analysis_id.slice(0, 8)}.md`
+  return `${taskReviewDirectory(taskId, namespace)}/${stamp}-${audit.analysis_id.slice(0, 8)}.md`
 }
 
 /** The server lists effective profiles for every language, including languages absent from this review. */

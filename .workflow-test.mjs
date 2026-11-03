@@ -53,11 +53,11 @@ function fixture(stage = '开发', extra = {}, services = {}) {
   }).config
   const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 3, config }, root: cwd })
   Object.assign(state, { stage, execution_version: 1, files: ['app.js'], requirement_confirmed: true, solution_confirmed: true, ...extra })
-  const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)],
+  const records = new Map([[join(cwd, '.dsh/tasks/LIVE-1/task.json'), JSON.stringify(state)],
     [join(cwd, 'app.js'), 'source'],
     [join(cwd, '.dsh/skills/software-testing/SKILL.md'), 'test instructions'],
     [join(cwd, '.dsh/skills/human-check/SKILL.md'), 'manual check instructions']])
-  confirmedRequirement(state, (p,c) => records.set(join(state.root??cwd,p),c)); records.set(join(cwd,'.dsh/task-LIVE-1.json'),JSON.stringify(state))
+  confirmedRequirement(state, (p,c) => records.set(join(state.root??cwd,p),c)); records.set(join(cwd,'.dsh/tasks/LIVE-1/task.json'),JSON.stringify(state))
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }
@@ -67,7 +67,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
   const fs = {
     resolve: async (path, options) => ({ targetKey: key(path, options) }),
     readText: async target => records.get(target.targetKey),
-    listDir: async () => [...records.keys()].filter(path => /task-.+\.json$/.test(path)).map(path => ({ name: path.split(/[\\/]/).at(-1) })),
+    listDir: async target => [...new Set([...records.keys()].filter(p => p.startsWith(target.targetKey + '/') || p.startsWith(target.targetKey + '\\')).map(p => p.slice(target.targetKey.length + 1).split(/[\\/]/)[0]))].map(name => ({ name })),
     lstat: async (path, options) => records.has(key(path, options)) ? { version: 'v' } : undefined,
     writeText: async (target, content) => { records.set(target.targetKey, content) },
   }
@@ -89,7 +89,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: callId, isError: !success }] } } })
   }
   return { call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...(args.operation==='create'?{intent:'implementation',intent_reason:'Fixture implementation',complexity:'low',complexity_reason:'Fixture unit'}:{}), ...args })), exec), load, runs, policy, exec, records, cwd,
-    state: () => JSON.parse(records.get(join(cwd, '.dsh/task-LIVE-1.json'))) }
+    state: () => JSON.parse(records.get(join(cwd, '.dsh/tasks/LIVE-1/task.json'))) }
 }
 
 test('manual skill evidence is approved by the host without a shell command', async () => {
@@ -134,7 +134,7 @@ test('completion rejects unresolved terminal skills and rules', async () => {
 
 test('same-named skill and rule freeze separately and disclose the rule body', async () => {
   const f = fixture()
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
   } }))
@@ -162,7 +162,7 @@ test('task creation applies skill_profiles rules even when legacy inline binding
   const f = fixture()
   const skill = { source: 'project', name: 'custom' }
   const rule = { source: 'project', name: 'my-rule' }
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal',
     stage_bindings: {
       '开发': { skills: [{ skill, rules: [], evidence: 'none' }] },
@@ -184,18 +184,18 @@ test('task creation applies skill_profiles rules even when legacy inline binding
 
 test('task creation rejects an unavailable skill or rule before writing a record', async () => {
   const f = fixture()
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'missing-skill' }, rules: [] }] },
   } }))
   f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['missing-skill']}}))
   await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /was not found|unreadable bound resources/)
-  assert.equal(f.records.has(join(f.cwd, '.dsh/task-LIVE-1.json')), false)
+  assert.equal(f.records.has(join(f.cwd, '.dsh/tasks/LIVE-1/task.json')), false)
 })
 
 test('stage prompts and default status use an index, while load_skill retains every bound rule body', async () => {
   const f = fixture()
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
   } }))

@@ -38,7 +38,7 @@ async function runPreset(grade) {
   const fs = {
     resolve: async (p, options) => ({ targetKey: key(p, options) }),
     readText: async target => records.get(target.targetKey),
-    listDir: async () => [...records.keys()].filter(p => /task-.+\.json$/.test(p)).map(p => ({ name: p.split(/[\\/]/).at(-1) })),
+    listDir: async target => [...new Set([...records.keys()].filter(p => p.startsWith(target.targetKey + '/') || p.startsWith(target.targetKey + '\\')).map(p => p.slice(target.targetKey.length + 1).split(/[\\/]/)[0]))].map(name => ({ name })),
     lstat: async (p, options) => records.has(key(p, options)) ? { version: 'v', type:'file' } : undefined,
     writeText: async (target, content) => { records.set(target.targetKey, content) },
   }
@@ -81,7 +81,7 @@ async function runPreset(grade) {
     events.push({type:'tool/result',data:{message:{toolCallId:callId,isError:false}}})
     return args.operation === 'status' ? JSON.parse(text) : text
   }
-  const current = () => JSON.parse(records.get(join(cwd, '.dsh/task-E2E-1.json')))
+  const current = () => JSON.parse(records.get(join(cwd, '.dsh/tasks/E2E-1/task.json')))
 
   const steps = []
   await call({operation:'create',task_id:'E2E-1',title:'pipeline',intent:'implementation',intent_reason:'Fixture implementation',complexity:grade,complexity_reason:'Fixture grade',branch:'main',files:['src/a.js']})

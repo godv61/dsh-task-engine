@@ -4,7 +4,7 @@
 
 插件分为 host 控制器、agent 工具和浏览器工作台。源码在 `src/`，构建结果在 `lib/`，npm 包包含预构建入口、内置 Skill、预设和提交钩子。
 
-0.35 发行线仅支持 DSH `0.2.1-rc.3`，旧宿主保持使用插件 `0.34.1`。本版使用声明式 `@deepseek-ai/dsh-agent-preset` 和宿主子代理服务。不再声明旧 `0.1.x` 宿主兼容；旧版文件预设派生测试在缺少旧宿主包时跳过，不能充当当前声明式预设的验收。当前预设、`spawn` 与 `fork` 需在实际 0.2 宿主单独验证。
+插件 `0.40.0` 以 DSH `0.2.1-rc.5` 构建，明确支持 `rc.3`、`rc.4`、`rc.5`，不自动放行后续预览版。旧宿主 `0.2.0-rc.2` 保持使用插件 `0.34.1`。本版使用声明式 `@deepseek-ai/dsh-agent-preset` 和宿主子代理服务。不再声明旧 `0.1.x` 宿主兼容；旧版文件预设派生测试在缺少旧宿主包时跳过，不能充当当前声明式预设的验收。
 
 边界修复回归在 `.boundary-fixes-test.mjs` 与 `.repair-test.mjs`：使用真实临时 Git 仓库、文件和 Node 测试进程；子代理返回与 Sonar HTTP 为可控适配器，不代表模型语义审核质量或真实 Sonar 服务验收。包黑盒检查也从安装产物运行这些用例。
 
@@ -22,7 +22,7 @@
 
 回执绑定计划、实施轮次、适用规则/产物上下文和文件 SHA-256 指纹，主代理不能覆盖失败结论。同一代码和审核上下文最多三次有效完成结论；启动失败、取消、读取不全及传输错误只记历史，不消耗该额度。重审将实施项退回 doing 并清除旧父接受，成功后须重新 review_item 与 done；不会保留 done 却无当前接受的状态。审核清理失败保持锁定，通过 `recover_dispatch dispatch_role=review` 在确认宿主及后代不活动后恢复。独立审核不是命令验证，也不自动将实施项设为 done。
 
-新自适应任务的交付文件及测试必须全部归属到实施项计划；派发、编排交接和实施项阶段门禁检查归属并集。主会话和子代理执行项的 done 都要求当前真实非零测试回执及逐项审核；逐项审核绑定对应文件指纹，重跑测试不能让旧审核自动变新。当前进程的全部 agent 注册共享任务变更锁，状态查询保持可用；跨进程竞争继续由宿主文件版本 CAS 保护，不另建锁文件或接管宿主运行生命周期。
+新自适应任务的交付文件及测试必须全部归属到实施项计划；派发、编排交接和实施项阶段门禁检查归属并集。主会话和子代理执行项的 done 都要求当前真实非零测试回执及逐项审核。direct 实施可在验证后直接 review_dispatch，再 accept_item，无需额外实施 dispatch；主会话审核则直接 accept_item。逐项审核绑定对应文件指纹与验证事实；相同输入连续等价成功重测可复用验收，失败、输入/计划/结果数量或执行权限边界变化会打断复用，随后成功不能直接复活旧验收。每次实际执行的完整回执仍独立保留。当前进程的全部 agent 注册共享任务变更锁，状态查询保持可用；跨进程竞争继续由宿主文件版本 CAS 保护，不另建锁文件或接管宿主运行生命周期。
 
 派发实现和审核均请求绝对深度上限，因此能力检测要求 provider 声明 `depthLimit`，并在实际派发时重新核对。能力在计划后被移除时拒绝启动，保留原实施项状态并提示重新规划。`fork` 只继承已完成轮次，当前轮次的验收和说明始终随派发提示传递。当前每次派发创建新的 managed activation，不复用子会话继续运行。发布后的父取消显式 dispose 该次 activation，清理失败仍保留锁定。子会话日志通过 sessionQuery 的观察租约读取并释放，既有独立审核缺少新只读策略回执时须重新审核。
 
@@ -65,7 +65,7 @@ npm run verify:package
 
 实施任务统一使用 adaptive v2 的 `requirement_review`，必须明确 intent、complexity 及其理由。创建无旧流程回退，项目没有关闭或兼容选项；`taskExecutionProblem` 在工具、原生工具权限及 Git hook 上拒绝缺少新版结构的活动任务。旧记录只读，不迁移；没有流程快照的记录展示历史视图，不执行项目当前 eng.json。需求产物为唯一结构化来源，`prepare_requirement` 生成版本文档，`confirm_requirement` 通过宿主 `userQuestions.ask` 收集实际答复，独立于工具权限 approval；相同且有效的已确认版本返回 `reused: true`，不重复询问。澄清、确认等待不持有任务锁；回复只接受同一来源内容、文档指纹与问题实例。`tools/pre-execute` 与每次 `system-prompt/assemble` 重查文档并双向更新工具展示和执行模式；`tools.guard` 保持同步限制。修改文档会收回权限，精确恢复原文可复用确认，需求修订仍须重新确认。`.requirements-test.mjs` 和真实宿主 keyless preset probe 覆盖此闭环。该机制校验确认来源和版本一致性，不能机械保证需求语义已穷尽。
 
-当前需求阶段只通过内置 `prepare_requirement` 写总结文件，确认前原生写工具仍受限。自定义 Skill 多文档生成、独立产物声明及多角色签署不在当前实现范围内；不能把必读门禁解释为对任意 Skill 正文要求的自动完成校验。
+需求阶段由 `prepare_requirement` 写最终总结，`write_requirement_material` 写任务目录下的文本材料；后者支持正文或当前绑定且实际加载 Skill 的 HTML 模板数据区渲染，不开放命令执行。材料版本和指纹参与 `requirementSource`，摘要、实际材料与提交钩子共同核对当前批准依据；原生写工具仍受确认门禁限制。写入使用宿主 sandbox 与文件版本 CAS，拒绝越界、链接、未登记文件及人工修改；已生成内容修订需要当前指纹。`retire_requirement_material` 仅停用本期引用，保留原文件及记录，便于替换缺失或过时材料后重新确认。多角色签署、独立的任意 Skill 产物声明不在当前实现范围内；必读门禁不等于任意正文要求已自动验收。见 `docs/testing/requirement-materials.md`。
 
 Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺省保留旧强制语义；自适应 `meta_bindings` 同时接受旧名称字符串和 `{name, loading}`。核心元技能固定强制，`profile.json` 的 Rule 与 evidence 仍由 Skill 自己拥有。compact/adoption、浏览器严格 codec 和冻结任务均保留挂载策略。
 
@@ -81,7 +81,7 @@ Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺
 
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Python 标准库 unittest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。unittest 要求原生 `python -m unittest`（或 Python/py 等价入口）与完整最终摘要，扣除 skipped/expected failures，FAILED 和零测试不能通过。未知命令和缺少证据的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 
@@ -124,4 +124,8 @@ Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分�
 
 技能回执证明所记录命令实际执行并成功退出，不证明检查覆盖了 Skill 或需求。拒绝明显的固定输出/直接成功退出及常见外壳转发，保留内联断言、lint 与类型检查；任意脚本的有效性仍由可信项目定义和主会话核对，不宣称拒绝名单能证明程序语义。
 
-`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 安装指定 rc.3 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性及执行限制，零模型调用。它们位于必过的 Ubuntu/Node 22 CI 路径，旧 seeder 的可选实文件探针不代替当前宿主验收。
+`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 默认安装与构建依赖一致的 `rc.5` 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性、需求确认和材料写入限制，零模型调用。设置 `TASK_ENGINE_DSH_VERSION=0.2.1-rc.3` 或 `0.2.1-rc.4` 可验证其他已声明支持的版本；未知版本在安装前拒绝。可用 `TASK_ENGINE_PRESET_NODE_MODULES` 复用版本一致的公开依赖，插件包、工作区和 DSH_HOME 仍每次新建，不复制凭据或用户数据。CI 分别执行三版宿主验证，旧 seeder 的可选实文件探针不代替当前宿主验收。
+
+## 任务目录与台账投影
+
+任务读写、会话权限及提交钩子共用 `task-paths.ts`，工作区按 `.dsh/tasks/<id>/task.json` 查找直接任务目录。`task_directory` 记录相对源码根的命名空间，使子工作区的需求文档、材料、审核产物与其台账物理同目录。台账视图共用 `task-ledger-types.ts`，`task-ledger-content.ts` 只投影已记录产物与文件，`task-ledger-document.ts` 生成可读副本，不增加第二份状态或写接口。正文使用宿主 Markdown 渲染器；历史运行证据集中在 `TaskLedgerAudit.tsx`。见 `docs/testing/task-workspace.md`。

@@ -24,7 +24,7 @@ and programming languages.
 
 ## Validation
 
-The local regression run contains 396 tests: 389 passed, zero failed, seven skipped.
+The local regression run contains 415 tests: 408 passed, zero failed, seven skipped.
 The skips concern the absent historical host seeder package. P0 acceptance adds
 143 assertions. Type checks and the server, browser, and hook builds pass.
 
@@ -43,10 +43,13 @@ probe exercise the confirmation lifecycle itself.
 ## Current scope
 
 Before confirmation, native file-writing tools and project commands remain
-restricted. The built-in `prepare_requirement` operation writes the summary.
-Custom Skill multi-document outputs, independent output declarations, and
-multiple approval roles are deferred; a required Skill load does not automatically
-validate every instruction in its body.
+restricted. `prepare_requirement` writes the summary. Custom Skills may use
+`write_requirement_material` for task-owned text materials and HTML JSON data
+templates from a currently bound, loaded Skill. Material fingerprints participate
+in confirmation and commit checks; retiring a material preserves its file and
+history but removes it from the current approval basis. Independent arbitrary
+output declarations and multiple approval roles are deferred; loading a required
+Skill does not automatically validate every instruction in its body.
 
 These checks verify the implemented contract and packaging. They do not establish
 that a real model has found every business ambiguity, nor replace manual UI or

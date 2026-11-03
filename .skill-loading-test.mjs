@@ -48,7 +48,7 @@ function fixture(meta, mapEvidence = 'none') {
     try {
       const text = await execute(input, { agent: { session }, callId, signal: new AbortController().signal })
       events.push({ type: 'tool/result', data: { message: { toolCallId: callId, content: [{ type: 'text', text }] } } })
-      if (input.operation === 'create' || input.operation === 'record' && input.artifact === 'requirement') { const p = join(cwd, `.dsh/task-${input.task_id}.json`); const state = JSON.parse(files.get(p)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(p,JSON.stringify(state)) }
+      if (input.operation === 'create' || input.operation === 'record' && input.artifact === 'requirement') { const p = join(cwd, `.dsh/tasks/${input.task_id}/task.json`); const state = JSON.parse(files.get(p)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(p,JSON.stringify(state)) }
       return text
     } catch (error) {
       events.push({ type: 'tool/result', data: { message: { toolCallId: callId, isError: true } } })
@@ -56,7 +56,7 @@ function fixture(meta, mapEvidence = 'none') {
     }
   }
   return { cwd, fs, files, put, call, logs,
-    state: (id = 'LOAD-1') => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))),
+    state: (id = 'LOAD-1') => JSON.parse(files.get(join(cwd, `.dsh/tasks/${id}/task.json`))),
     create: (grade = 'medium', id = 'LOAD-1') => call({ operation: 'create', task_id: id, title: 'Backend-only change',
       intent: 'implementation', intent_reason: 'Fixture implementation', branch: 'test', complexity: grade, complexity_reason: 'A bounded backend change', files: ['app.js'] }),
     load: name => call({ operation: 'load_skill', skill_name: name }),
@@ -109,7 +109,7 @@ test('a frozen task policy cannot be weakened by hand-editing its snapshot', asy
   const f = fixture({ 'code-development': ['map'] }); await f.create('low')
   const state = f.state()
   state.flow.config.stage_bindings['代码开发'].skills.find(entry => entry.skill.name === 'map').loading = 'on-demand'
-  f.put('.dsh/task-LOAD-1.json', JSON.stringify(state))
+  f.put('.dsh/tasks/LOAD-1/task.json', JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'status' }), /hash|tamper|snapshot/)
 })
 

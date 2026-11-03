@@ -24,7 +24,7 @@ export function confirmedRequirement(state, put) {
   state.artifacts[policy.artifact] = { ...Object.fromEntries(def.fields.map(key => [key, `Fixture ${key}`])), ...state.artifacts[policy.artifact] }
   const content = `# Accepted fixture requirement for ${state.id}\n`
   const hash = hashText(content)
-  state.requirements = { clarifications: [], document: { version: 1, path: `docs/requirements/${state.id}.md`, content, hash,
+  state.requirements = { clarifications: [], document: { version: 1, path: `${state.task_directory ?? `.dsh/tasks/${state.id}`}/requirement.md`, content, hash,
     source: requirementSource(state, policy), status: 'confirmed',
     confirmation: { hash, version: 1, at: '2026-10-30T00:00:00Z', session_id: 'fixture-human' } } }
   state.requirement_confirmed = true

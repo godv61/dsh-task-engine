@@ -1,9 +1,9 @@
 // Loaded only by verify-host-preset; no credentials and no model requests.
 import assert from 'node:assert/strict'
-import { writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
 
 export const name='task-engine-keyless-preset-probe'
 export const inject=['llm','agentPresets','tools','systemPrompt']
@@ -25,7 +25,18 @@ export function apply(ctx){
     await ctx.agentPresets.select(agent,preset)
     await agent.ctx.systemPrompt.assemble({scope:agent})
     const tools=()=>agent.ctx.tools.schemas(agent).map(t=>t.name)
-    const invoke=(name,args)=>agent.ctx.tools.execute({name,arguments:args,agent,signal:new AbortController().signal,callId:`probe-${name}`})
+    let invocation=0
+    const invoke=async(name,args)=>{
+      const callId=ToolCallId(`probe-${name}-${invocation++}`)
+      // Registry.execute omits the agent-loop journal. Record the actual loader
+      // call/result through the public session API; never fabricate a success.
+      const logged=name==='dev_task'&&args.operation==='load_skill'
+      const call=logged?agent.session.append('tool/call',{turn:1,step:1,callId,name,arguments:JSON.stringify(args)}):undefined
+      const result=await agent.ctx.tools.execute({name,arguments:args,agent,signal:new AbortController().signal,callId})
+      if(call)agent.session.append('tool/result',{turn:1,step:1,message:createToolResultMessage({callId,content:result.content,isError:result.isError})},
+        {surfaceOp:'append',sourceEventSeqs:[call.seq]})
+      return result
+    }
     if(preset==='eng'){
       assert.ok(tools().includes('dev_task'))
       assert.ok(!tools().includes('read'),'repository work must select a contract first')
@@ -35,7 +46,7 @@ export function apply(ctx){
       for(const name of ['dev_task','read','glob','grep'])assert.ok(tools().includes(name),name)
       const accepted=await invoke('dev_task',{operation:'submit_analysis',task_id:'PRESET-PROBE',conclusion:'Fixture source is readable',proposal:'No implementation required',limitations:[],source_evidence:[{file:'proof.txt',start_line:1,end_line:1,quote:'Native'}]})
       assert.equal(accepted.isError,false,JSON.stringify(accepted))
-      const state=JSON.parse(readFileSync(join(agent.session.header.cwd,'.dsh/task-PRESET-PROBE.json'),'utf8'))
+      const state=JSON.parse(readFileSync(join(agent.session.header.cwd,'.dsh/tasks/PRESET-PROBE/task.json'),'utf8'))
       const snapshot=state.delivery.result.evidence[0]
       assert.equal(snapshot.quote,'Native preset composition fixture')
       assert.equal(snapshot.highlight,'Native')
@@ -51,6 +62,11 @@ export function apply(ctx){
       const disabled=await invoke('dev_task',{operation:'create',task_id:'DISABLED-REQUIREMENT',title:'removed opt-out',intent:'implementation',intent_reason:'fixture',complexity:'low',complexity_reason:'fixture'})
       assert.equal(disabled.isError,true)
       unlinkSync(metaPath)
+      const materialSkill=join(agent.session.header.cwd,'.dsh/skills/preset-form')
+      mkdirSync(join(materialSkill,'assets'),{recursive:true})
+      writeFileSync(join(materialSkill,'SKILL.md'),'---\nname: preset-form\ndescription: Keyless material fixture\n---\nUse assets/form.html to collect product decisions.\n')
+      writeFileSync(join(materialSkill,'assets/form.html'),'<html><script id="fixture-data" type="application/json">{}</script><script>window.fixture=true</script></html>')
+      writeFileSync(metaPath,JSON.stringify({meta_bindings:{'code-development':['preset-form']}}))
       const call=async args=>{
         const output=await invoke('dev_task',{task_id:requirementTask,...args})
         assert.equal(output.isError,false,JSON.stringify(output))
@@ -58,15 +74,29 @@ export function apply(ctx){
       }
       await call({operation:'create',title:'Requirement confirmation fixture',intent:'implementation',intent_reason:'Keyless confirmation check',complexity:'low',complexity_reason:'One fixture file'})
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'before human confirmation'})).isError,true)
+      const material=JSON.parse(await call({operation:'write_requirement_material',material_name:'product/questions.json',material_content:'{"question":"Which role may approve?"}'})).material
+      assert.equal(readFileSync(join(agent.session.header.cwd,material.path),'utf8'),'{"question":"Which role may approve?"}')
+      assert.equal((await invoke('dev_task',{task_id:requirementTask,operation:'write_requirement_material',material_name:'../../outside.html',material_content:'must not write'})).isError,true)
+      assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'materials must not unlock implementation'})).isError,true)
+      await call({operation:'load_skill',skill_name:'project:preset-form'})
+      const templateResult=await invoke('dev_task',{task_id:requirementTask,operation:'write_requirement_material',material_name:'product/form.html',material_template:{skill_name:'project:preset-form',path:'assets/form.html',data_id:'fixture-data',json:'{"title":"Product decisions"}',identity_field:'id'}})
+      assert.equal(templateResult.isError,false,JSON.stringify(templateResult))
+      assert.match(readFileSync(join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/materials/product/form.html`),'utf8'),/Product decisions/)
       await call({operation:'record',artifact:'requirement',fields:{goal:'write fixture',scope:'one file',acceptance:'fixture exists'}})
       const summary=JSON.parse(await call({operation:'prepare_requirement'}))
+      assert.match(summary.content,/product\/questions.json/)
       await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
       const questionCount=requirementQuestions
       await call({operation:'confirm_requirement',expected_hash:summary.requirement.hash})
       assert.equal(requirementQuestions,questionCount)
-      const approved=JSON.parse(readFileSync(join(agent.session.header.cwd,`.dsh/task-${requirementTask}.json`),'utf8'))
+      const approved=JSON.parse(readFileSync(join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/task.json`),'utf8'))
       assert.equal(approved.requirements.document.confirmation.hash,summary.requirement.hash)
       assert.equal((await invoke('write',{file_path:'approved-fixture.txt',content:'after human confirmation'})).isError,false)
+      writeFileSync(join(agent.session.header.cwd,material.path),'changed product material')
+      assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'material changed'})).isError,true)
+      writeFileSync(join(agent.session.header.cwd,material.path),'{"question":"Which role may approve?"}')
+      await agent.ctx.systemPrompt.assemble({scope:agent})
+      assert.equal((await invoke('write',{file_path:'restored-material-fixture.txt',content:'exact material restored'})).isError,false)
       // An external edit must revoke native writes before a later dev_task call.
       writeFileSync(join(agent.session.header.cwd,summary.requirement.path),'changed requirement')
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'stale confirmation'})).isError,true)
@@ -75,9 +105,15 @@ export function apply(ctx){
       assert.ok(tools().includes('write'),'restored approval must restore the model tool catalog')
       assert.equal((await invoke('write',{file_path:'restored-fixture.txt',content:'restored exact approval'})).isError,false)
       assert.equal(requirementQuestions,questionCount)
+      await call({operation:'plan_verification',verification_group:'routing-probe',command:'node --test routing-probe.test.mjs',files:['proof.txt'],item_ids:[]})
+      const shell=tools().find(name=>name==='pwsh'||name==='bash')
+      assert.ok(shell,'engineering preset must expose its native terminal after requirement approval')
+      const routed=await invoke(shell,{command:'node --test routing-probe.test.mjs',description:'Check registered test routing without execution'})
+      assert.equal(routed.isError,true,JSON.stringify(routed))
+      assert.match(routed.content.filter(part=>part.type==='text').map(part=>part.text).join('\n'),/No command was executed.*verification_group.*routing-probe/s)
       writeFileSync(join(agent.session.header.cwd,summary.requirement.path),'changed again')
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'must still be denied'})).isError,true)
-      const taskPath=join(agent.session.header.cwd,`.dsh/task-${requirementTask}.json`)
+      const taskPath=join(agent.session.header.cwd,`.dsh/tasks/${requirementTask}/task.json`)
       delete approved.flow.config.requirement_review
       approved.flow.hash=createHash('sha256').update(JSON.stringify(approved.flow.config)).digest('hex')
       const oldRecord=JSON.stringify(approved);writeFileSync(taskPath,oldRecord)
@@ -98,7 +134,7 @@ export function apply(ctx){
     const read=await invoke('read',{file_path:'proof.txt'})
     assert.equal(read.isError,false,JSON.stringify(read))
     observations.push({preset,tools:tools(),read_succeeded:true,write_denied:true,
-      ...(preset==='eng'?{requirement_questions:requirementQuestions,removed_opt_out_rejected:true,old_task_readonly:true,history_readonly:true,new_task_after_history:true}: {})})
+      ...(preset==='eng'?{requirement_questions:requirementQuestions,requirement_materials:true,bound_template_rendered:true,material_change_revokes_writes:true,removed_opt_out_rejected:true,old_task_readonly:true,history_readonly:true,new_task_after_history:true,registered_tests_routed:true}: {})})
     assert.equal(modelCalls,0)
     writeFileSync(process.env.TASK_ENGINE_PRESET_PROBE_RESULT,JSON.stringify({model_calls:modelCalls,observations},null,2))
   })
