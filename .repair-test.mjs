@@ -1,8 +1,9 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 // Repair regressions: exercise production modules with explicit FS/session/HTTP adapters.
 // Delivery checks additionally use real Git, real files and real node:test processes.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdirSync, mkdtempSync, lstatSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, lstatSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, resolve, sep } from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -66,9 +67,10 @@ async function fixture(flow = 'standard', config = {}, diskRoot, createArgs = {}
     get: name => name === 'shell' ? shell : name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'workspace-write', workspaceRoot: cwd }) } : undefined }
   registerDevTask(ctx)
   const session = { id: 'assessment', header: { cwd }, snapshotEvents: () => events }
-  const call = args => execute({ task_id: 'ASSESS-1', ...args }, { agent: { session }, signal: new AbortController().signal })
+  const call = args => execute({ task_id: 'ASSESS-1', ...(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', complexity: 'low', complexity_reason: 'Fixture unit' } : {}), ...args }, { agent: { session }, signal: new AbortController().signal })
   await call({ operation: 'create', title: 'isolated assessment', branch: 'main', files: ['a.js'], ...createArgs })
-  const path = join(cwd, '.dsh/task-ASSESS-1.json')
+  const path = join(cwd, '.dsh/tasks/ASSESS-1/task.json')
+  { const initial = JSON.parse(records.get(path)); initial.flow.config = resolveFlow(flow, { flow, ...config }).config; initial.stage = initial.flow.config.start_stage; initial.flow.resources = undefined; delete initial.flow.hash; delete initial.delegation_version; delete initial.execution_policy; delete initial.verification_version; delete initial.delivery; confirmedRequirement(initial, (p,c) => records.set(join(cwd,p),c)); records.set(path,JSON.stringify(initial)) }
   const current = () => JSON.parse(records.get(path))
   const save = state => records.set(path, JSON.stringify(state))
   const loadCurrent = async () => {
@@ -106,7 +108,10 @@ test('commit evidence: reject old HEAD, accept verified delivery, refuse later u
   git('update-index', '--no-assume-unchanged', 'a.js')
   git('add', 'a.js'); git('-c', 'core.hooksPath=NUL', 'commit', '-qm', 'new content')
   // An unrelated untracked file must not block delivery.
-  await f.call({ operation: 'commit', hash: git('rev-parse', 'HEAD'), message: 'new content', files: ['a.js'] })
+  const fullOid = git('rev-parse', 'HEAD')
+  await f.call({ operation: 'commit', hash: fullOid.slice(0, 7), message: 'new content', files: ['a.js'] })
+  assert.equal(f.current().commits.at(-1).hash, fullOid)
+  assert.equal(f.current().commits.at(-1).provided_hash, fullOid.slice(0, 7))
   await f.call({ operation: 'advance', target_stage: '完成' })
   await f.call({ operation: 'verify', command: 'node --test --test-reporter=tap check.test.mjs' })
   await f.call({ operation: 'review', outcome: 'pass' })
@@ -116,6 +121,35 @@ test('commit evidence: reject old HEAD, accept verified delivery, refuse later u
   await f.call({ operation: 'complete' })
   assert.ok(f.current().completed)
   console.log('preserved real Git fixture:', root)
+})
+
+test('legacy abbreviated commit is resolved by real Git before accepting a fresh CI Sonar audit', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-engine-legacy-oid-'))
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '-q', '-b', 'main')
+  writeFileSync(join(root, 'a.js'), 'export const n = 2\n')
+  git('add', 'a.js'); git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'core.hooksPath=NUL', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture')
+  const full = git('rev-parse', 'HEAD'), short = full.slice(0, 7)
+  const f = await fixture('standard', {}, root)
+  const state = f.current(); state.stage = '代码审核'; state.commits = [{ label: 'TASK', hash: short }]
+  state.items = [{ id: 'I1', title: 'implementation', status: 'done', review: { spec: { outcome: 'pass' }, quality: { outcome: 'pass' } } }]
+  state.sonar_policy = { enabled: true, source: 'ci', host_url: 'https://sonar.example.invalid', project_key: 'fixture', mode: 'branch', token_env: 'UNUSED_FIXTURE' }
+  f.save(state)
+  await f.call({ operation: 'verify', command: smokeCommand })
+  const get = f.ctx.get
+  f.ctx.get = name => name === 'credentials' ? { resolve: async () => ({ value: 'controlled-credential' }) } : get(name)
+  const oldFetch = globalThis.fetch
+  globalThis.fetch = async url => new Response(JSON.stringify(url.pathname.endsWith('/ce/task') ? { task: { status: 'SUCCESS', analysisId: 'analysis', componentKey: 'fixture', branch: 'main' } }
+    : url.pathname.endsWith('/project_analyses/search') ? { analyses: [{ key: 'analysis', revision: full }] }
+    : url.pathname.endsWith('/qualitygates/project_status') ? { projectStatus: { status: 'OK' } } : { issues: [], paging: { total: 0 } }))
+  try {
+    await f.call({ operation: 'sonar_check', ce_task_id: 'fixture-ce-task' })
+    assert.equal(f.current().commits.at(-1).hash, full)
+    assert.equal(f.current().commits.at(-1).provided_hash, short)
+    assert.equal(f.current().sonar_audit.commit_hash, full)
+    assert.equal(f.current().sonar_audit.gate, 'OK')
+    await f.call({ operation: 'review', outcome: 'pass' })
+  } finally { globalThis.fetch = oldFetch }
 })
 
 test('new Sonar task captures the real dirty baseline before writing its record', async () => {
@@ -131,7 +165,7 @@ test('new Sonar task captures the real dirty baseline before writing its record'
     source: 'ide-local', host_url: 'https://sonar.example.invalid', project_key: 'fixture', reference_branch: 'HEAD' } }))
   await f.call({ operation: 'create', task_id: 'BASELINE', title: 'baseline wiring', branch: 'main',
     complexity: 'medium', complexity_reason: 'fixture for actual creation baseline', files: ['a.js'] })
-  const created = JSON.parse(f.records.get(join(root, '.dsh/task-BASELINE.json')))
+  const created = JSON.parse(f.records.get(join(root, '.dsh/tasks/BASELINE/task.json')))
   assert.equal(created.sonar_baseline.reference, 'HEAD')
   assert.equal(created.sonar_baseline.files.find(file => file.path === 'preexisting.xml').hash, hashText('<existing/>\n'))
 })
@@ -198,12 +232,12 @@ test('ledger isolates corruption and marks changed verification stale', async ()
   const read = () => Controller.prototype.readTasks.call(receiver, f.cwd)
   assert.equal((await read()).tasks[0].evidence_status, 'valid')
   f.records.set(join(f.cwd, 'a.js'), 'changed')
-  f.records.set(join(f.cwd, '.dsh/task-BAD.json'), '{')
+  f.records.set(join(f.cwd, '.dsh/tasks/BAD/task.json'), '{')
   const ledger = await read()
   assert.equal(ledger.tasks.length, 1)
   assert.equal(ledger.tasks[0].evidence_status, 'stale')
   assert.equal(ledger.tasks[0].verification_passed, false)
-  assert.equal(ledger.errors[0].file, 'task-BAD.json')
+  assert.equal(ledger.errors[0].file, '.dsh/tasks/BAD/task.json')
 })
 
 test('ledger explains a real commit checkpoint instead of asking to repeat an already valid review', async () => {
@@ -233,17 +267,18 @@ test('Skill/Rule edits require reload and clear the old verdict', async () => {
 
 for (const providerName of ['spawn', 'fork']) for (const outcome of ['completed', 'error', 'aborted', 'max-tokens']) test(`subagent ${providerName} ${outcome}: persist adapter-returned id and release; never auto-complete the item`, async () => {
   const f = await fixture()
-  const state = f.current(); state.stage = '开发'; state.artifacts = { requirement: { scope: 'preserve interfaces' } }; f.save(state)
+  const state = f.current(); state.stage = '开发'; state.artifacts = { ...state.artifacts, requirement: { scope: 'preserve interfaces' } }; f.save(state)
   await f.call({ operation: 'items', items: [{ id: 'I1', title: 'delegate' }] })
   let disposed = 0
   const get = f.ctx.get
-  f.ctx.get = name => name === 'subagents' ? { getProvider: provider => ({ inheritsParentContext: provider === 'fork', capabilities: { depthLimit: true } }), start: async (provider, request) => {
+  f.ctx.get = name => name === 'subagents' ? { getProvider: provider => ({ inheritsParentContext: provider === 'fork', capabilities: { depthLimit: true } }), startActivation: async ({provider,request,delivery}) => {
+    assert.equal(delivery, "caller")
     assert.equal(provider, providerName)
     assert.equal(request.parent.session.id, 'assessment')
     assert.equal(request.maxDepth, 3)
     assert.match(request.prompt[0].text, /Allowed delivery paths: a.js/)
     assert.match(request.prompt[0].text, /preserve interfaces/)
-    return { id: 'real-host-id', result: Promise.resolve({ stopReason: outcome, output: [{ type: 'text', text: 'delivered' }] }), dispose: async () => { disposed++ } }
+    return { childId: 'real-host-id', result: Promise.resolve({ stopReason: outcome, output: [{ type: 'text', text: 'delivered' }] }), dispose: async () => { disposed++ } }
   } } : get(name)
   await f.call({ operation: 'dispatch', item_id: 'I1', execution: providerName, description: 'implement' })
   assert.equal(f.current().items[0].dispatch.run_id, 'real-host-id')
@@ -261,7 +296,7 @@ test('subagent absence does not record a fake delegation', async () => {
   assert.equal(f.current().items[0].dispatch, undefined)
 })
 
-test('durable initialization jobs deduplicate, survive module restart and reclaim only expired leases', async () => {
+test('memory initialization jobs deduplicate and read legacy records without creating or updating files', async () => {
   const { initJob } = await import('./lib/init-jobs.js')
   const f = await fixture()
   const id = 'a'.repeat(64)
@@ -275,14 +310,107 @@ test('durable initialization jobs deduplicate, survive module restart and reclai
   await new Promise(setImmediate)
   assert.equal((await initJob(f.fs, f.cwd, id)).status, 'completed')
   const restarted = (await import('./lib/init-jobs.js?restart-test')).initJob
-  assert.equal((await restarted(f.fs, f.cwd, id, worker)).status, 'completed')
+  await assert.rejects(restarted(f.fs, f.cwd, id), /已过期或 DSH 已重启/)
   assert.equal(runs, 1)
+  assert.equal(f.records.has(join(f.cwd, `.dsh/init-jobs/${id}.json`)), false)
+  const legacyDone = 'f'.repeat(64)
+  f.records.set(join(f.cwd, `.dsh/init-jobs/${legacyDone}.json`), JSON.stringify({ job_id: legacyDone, status: 'completed', updated_at: new Date().toISOString(), result: { resource: null, reason: 'legacy draft' } }))
+  assert.equal((await restarted(f.fs, f.cwd, legacyDone)).result.reason, 'legacy draft')
   const expired = 'b'.repeat(64)
   f.records.set(join(f.cwd, `.dsh/init-jobs/${expired}.json`), JSON.stringify({ job_id: expired, status: 'running', updated_at: '2000-01-01T00:00:00.000Z', owner: 'old-process' }))
   assert.equal((await restarted(f.fs, f.cwd, expired)).status, 'failed')
   await restarted(f.fs, f.cwd, expired, async () => ({ resource: null, reason: 'restarted' }))
   await new Promise(setImmediate)
   assert.equal((await restarted(f.fs, f.cwd, expired)).status, 'completed')
+  assert.equal(JSON.parse(f.records.get(join(f.cwd, `.dsh/init-jobs/${expired}.json`))).status, 'running', 'legacy record is read-only')
+})
+
+test('initialization watchdog records failure in memory even when the worker ignores its deadline', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = await fixture(), id = 'c'.repeat(64)
+  let finish
+  await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finish = resolve }))
+  await new Promise(setImmediate)
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS)
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+  assert.ok((await initJob(f.fs, f.cwd, id)).error.includes(`${INIT_JOB_TIMEOUT_MS / 1000}秒`))
+  assert.equal(f.records.has(join(f.cwd, `.dsh/init-jobs/${id}.json`)), false)
+  finish({ resource: null, reason: 'late result' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+})
+
+test('expired active jobs can be reclaimed and an old same-process worker cannot overwrite the new attempt', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const f = await fixture(), id = 'd'.repeat(64), path = join(f.cwd, `.dsh/init-jobs/${id}.json`)
+  let finishOld, finishNew
+  const old = await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finishOld = resolve }))
+  await new Promise(setImmediate)
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS + 1)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'failed')
+  assert.equal(f.records.has(path), false, 'expiry does not write a project cache')
+  const fresh = await initJob(f.fs, f.cwd, id, () => new Promise(resolve => { finishNew = resolve }))
+  await new Promise(setImmediate)
+  assert.notEqual(old.owner, fresh.owner)
+  finishOld({ resource: null, reason: 'obsolete worker' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).status, 'running')
+  finishNew({ resource: null, reason: 'new worker' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, f.cwd, id)).result.reason, 'new worker')
+})
+
+test('memory job results expire automatically and are bounded across projects', async t => {
+  // Keep the fake clock's timer handles separate from real timers created by earlier tests.
+  const { initJob, INIT_JOB_RETENTION_MS, INIT_JOB_MAX_ENTRIES } = await import('./lib/init-jobs.js?memory-budget-test')
+  const { INIT_JOB_TIMEOUT_MS } = await import('./lib/init-timeout.js')
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = await fixture(), root = join(f.cwd, 'memory-expiry'), id = '1'.repeat(64)
+  await initJob(f.fs, root, id, async () => ({ resource: null, reason: 'temporary' }))
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, root, id)).status, 'completed')
+  t.mock.timers.tick(INIT_JOB_RETENTION_MS)
+  await assert.rejects(initJob(f.fs, root, id), /已过期或 DSH 已重启/)
+  for (let index = 0; index <= INIT_JOB_MAX_ENTRIES; index++) {
+    const jobId = index.toString(16).padStart(64, '0')
+    await initJob(f.fs, root, jobId, async () => ({ resource: null, reason: String(index) }))
+    await new Promise(setImmediate)
+  }
+  await assert.rejects(initJob(f.fs, root, '0'.repeat(64)), /已过期或 DSH 已重启/)
+  assert.equal((await initJob(f.fs, root, INIT_JOB_MAX_ENTRIES.toString(16).padStart(64, '0'))).status, 'completed')
+  assert.ok(![...f.records.keys()].some(path => path.includes('init-jobs')))
+  const liveRoot = join(f.cwd, 'memory-capacity')
+  for (let index = 0; index < INIT_JOB_MAX_ENTRIES; index++) {
+    await initJob(f.fs, liveRoot, index.toString(16).padStart(64, '0'), () => new Promise(() => {}))
+  }
+  await assert.rejects(initJob(f.fs, liveRoot, '9'.repeat(64), async () => ({ resource: null, reason: 'must not start' })), /数量已达上限/)
+  assert.equal((await initJob(f.fs, liveRoot, '0'.repeat(64))).status, 'running', 'running work is never evicted to admit another request')
+  t.mock.timers.tick(INIT_JOB_TIMEOUT_MS)
+  await new Promise(setImmediate)
+  assert.equal((await initJob(f.fs, liveRoot, '0'.repeat(64))).status, 'failed')
+})
+
+test('concurrent requests reuse a memory worker and initialization leaves a real project empty', async t => {
+  const { initJob } = await import('./lib/init-jobs.js')
+  const root = mkdtempSync(join(tmpdir(), 'task-engine-no-init-cache-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const fs = { resolve: async (p, o) => join(o.cwd, p), readText: async p => { try { return readFileSync(p, 'utf8') } catch (e) { if (e.code !== 'ENOENT') throw e } },
+    writeText: async () => { throw new Error('initialization must not write cache files') } }
+  let runs = 0, finish
+  const start = () => { runs++; return new Promise(resolve => { finish = resolve }) }
+  const id = '2'.repeat(64)
+  const requests = await Promise.all([initJob(fs, root, id, start), initJob(fs, root, id, start)])
+  assert.equal(runs, 1)
+  assert.equal(requests[0].owner, requests[1].owner)
+  finish({ resource: null, reason: 'done' })
+  await new Promise(setImmediate)
+  assert.equal((await initJob(fs, root, id)).status, 'completed')
+  assert.deepEqual(readdirSync(root), [])
 })
 
 test('interrupted dispatch recovery refuses live children and allows a fresh attempt after inactivity', async () => {
@@ -327,7 +455,7 @@ test('active dispatch prevents parent ledger edits and failed disposal requires 
   const f = await fixture()
   const s = f.current(); s.stage = '开发'; s.items = [{ id: 'I1', title: 'delegate', status: 'todo' }]; f.save(s)
   const get = f.ctx.get
-  f.ctx.get = name => name === 'subagents' ? { getProvider: () => ({ inheritsParentContext: false, capabilities: { depthLimit: true } }), start: async () => {
+  f.ctx.get = name => name === 'subagents' ? { getProvider: () => ({ inheritsParentContext: false, capabilities: { depthLimit: true } }), startActivation: async () => {
     for (const args of [
       { operation: 'items', items: [{ id: 'I1', title: 'changed', status: 'done' }] },
       { operation: 'scope', files: ['other.js'] },
@@ -335,7 +463,7 @@ test('active dispatch prevents parent ledger edits and failed disposal requires 
       { operation: 'revise', revision_kind: 'defect', revision_reason: 'change', target_stage: '开发' },
     ]) await assert.rejects(() => f.call(args), /child dispatch is still active/)
     await f.call({ operation: 'status' })
-    return { id: 'child', result: Promise.resolve({ stopReason: 'completed', output: [] }), dispose: async () => { throw new Error('cleanup interrupted') } }
+    return { childId: 'child', result: Promise.resolve({ stopReason: 'completed', output: [] }), dispose: async () => { throw new Error('cleanup interrupted') } }
   } } : get(name)
   await f.call({ operation: 'dispatch', item_id: 'I1', execution: 'spawn' })
   assert.equal(f.current().items[0].dispatch.status, 'running')
@@ -368,7 +496,7 @@ test('ledger cursor reads at most 100 records and does not lose or duplicate rem
   const f = await fixture()
   for (let i = 0; i < 130; i++) {
     const id = `PAGE-${String(i).padStart(3, '0')}`
-    f.records.set(join(f.cwd, `.dsh/task-${id}.json`), JSON.stringify({ ...f.current(), id }))
+    f.records.set(join(f.cwd, `.dsh/tasks/${id}/task.json`), JSON.stringify({ ...f.current(), id, task_directory: `.dsh/tasks/${id}` }))
   }
   const receiver = { authorizedPath: async p => p, fs: () => f.fs }
   const first = await Controller.prototype.readTasks.call(receiver, f.cwd)
@@ -380,7 +508,7 @@ test('ledger cursor reads at most 100 records and does not lose or duplicate rem
   assert.equal(new Set([...first.tasks, ...next.tasks].map(task => task.task_id)).size, 131)
 })
 
-test('successful task load cannot substitute for a load in another stage', () => {
+test('successful task/session load is reusable across stages but not across sessions', () => {
   const skills = [{ skill: { source: 'project', name: 'one' }, rules: [], evidence: 'none' }]
   const workflow = resolveFlow('standard', { stage_bindings: { '需求评审': { skills }, '设计': { skills } } }).config
   const session = { id: 'assessment', snapshotEvents: () => [
@@ -390,7 +518,8 @@ test('successful task load cannot substitute for a load in another stage', () =>
   const state = { id: 'T', stage: '需求评审', complexity: 'medium', skill_loads: { '需求评审': { 'project:one': { session_id: 'assessment' } } } }
   assert.deepEqual(skillBlockers(state, workflow, session), [])
   state.stage = '设计'
-  assert.match(skillBlockers(state, workflow, session).join(' '), /again for this stage/)
+  assert.deepEqual(skillBlockers(state, workflow, session), [])
+  assert.match(skillBlockers(state, workflow, { ...session, id: 'another-session' }).join(' '), /load_skill/)
 })
 
 test('changing the actual synchronized analyzer configuration invalidates the old local audit', async () => {
@@ -435,6 +564,24 @@ test('initialization RPC reuses a resumed attempt and starts a fresh job after a
   assert.notEqual(reset.job_id, first.job_id)
   await new Promise(setImmediate)
   assert.equal(runs, 2)
+})
+
+test('initialization RPC forwards a custom generation budget to the worker and its outer deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const f = await fixture()
+  let finish, minutes
+  const receiver = { projectInitRoot: async p => p, fs: () => f.fs,
+    inspectProjectInit: async () => ({ inventory: { project_name: 'fixture' } }),
+    generateProjectInitStep: async request => { minutes = request.timeout_minutes; return new Promise(resolve => { finish = resolve }) } }
+  const started = await Controller.prototype.projectInitJob.call(receiver, { path: f.cwd,
+    generation: { target: 'fixture-project-map', prior_resources: [], generation_id: 'custom-budget', timeout_minutes: 5 } })
+  await new Promise(setImmediate)
+  assert.equal(minutes, 5)
+  t.mock.timers.tick(330_001)
+  const ended = await Controller.prototype.projectInitJob.call(receiver, { path: f.cwd, job_id: started.job_id })
+  assert.equal(ended.status, 'failed', '5-minute generation budget has a 5-minute-30-second outer deadline')
+  finish({ resource: null, reason: 'late' })
+  await new Promise(setImmediate)
 })
 
 test('ledger cannot use a task-supplied root to inspect an unregistered workspace', async () => {

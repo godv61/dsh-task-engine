@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join, resolve, sep } from 'node:path'
@@ -57,7 +58,12 @@ function fixture(extra = {}, services = {}) {
   } }
   registerDevTask(ctx)
   const exec = { agent: { session }, signal: new AbortController().signal }
-  return { cwd, files, fs, events, call: args => execute(args, exec), state: id => JSON.parse(files.get(join(cwd, `.dsh/task-${id}.json`))) }
+  const call = async args => {
+    const text = await execute(args.operation === 'create' ? { intent: 'implementation', intent_reason: 'Fixture implementation', ...args } : args, exec)
+    if (args.operation === 'create') { const path = join(cwd, `.dsh/tasks/${args.task_id}/task.json`); const state = JSON.parse(files.get(path)); confirmedRequirement(state, (p,c) => files.set(join(cwd,p),c)); files.set(path, JSON.stringify(state)) }
+    return text
+  }
+  return { cwd, files, fs, events, call, state: id => JSON.parse(files.get(join(cwd, `.dsh/tasks/${id}/task.json`))) }
 }
 
 const PROJECT_META_SKILLS = ['requirements-analysis', 'architecture-design', 'task-orchestration',
@@ -132,6 +138,7 @@ test('init_project proposes project-specific Skills and binds reviewed resources
   const resources = [
     { kind: 'rule', name: 'component-boundary', content: 'Keep component boundary calls behind the existing service interface.' },
     { kind: 'skill', name: 'adaptive-project-project-map', description: 'Project structure and entry points',
+      whenToUse: 'When locating repository modules or entry points',
       content: 'The root package.json declares Vue 2.7; inspect src for the actual component layout.',
       meta_skills: ['requirements-analysis', 'architecture-design', 'code-development'], rules: ['component-boundary'] },
   ]
@@ -142,11 +149,13 @@ test('init_project proposes project-specific Skills and binds reviewed resources
   await f.call({ operation: 'init_project', phase: 'apply', resources, expected_hash: proposed.expected_hash,
     existing_hash: proposed.existing_hash })
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  assert.equal(meta.meta_bindings['requirements-analysis'].includes('adaptive-project-project-map'), true)
-  assert.equal(meta.meta_bindings['architecture-design'].includes('adaptive-project-project-map'), true)
+  assert.deepEqual(meta.meta_bindings['requirements-analysis'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
+  assert.deepEqual(meta.meta_bindings['architecture-design'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
   assert.equal(meta.meta_bindings['test-validation'], undefined)
-  assert.ok(meta.meta_bindings['code-development'].includes('adaptive-project-project-map'))
+  assert.deepEqual(meta.meta_bindings['code-development'], [{ name: 'adaptive-project-project-map', loading: 'on-demand' }])
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/profile.json')))
+  assert.match(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')),
+    /whenToUse: When locating repository modules or entry points/)
 })
 
 test('init_project accepts no project resources and preserves an existing stage Skill', async () => {
@@ -159,7 +168,7 @@ test('init_project accepts no project resources and preserves an existing stage 
     expected_hash: proposed.expected_hash, existing_hash: proposed.existing_hash })
   assert.equal(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-code-review/SKILL.md')), existing)
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  assert.ok(meta.meta_bindings['code-review'].includes('adaptive-project-code-review'))
+  assert.deepEqual(meta.meta_bindings['code-review'], [{ name: 'adaptive-project-code-review', loading: 'on-demand' }])
   const fresh = fixture()
   assert.ok(JSON.parse(await fresh.call({ operation: 'init_project', phase: 'propose', resources })).expected_hash)
   const empty = JSON.parse(await fresh.call({ operation: 'init_project', phase: 'propose', resources: [] }))
@@ -179,9 +188,38 @@ test('init_project can attach six existing stage Skills without creating duplica
   await f.call({ operation: 'init_project', phase: 'apply', resources: [],
     expected_hash: proposed.expected_hash, existing_hash: proposed.existing_hash })
   const meta = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
-  for (const stage of PROJECT_META_SKILLS) assert.deepEqual(meta.meta_bindings[stage], [`adaptive-project-${stage}`])
+  for (const stage of PROJECT_META_SKILLS) assert.deepEqual(meta.meta_bindings[stage], [{ name: `adaptive-project-${stage}`, loading: 'on-demand' }])
   assert.equal(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-code-review/SKILL.md')),
     '# Existing code-review project method')
+})
+
+test('both initialization writers default new mounts to on-demand while preserving existing required and optional mounts', async () => {
+  for (const mode of ['tool', 'workbench']) {
+    const oldMounts = ['keep-required', { name: 'keep-optional', loading: 'on-demand' }]
+    const f = fixture({ '.dsh/meta.json': JSON.stringify({ meta_bindings: { 'code-development': oldMounts } }),
+      '.dsh/skills/keep-required/SKILL.md': '# Required project guide',
+      '.dsh/skills/keep-optional/SKILL.md': '# Optional project guide' })
+    const resources = [{ kind: 'skill', name: 'backend-guide', description: 'Backend guidance', whenToUse: 'Backend changes only',
+      content: '# Backend', meta_skills: ['code-development'], rules: [] }]
+    if (mode === 'tool') {
+      const preview = JSON.parse(await f.call({ operation: 'init_project', phase: 'propose', resources }))
+      await f.call({ operation: 'init_project', phase: 'apply', resources, expected_hash: preview.expected_hash, existing_hash: preview.existing_hash })
+    } else {
+      const receiver = { authorizedPath: async path => path, fs: () => f.fs,
+        projectInitRoot: Controller.prototype.projectInitRoot, inspectProjectInit: Controller.prototype.inspectProjectInit,
+        previewProjectInit: Controller.prototype.previewProjectInit,
+        listSkills: async () => ({ skills: [{ name: 'keep-required' }, { name: 'keep-optional' }] }) }
+      const preview = await receiver.previewProjectInit({ path: f.cwd, resources })
+      await Controller.prototype.applyProjectInit.call(receiver, { path: f.cwd, resources, expected_hash: preview.expected_hash, existing_hash: preview.existing_hash })
+    }
+    const saved = JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json')))
+    assert.deepEqual(saved.meta_bindings['code-development'], [...oldMounts, { name: 'backend-guide', loading: 'on-demand' }])
+    await f.call({ operation: 'create', task_id: `INIT-${mode}`, title: 'Use initialized configuration', branch: 'test', complexity: 'low', complexity_reason: 'Small change' })
+    const entries = f.state(`INIT-${mode}`).flow.config.stage_bindings['代码开发'].skills
+    assert.notEqual(entries.find(entry => entry.skill.name === 'code-development').loading, 'on-demand')
+    assert.notEqual(entries.find(entry => entry.skill.name === 'keep-required').loading, 'on-demand')
+    assert.equal(entries.find(entry => entry.skill.name === 'backend-guide').loading, 'on-demand')
+  }
 })
 
 test('task-plan item headings preserve the full implementation sequence', async () => {
@@ -193,7 +231,7 @@ test('task-plan item headings preserve the full implementation sequence', async 
   state.stage = '任务编排'
   state.artifacts['task-plan'] = { steps: '- I1 model\n- I2 service', dependencies: 'I2 after I1', handoffs: 'Model to service' }
   state.items = [{ id: 'I2', title: 'service', status: 'todo' }]
-  f.files.set(join(f.cwd, '.dsh/task-PLAN-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/PLAN-1/task.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status', task_id: 'PLAN-1' }))
   assert.match(status.task_plan_item_blockers[0], /I1/)
   await assert.rejects(f.call({ operation: 'advance', task_id: 'PLAN-1', target_stage: '代码开发' }), /I1/)
@@ -303,7 +341,7 @@ test('local Sonar audit ignores failing old-code gate conditions', async () => {
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
-      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
       : { paging: { total: 0 }, issues: [] } })
   const audit = await inspectSonar(policy, 'token', 'CE-local-123', 'feature', 'scope', fetcher, true)
   assert.equal(audit.gate, 'OK')
@@ -347,7 +385,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   const calls = []
   const shell = { resolve: request => request, run: async spec => {
     calls.push(spec)
-    if (spec.command === 'git rev-parse HEAD') return { exitCode: 0, stdout: { text: 'abcdef1234567890\n' } }
+    if (spec.command === 'git rev-parse HEAD') return { exitCode: 0, stdout: { text: 'abcdef1234567890abcdef1234567890abcdef12\n' } }
     if (spec.command === 'git branch --show-current') return { exitCode: 0, stdout: { text: 'feature\n' } }
     if (spec.command === 'git status --porcelain --untracked-files=all') return { exitCode: 0, stdout: { text: '' } }
     const metadata = /-Dsonar\.scanner\.metadataFilePath='([^']+)'/u.exec(spec.command)?.[1]
@@ -362,8 +400,8 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
   const state = f.state('LOCAL-1')
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
-  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
-  f.files.set(join(f.cwd, '.dsh/task-LOCAL-1.json'), JSON.stringify(state))
+  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
+  f.files.set(join(f.cwd, '.dsh/tasks/LOCAL-1/task.json'), JSON.stringify(state))
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
   const oldHost = process.env.DSH_SONAR_TRUSTED_HOST
@@ -379,7 +417,7 @@ test('sonar_check runs a local scan on the recorded commit without pushing or ex
     : String(url).includes('/qualitygates/project_status')
       ? { projectStatus: { status: 'ERROR', conditions: [
         { metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
-      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890' }] }
+      : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-local', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
       : { paging: { total: 0 }, issues: [] } })
   try {
     const result = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'LOCAL-1' }))
@@ -410,8 +448,8 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   const state = f.state('S-1')
   state.stage = '代码审核'
   state.verification = recordedVerification(state)
-  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890' }]
-  f.files.set(join(f.cwd, '.dsh/task-S-1.json'), JSON.stringify(state))
+  state.commits = [{ label: 'TASK', hash: 'abcdef1234567890abcdef1234567890abcdef12' }]
+  f.files.set(join(f.cwd, '.dsh/tasks/S-1/task.json'), JSON.stringify(state))
   await assert.rejects(f.call({ operation: 'review', task_id: 'S-1', outcome: 'pass' }), /SonarQube audit is enabled/)
   const oldFetch = globalThis.fetch
   const oldToken = process.env.SONAR_TOKEN
@@ -422,7 +460,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
   process.env.DSH_SONAR_TRUSTED_PROJECT_KEY = 'project'
   globalThis.fetch = async url => ({ ok: true, json: async () => String(url).includes('/ce/task')
     ? { task: { status: 'SUCCESS', analysisId: 'AN-2', componentKey: 'project' } }
-    : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-2', revision: 'abcdef1234567890' }] }
+    : String(url).includes('/project_analyses/search') ? { analyses: [{ key: 'AN-2', revision: 'abcdef1234567890abcdef1234567890abcdef12' }] }
     : String(url).includes('/qualitygates/project_status') ? { projectStatus: { status: 'ERROR',
       conditions: [{ metricKey: 'bugs', status: 'ERROR' }, { metricKey: 'new_coverage', status: 'OK' }] } }
       : { paging: { total: 0 }, issues: [] } })
@@ -430,7 +468,7 @@ test('review-only Sonar gate blocks pass until the task records CI analysis of n
     const check = JSON.parse(await f.call({ operation: 'sonar_check', task_id: 'S-1', ce_task_id: 'CE-123456' }))
     assert.equal(check.gate, 'OK')
     assert.equal(check.server_gate, 'ERROR')
-    assert.match(check.report_path, /^\.dsh\/reviews\/S-1\//)
+    assert.match(check.report_path, /^\.dsh\/tasks\/S-1\/reviews\//)
     assert.match(f.files.get(join(f.cwd, check.report_path)), /SonarQube 代码审核/)
     assert.equal(f.state('S-1').sonar_audit.report_path, check.report_path)
     assert.equal(JSON.parse(f.files.get(join(f.cwd, check.report_path.replace(/\.md$/u, '.json')))).analysis_id, 'AN-2')
@@ -456,7 +494,7 @@ test('a failed Sonar finding becomes a reviewed project Rule attached to the cod
   state.stage = '代码审核'
   state.sonar_audit = { ce_task_id: 'CE-123456', analysis_id: 'AN-9', gate: 'ERROR', checked_at: 'now',
     scope_hash: 'old', findings: [finding], blocking: [finding], target: 'feature' }
-  f.files.set(join(f.cwd, '.dsh/task-L-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/L-1/task.json'), JSON.stringify(state))
   await f.call({ operation: 'revise', task_id: 'L-1', target_stage: '代码开发',
     revision_kind: 'defect', revision_reason: 'Fix the SonarQube issue' })
   assert.equal(f.state('L-1').sonar_history[0].blocking[0].key, 'ISSUE-9')
@@ -492,6 +530,7 @@ test('workbench initializes reviewed project resources directly and preserves So
   const resources = [
     { kind: 'rule', name: 'backend-convention', content: 'Use the backend module Maven Java 8 build for backend changes.' },
     { kind: 'skill', name: 'adaptive-project-project-map', description: 'Reusable repository map',
+      whenToUse: 'When finding modules and cross-module entry points',
       content: 'Root package.json, backend/pom.xml and frontend/package.json define the backend and frontend modules.',
       meta_skills: ['requirements-analysis', 'code-development'], rules: ['backend-convention'] },
   ]
@@ -510,6 +549,8 @@ test('workbench initializes reviewed project resources directly and preserves So
     } },
   }
   const plan = await Controller.prototype.inspectProjectInit.call(receiver, { path: f.cwd })
+  assert.match(plan.system_prompt, /whenToUse/)
+  assert.match(plan.step_prompt, /whenToUse/)
   assert.ok(plan.inventory.suggestions.some(item => item.name === 'adaptive-project-project-map'))
   assert.doesNotMatch(plan.user_prompt, /adaptive-project-code-review/)
   assert.match(plan.user_prompt, /frontend\/package.json/)
@@ -518,19 +559,25 @@ test('workbench initializes reviewed project resources directly and preserves So
   const draft = await Controller.prototype.generateProjectInit.call(receiver,
     { path: f.cwd, system_prompt: plan.system_prompt + ' Review carefully.', user_prompt: plan.user_prompt + '\nUse reviewed conventions.' })
   assert.match(generatedOptions.system, /Review carefully/)
+  assert.match(generatedOptions.system, /whenToUse/)
   assert.match(generatedOptions.messages[0].content[0].text, /Use reviewed conventions/)
   assert.deepEqual(draft.project_map_coverage, ['backend', 'frontend', 'package.json'])
   assert.equal(f.files.has(join(f.cwd, '.dsh/rules/backend-convention.md')), false)
+  await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,
+    { path: f.cwd, resources: draft.resources.map(resource => resource.kind === 'skill' ? { ...resource, whenToUse: 'Different scope' } : resource),
+      expected_hash: draft.expected_hash, existing_hash: draft.existing_hash }), /改变/)
   await assert.rejects(Controller.prototype.applyProjectInit.call(receiver,
     { path: f.cwd, resources: draft.resources, expected_hash: 'stale', existing_hash: draft.existing_hash }), /改变/)
   const applied = await Controller.prototype.applyProjectInit.call(receiver,
     { path: f.cwd, resources: draft.resources, expected_hash: draft.expected_hash, existing_hash: draft.existing_hash })
   assert.equal(applied.ok, true)
   assert.equal(f.files.get(join(f.cwd, '.dsh/meta.json')).includes('keep-me'), true)
-  assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['code-development'][0],
-    'adaptive-project-project-map')
+  assert.deepEqual(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['code-development'][0],
+    { name: 'adaptive-project-project-map', loading: 'on-demand' })
   assert.equal(JSON.parse(f.files.get(join(f.cwd, '.dsh/meta.json'))).meta_bindings['test-validation'], undefined)
   assert.ok(f.files.has(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')))
+  assert.match(f.files.get(join(f.cwd, '.dsh/skills/adaptive-project-project-map/SKILL.md')),
+    /whenToUse: When finding modules and cross-module entry points/)
   assert.equal((await Controller.prototype.previewProjectInit.call(receiver,
     { path: f.cwd, resources })).ok, true, 'identical resources can be safely previewed again')
 })
@@ -575,6 +622,7 @@ test('project initialization generates one ordered resource at a time and can sk
     content: 'The root package.json is the verified build entry point.',
     meta_skills: ['requirements-analysis', 'code-development'], rules: [] }
   let calls = 0
+  let readCalls = 0
   const receiver = {
     authorizedPath: async path => path, fs: () => f.fs, listSkills: async () => ({ skills: [] }),
     projectInitRoot: Controller.prototype.projectInitRoot,
@@ -584,6 +632,7 @@ test('project initialization generates one ordered resource at a time and can sk
         calls++
         const prompt = options.messages[0].content[0].text
         if (options.messages.length === 1) {
+          readCalls++
           yield { type: 'block-end', index: 0, block: { type: 'tool-call', id: `read-${calls}`,
             name: 'init_read_file', arguments: JSON.stringify({ path: 'package.json' }) } }
           yield { type: 'finish', reason: { kind: 'tool-calls' } }
@@ -606,7 +655,8 @@ test('project initialization generates one ordered resource at a time and can sk
   const first = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: map.name, prior_resources: [], user_prompt: plan.user_prompt })
   assert.equal(first.resource.name, map.name)
-  assert.equal(calls, 4)
+  assert.equal(calls, 3, 'repair the malformed JSON in its original conversation')
+  assert.equal(readCalls, 1, 'JSON repair must not re-read the repository')
   assert.ok(first.reads.some(read => read.path === 'package.json' && read.start_line === 1))
   const optional = await Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.cwd, target: 'adaptive-project-business-capabilities', prior_resources: [first.resource], user_prompt: plan.user_prompt })
@@ -670,9 +720,9 @@ test('a local false positive needs human approval, keeps the raw gate, and expir
   state.sonar_audit = { ce_task_id: 'local', analysis_id: 'LOCAL-1', gate: 'ERROR',
     checked_at: '2026-10-05T00:00:00.000Z', scope_hash: state.verification.receipt.scope_hash,
     findings: [finding], blocking: [finding], target: 'main', scanned_files: ['app.js'],
-    report_path: '.dsh/reviews/FP-1/local.md' }
-  f.files.set(join(f.cwd, '.dsh/reviews/FP-1/local.md'), 'original report')
-  f.files.set(join(f.cwd, '.dsh/task-FP-1.json'), JSON.stringify(state))
+    report_path: '.dsh/tasks/FP-1/reviews/local.md' }
+  f.files.set(join(f.cwd, '.dsh/tasks/FP-1/reviews/local.md'), 'original report')
+  f.files.set(join(f.cwd, '.dsh/tasks/FP-1/task.json'), JSON.stringify(state))
   const args = { operation: 'sonar_disposition', task_id: 'FP-1', issue_key: finding.key,
     disposition_reason: '每次循环需要独立实体对象，复用同一个实例会让多条授权记录互相覆盖，属于规则误报。',
     evidence: ['授权实体逐行添加到集合，复用对象会导致所有行指向末次值'] }
@@ -698,7 +748,7 @@ test('archived task is read-only and a follow-up gets a new linked record', asyn
   await f.call({ operation: 'create', task_id: 'DONE-1', title: 'delivered', branch: 'feature', complexity: 'low', complexity_reason: 'small change', files: ['app.js'] })
   const state = f.state('DONE-1')
   state.completed = { at: '2026-10-14T00:00:00.000Z' }
-  f.files.set(join(f.cwd, '.dsh/task-DONE-1.json'), JSON.stringify(state))
+  f.files.set(join(f.cwd, '.dsh/tasks/DONE-1/task.json'), JSON.stringify(state))
   assert.match(await f.call({ operation: 'status', task_id: 'DONE-1' }), /archived/)
   await assert.rejects(() => f.call({ operation: 'revise', task_id: 'DONE-1', target_stage: '代码开发', revision_kind: 'defect', revision_reason: 'later bug' }), /archived/)
   await f.call({ operation: 'create', task_id: 'FIX-2', title: 'later bug', branch: 'feature', complexity: 'low', complexity_reason: 'localized', files: ['app.js'], related_task_id: 'DONE-1', relation_kind: 'defect' })

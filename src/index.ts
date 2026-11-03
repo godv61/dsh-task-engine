@@ -12,10 +12,12 @@
 import type { Context } from '@deepseek-ai/cordis'
 import TaskEngineController from './controller.ts'
 import { seedEngPreset } from './seed-preset.ts'
+import ReviewerPolicy from './reviewer-policy.ts'
 
 export const name = 'task-engine'
 
 export function apply(ctx: Context): void {
+  ctx.plugin(ReviewerPolicy)
   ctx.plugin(TaskEngineController)
   seedEngPreset()
 }

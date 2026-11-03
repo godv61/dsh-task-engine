@@ -191,7 +191,7 @@ const MINIMAL_RECOMMENDATION: FlowRecommendation = {
  * Derive a preset's capability set from its own structure, so the capability
  * claims can never drift from the actual gate graph.
  */
-function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
+export function deriveCapabilities(config: WorkflowConfig): WorkflowCapability[] {
   const caps: WorkflowCapability[] = []
   const guards = new Set(config.transitions.flatMap(t => t.requires ?? []))
   if (guards.has('verified')) caps.push('verification_gate')
@@ -271,6 +271,12 @@ export function flowSatisfies(flow: string, required: readonly WorkflowCapabilit
   return required.every(cap => preset.capabilities.includes(cap))
 }
 
+/** Check the effective frozen graph, including adaptive flows and project overrides. */
+export function workflowSatisfies(config: WorkflowConfig, required: readonly WorkflowCapability[]): boolean {
+  const capabilities = deriveCapabilities(config)
+  return required.every(capability => capabilities.includes(capability))
+}
+
 /** Resolve an unknown flow id's failure, surprising no caller with a fallback. */
 export interface UnknownFlow {
   ok: false
@@ -345,7 +351,9 @@ function applyProjectConfig(base: WorkflowConfig, project?: ProjectConfig): Work
             problems.push(`skill profile "${key}" must declare a rules array`)
             return []
           }
-          return [{ skill: ref, rules: profile.rules, ...(profile.evidence !== undefined ? { evidence: profile.evidence } : {}) }]
+          return [{ skill: { source: ref.source, name: ref.name }, rules: profile.rules,
+            ...(ref.loading !== undefined ? { loading: ref.loading } : {}),
+            ...(profile.evidence !== undefined ? { evidence: profile.evidence } : {}) }]
         })
       } else if (binding.skills !== undefined) {
         // Read pre-migration inline bindings, then normalize their rule lists to
@@ -369,6 +377,7 @@ function applyProjectConfig(base: WorkflowConfig, project?: ProjectConfig): Work
               return []
             }
             return [{ skill: skill.skill, rules: profile.rules,
+              ...(skill.loading !== undefined ? { loading: skill.loading } : {}),
               ...(profile.evidence !== undefined ? { evidence: profile.evidence } : {}) }]
           }
           const candidate: SkillProfile = { rules: skill.rules ?? [], ...(skill.evidence !== undefined ? { evidence: skill.evidence } : {}) }
@@ -465,7 +474,7 @@ export function compactProjectConfig(project: ProjectConfig): ProjectConfig {
   const bindings: Record<string, StageBinding> = {}
   for (const [stage, binding] of Object.entries(resolved.config.stage_bindings ?? {})) {
     bindings[stage] = {
-      skill_refs: (binding.skills ?? []).map(entry => entry.skill),
+      skill_refs: (binding.skills ?? []).map(entry => ({ ...entry.skill, ...(entry.loading !== undefined ? { loading: entry.loading } : {}) })),
       ...(binding.legacy_rules?.length ? { legacy_rules: binding.legacy_rules } : {}),
     }
   }
@@ -501,7 +510,7 @@ export function materializeBundledReferences(
   for (const [stage, binding] of Object.entries(compact.stage_bindings ?? {})) {
     stage_bindings[stage] = {
       ...binding,
-      ...(binding.skill_refs ? { skill_refs: binding.skill_refs.map(ref => remap(ref, 'skill')) } : {}),
+      ...(binding.skill_refs ? { skill_refs: binding.skill_refs.map(ref => ({ ...remap(ref, 'skill'), ...(ref.loading !== undefined ? { loading: ref.loading } : {}) })) } : {}),
     }
   }
   const skill_profiles: Record<string, SkillProfile> = {}

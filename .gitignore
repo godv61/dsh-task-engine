@@ -6,6 +6,9 @@ lib/
 !.env.example
 *.log
 
+# Local source-host acceptance profiles contain runtime state and credentials.
+/docs/assessment-20261102/source-host/
+
 # Editor state: local paths and window layout, not project content.
 .idea/
 .vscode/

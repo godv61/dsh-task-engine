@@ -1,5 +1,6 @@
 /** Task-scoped engineering flows. The grade selects gates; risk remains separate. */
 import type { ArtifactDef, EvidenceKind, WorkflowConfig } from './engine.ts'
+import { REQUIREMENT_FIELDS } from './requirements.ts'
 
 export type Complexity = 'low' | 'medium' | 'high' | 'ultra'
 export type MetaSkill = 'requirements-analysis' | 'architecture-design' | 'task-orchestration'
@@ -31,7 +32,7 @@ export const META_EVIDENCE: Readonly<Record<MetaSkill, EvidenceKind>> = {
   'code-review': 'review',
 }
 
-export const ADAPTIVE_VERSION = 1
+export const ADAPTIVE_VERSION = 2
 
 const COMMON_ARTIFACTS: ArtifactDef[] = [
   { stage: '需求分析', id: 'requirement', name: '需求与验收条件', fields: ['goal', 'scope', 'acceptance'] },
@@ -55,7 +56,7 @@ export function adaptiveWorkflow(grade: Complexity): WorkflowConfig {
           : from === '代码审核' ? ['review_passed' as const] : []
     return { from, to, requires }
   })
-  return {
+  const config: WorkflowConfig = {
     stages,
     start_stage: stages[0]!,
     transitions,
@@ -65,6 +66,15 @@ export function adaptiveWorkflow(grade: Complexity): WorkflowConfig {
     high_risk_requires_verification: true,
     review_depth: grade === 'low' ? 'single' : 'two-stage',
   }
+  {
+    const stage = grade === 'low' ? '代码开发' : '需求分析'
+    config.requirement_review = { version: 1, stage, artifact: 'requirement' }
+    config.artifacts = config.artifacts.filter(def => def.id !== 'requirement')
+    config.artifacts.unshift({ stage, id: 'requirement', name: grade === 'low' ? '精简需求总结' : '需求总结',
+      fields: grade === 'low' ? ['goal', 'scope', 'acceptance'] : Object.keys(REQUIREMENT_FIELDS) })
+    config.transitions.find(edge => edge.from === stage)!.requires!.push('requirement_confirmation')
+  }
+  return config
 }
 
 export function isComplexity(value: unknown): value is Complexity {

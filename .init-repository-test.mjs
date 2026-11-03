@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { discoverInitStepPaths, InitRepositoryReader, initPathPrompt, initReadablePath, runInitRepositoryModel } from './lib/init-repository.js'
 import Controller from './lib/controller.js'
-import { scanProject } from './lib/project-init.js'
+import { projectMapCoverageGaps, scanProject } from './lib/project-init.js'
+import { withInitTimeout } from './lib/init-timeout.js'
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'init-reader-'))
@@ -222,4 +223,252 @@ test('a model without file tools cannot submit an invented nonempty initializati
     } } }
   await assert.rejects(Controller.prototype.generateProjectInitStep.call(receiver,
     { path: f.root, target: 'fixture-tech-stack', prior_resources: [] }), /未实际读取仓库文件/)
+})
+
+const options = () => ({ provider: 'test', model: 'test', messages: [createUserMessage({ content: [{ type: 'text', text: 'inspect repository' }], source: { kind: 'user' } })] })
+function* readChunk(id = 'read') {
+  yield { type: 'tool-call-delta', index: 0, id, name: 'init_read_file', argumentsDelta: '{"path":"README.md"}' }
+  yield { type: 'finish', reason: { kind: 'tool-calls' } }
+}
+function* textChunks(text) {
+  yield { type: 'text-delta', index: 0, text }
+  yield { type: 'finish', reason: { kind: 'stop' } }
+}
+
+test('exploration reaches a reserved composition round instead of discarding 23 rounds of evidence', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'actual source')
+  let turns = 0
+  const output = await runInitRepositoryModel(async function* (request) {
+    turns++
+    if (request.tools.length) yield* readChunk(`read-${turns}`)
+    else {
+      assert.match(request.messages.at(-1).content[0].text, /停止扩大扫描/)
+      assert.equal(f.reader.reads.length, 23)
+      yield* textChunks('{"resources":[]}')
+    }
+  }, options(), f.reader, JSON.parse)
+  assert.equal(turns, 24)
+  assert.equal(output, '{"resources":[]}')
+})
+
+test('tool volume also triggers composition before repeated exhausted-budget calls', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'actual source')
+  let turns = 0
+  await runInitRepositoryModel(async function* (request) {
+    turns++
+    if (!request.tools.length) { yield* textChunks('{"resources":[]}'); return }
+    for (let i = 0; i < 10; i++) yield { type: 'tool-call-delta', index: i, id: `r-${turns}-${i}`, name: 'init_read_file', argumentsDelta: '{"path":"README.md"}' }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  }, options(), f.reader)
+  assert.equal(turns, 8)
+  assert.equal(f.reader.reads.length, 70)
+})
+
+test('elapsed time alone no longer forces composition at 110 seconds', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'verified source')
+  let turns = 0
+  await runInitRepositoryModel(async function* (request) {
+    turns++
+    if (turns === 1) { t.mock.timers.tick(200_000); yield* readChunk() }
+    else { assert.equal(request.tools.length, 4); yield* textChunks('{"resources":[]}') }
+  }, options(), f.reader)
+  assert.equal(turns, 2)
+  assert.equal(f.reader.reads.length, 1)
+})
+
+test('large mixed-language discovery can stop at 1024 directories without rejecting all known map paths', async () => {
+  const tree = new Map([['.', ['api', 'cli', 'docs']], ['api', ['go.mod', 'main.go']], ['cli', ['Cargo.toml', 'src']],
+    ['cli/src', ['main.rs']], ['docs', Array.from({ length: 1200 }, (_, i) => `topic-${i}`)]])
+  let calls = 0
+  const inventory = await scanProject({ read: async (_, path) => path === 'api/go.mod' ? 'module example.local/api\ngo 1.23'
+    : path === 'cli/Cargo.toml' ? '[package]\nname="example-cli"' : undefined,
+    list: async (_, path) => { calls++; return tree.get(path) ?? [] },
+    directories: async (_, path) => path === '.' ? ['api', 'cli', 'docs'] : path === 'docs' ? tree.get('docs') : path === 'cli' ? ['src'] : [] }, '/large-mixed')
+  assert.equal(calls, 1024)
+  assert.equal(inventory.discovery.status, 'partial')
+  assert.deepEqual(inventory.manifests.map(m => m.path), ['api/go.mod', 'cli/Cargo.toml'])
+  assert.deepEqual(projectMapCoverageGaps('api: Go service. cli: Rust CLI; exact responsibilities need source confirmation.', inventory), [])
+  assert.notDeepEqual(projectMapCoverageGaps('api only', inventory), [], 'known module omissions are still rejected')
+})
+
+test('JSON repair retains original file evidence and bad draft, and offers no more repository tools', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'original evidence footer')
+  let turns = 0
+  const output = await runInitRepositoryModel(async function* (request) {
+    turns++
+    if (turns === 1) yield* readChunk()
+    else if (turns === 2) yield* textChunks('{"resources":[')
+    else {
+      assert.deepEqual(request.tools, [])
+      assert.ok(request.messages.some(m => m.role === 'tool' && m.content[0].text.includes('original evidence footer')))
+      assert.equal(request.messages.at(-2).content[0].text, '{"resources":[')
+      assert.match(request.messages.at(-1).content[0].text, /草案校验失败/)
+      yield* textChunks('{"resources":[]}')
+    }
+  }, options(), f.reader, JSON.parse)
+  assert.equal(output, '{"resources":[]}')
+  assert.equal(turns, 3)
+  assert.equal(f.reader.reads.length, 1)
+})
+
+test('truncated draft output is compressed in the same conversation instead of discarding its evidence', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'read before truncation')
+  let turns = 0
+  await runInitRepositoryModel(async function* (request) {
+    turns++
+    if (turns === 1) yield* readChunk()
+    else if (turns === 2) {
+      yield { type: 'text-delta', index: 0, text: '{"resources":[' }
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } else {
+      assert.deepEqual(request.tools, [])
+      assert.match(request.messages.at(-1).content[0].text, /压缩正文/)
+      yield* textChunks('{"resources":[]}')
+    }
+  }, options(), f.reader, JSON.parse)
+  assert.equal(turns, 3)
+  assert.equal(f.reader.reads.length, 1)
+})
+
+function stepReceiver(f, stream, inventory) {
+  return { fs: () => ({ resolve: async (path, o) => ({ path: join(o.cwd, path) }),
+    readText: async target => readFileSync(target.path, 'utf8'),
+    listDir: async target => readdirSync(target.path).map(name => ({ name })) }),
+    projectInitRoot: async () => f.root,
+    inspectProjectInit: async () => ({ inventory, existing: [], system_prompt: 'JSON', user_prompt: 'paths', step_prompt: '{{target}}' }),
+    ctx: { get: name => name === 'llm' ? { stream } : name === 'agentDefaultModel'
+      ? { currentSelection: () => ({ provider: 'test', model: 'test' }) } : undefined } }
+}
+const stackInventory = () => ({ project_name: 'fixture', modules: [], root_entries: ['README.md'], manifests: [],
+  suggestions: [{ name: 'fixture-tech-stack', kind: 'skill', why: 'stack', meta_skills: ['architecture-design'] }] })
+const draft = (name, content) => JSON.stringify({ resources: [{ kind: 'skill', name, description: 'verified navigation',
+  content, meta_skills: ['architecture-design'], rules: [] }] })
+
+test('configured reasoning effort is forwarded and transport retries share one total time budget', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() })
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'evidence')
+  let turns = 0, retrySignal
+  const receiver = stepReceiver(f, async function* (request) {
+    assert.equal(request.reasoningEffort, 'max')
+    turns++
+    if (turns === 1) yield* readChunk()
+    else if (turns === 2) { t.mock.timers.tick(240_000); throw new Error('503 temporarily unavailable') }
+    else { retrySignal = request.signal; await new Promise(() => {}) }
+  }, stackInventory())
+  const get = receiver.ctx.get
+  receiver.ctx.get = name => name === 'agentDefaultModel'
+    ? { currentSelection: () => ({ provider: 'test', model: 'test', reasoningEffort: 'max' }) } : get(name)
+  const generation = Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.root, target: 'fixture-tech-stack', prior_resources: [], evidence_prompt: 'README.md', timeout_minutes: 10 })
+  const failed = assert.rejects(generation, /超过10分钟预算/)
+  await new Promise(setImmediate)
+  assert.equal(turns, 3)
+  t.mock.timers.tick(359_999)
+  assert.equal(retrySignal.aborted, false)
+  t.mock.timers.tick(1)
+  await failed
+  assert.equal(retrySignal.aborted, true, 'retry expires at the original 10-minute deadline, not 10 minutes after its own start')
+})
+
+test('AGENTS generation also inherits the selected reasoning effort', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'repository overview')
+  let effort
+  const receiver = { authorizedPath: async path => path, ctx: { get(name) {
+    if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'test', model: 'test', reasoningEffort: 'high' }) }
+    if (name === 'llm') return { async *stream(request) { effort = request.reasoningEffort; yield* textChunks('# Repository overview') } }
+  } } }
+  const result = await Controller.prototype.generateInit.call(receiver, { path: f.root })
+  assert.equal(result.ok, true)
+  assert.equal(effort, 'high')
+})
+
+test('a supplied project map does not replace actual business source reads or become a prerequisite', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'Orders can be submitted and then reviewed by a manager.')
+  const inventory = { ...stackInventory(), suggestions: [{ name: 'fixture-business-capabilities', kind: 'skill', why: 'business', meta_skills: ['requirements-analysis'] }] }
+  const map = { kind: 'skill', name: 'fixture-project-map', description: 'map summary', content: '# FULL_MAP_ONLY\norders/: entry; behavior requires source confirmation.', meta_skills: ['architecture-design'] }
+  let calls = 0
+  const receiver = stepReceiver(f, async function* (request) {
+    calls++
+    assert.match(request.messages[0].content[0].text, /FULL_MAP_ONLY/)
+    yield* textChunks(draft('fixture-business-capabilities', '# copied from map without reading source'))
+  }, inventory)
+  const inspect = receiver.inspectProjectInit
+  receiver.inspectProjectInit = async () => ({ ...await inspect(), step_prompt: '{{previous}}\n{{target}}' })
+  await assert.rejects(Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.root, target: 'fixture-business-capabilities', prior_resources: [map], evidence_prompt: 'README.md' }), /未实际读取仓库文件/)
+  assert.equal(calls, 3)
+  let turns = 0
+  const independent = stepReceiver(f, async function* () {
+    turns++
+    if (turns === 1) yield* readChunk()
+    else yield* textChunks(draft('fixture-business-capabilities', '# Orders\nSubmit → manager review. Source: README.md:1. Other domains unreviewed.'))
+  }, inventory)
+  const result = await Controller.prototype.generateProjectInitStep.call(independent,
+    { path: f.root, target: 'fixture-business-capabilities', prior_resources: [], evidence_prompt: 'README.md' })
+  assert.equal(result.resource.name, 'fixture-business-capabilities')
+  assert.equal(result.reads.length, 1)
+})
+
+test('partial inventories can produce useful maps, with known omissions repaired and discovery explicitly disclosed', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'Python tool and Rust CLI share an API')
+  const inventory = { ...stackInventory(), manifests: [{ path: 'tools/py/pyproject.toml', facts: [] }, { path: 'tools/rs/Cargo.toml', facts: [] }],
+    suggestions: [{ name: 'fixture-project-map', kind: 'skill', why: 'map', meta_skills: ['architecture-design'] }],
+    discovery: { status: 'partial', directories: 1024, entries: 5072, warnings: ['directory or entry discovery budget reached'], exclusions: [], limits: { directories: 1024, depth: 16, entries: 20000 } } }
+  let turns = 0
+  const receiver = stepReceiver(f, async function* (request) {
+    turns++
+    if (turns === 1) yield* readChunk()
+    else if (turns === 2) yield* textChunks(draft('fixture-project-map', '# Map\ntools/py: Python tool; source: README.md'))
+    else {
+      assert.match(request.messages.at(-1).content[0].text, /tools\/rs/)
+      assert.deepEqual(request.tools, [])
+      yield* textChunks(draft('fixture-project-map', '# Map\ntools/py: Python tool. tools/rs: Rust CLI. Evidence: README.md. Detailed dependencies need confirmation.'))
+    }
+  }, inventory)
+  const result = await Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.root, target: 'fixture-project-map', prior_resources: [], evidence_prompt: 'README.md' })
+  assert.equal(turns, 3)
+  assert.equal(result.reads.length, 1)
+  assert.deepEqual(projectMapCoverageGaps(result.resource.content, inventory), [])
+  assert.match(result.resource.content, /目录发现尚未完成/)
+  assert.match(result.resource.content, /1024/)
+  assert.match(result.resource.content, /Detailed dependencies need confirmation/)
+})
+
+test('a fresh transport retry cannot borrow source evidence from its failed predecessor', async t => {
+  const f = fixture(t)
+  writeFileSync(join(f.root, 'README.md'), 'only read in the failed attempt')
+  let turns = 0
+  const receiver = stepReceiver(f, async function* () {
+    turns++
+    if (turns === 1) yield* readChunk()
+    else if (turns === 2) throw new Error('503 temporarily unavailable')
+    else yield* textChunks(draft('fixture-tech-stack', '# fabricated retry'))
+  }, stackInventory())
+  await assert.rejects(Controller.prototype.generateProjectInitStep.call(receiver,
+    { path: f.root, target: 'fixture-tech-stack', prior_resources: [], evidence_prompt: 'README.md' }), /未实际读取仓库文件/)
+  assert.equal(turns, 5, 'only one fresh transport attempt; no repeated full scan after output validation failure')
+})
+
+test('an uncooperative provider is bounded even when it never settles or handles cancellation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let signal, finish
+  const attempt = withInitTimeout(s => { signal = s; return new Promise(resolve => { finish = resolve }) }, 150_000, 'attempt expired')
+  const rejected = assert.rejects(attempt, /attempt expired/)
+  await Promise.resolve()
+  t.mock.timers.tick(150_000)
+  await rejected
+  assert.equal(signal.aborted, true)
+  finish('late output must be ignored')
+  await assert.rejects(attempt, /attempt expired/)
 })

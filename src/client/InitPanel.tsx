@@ -17,12 +17,15 @@ import type { CodeGraphState, ProjectInitPreview, ProjectInitPromptView } from '
 import { projectInitSteps, projectMetaSkillTargets, type InitGraphQueryRecord, type InitReadRecord, type InitResource } from '../project-init.ts'
 import { firstPendingStep, initGenerationQueue, preserveInitGenerationId, restoreInitProgress, type InitProgress } from '../init-progress.ts'
 import { META_STAGES } from '../adaptive.ts'
+import { DEFAULT_INIT_TIMEOUT_MINUTES, initTimeBudget } from '../init-timeout.ts'
+import { externalInitPrompt } from '../init-external-prompt.ts'
 
 /** Stable localized chrome for the Markdown body. */
 const MD_LABELS = { code: { copyLabel: '复制', copiedLabel: '已复制' }, footnotes: '脚注' }
 
 /** Frontend mirror of the Host generate timeout, for the elapsed counter. */
-const INIT_TIMEOUT_S = 150
+const INIT_TIMEOUT_S = DEFAULT_INIT_TIMEOUT_MINUTES * 60
+const TIMEOUT_CHOICES = [5, 10, 20, 30]
 
 const card: CSSProperties = {
   display: 'flex', flexDirection: 'column', gap: 12,
@@ -51,7 +54,7 @@ function readProgress(workspace: string, fingerprint: string,
 }
 function writeProgress(workspace: string, progress: InitProgress): void {
   try {
-    // Edits and navigation must not discard the nonce used to resume a durable job.
+    // Edits and navigation must not discard the nonce used to find a live server job.
     window.localStorage.setItem(progressKey(workspace), JSON.stringify(
       preserveInitGenerationId(window.localStorage.getItem(progressKey(workspace)), progress)))
   } catch { /* optional browser checkpoint */ }
@@ -112,6 +115,8 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
   const [msg, setMsg] = useState('')
   const [projectInitMsg, setProjectInitMsg] = useState('')
   const [projectBusy, setProjectBusy] = useState(false)
+  const [regenerationTarget, setRegenerationTarget] = useState<{ workspace: string; name: string } | null>(null)
+  const [timeoutMinutes, setTimeoutMinutes] = useState(DEFAULT_INIT_TIMEOUT_MINUTES)
   const [projectDraft, setProjectDraft] = useState<ProjectInitPreview | null>(null)
   const [projectResources, setProjectResources] = useState<InitResource[]>([])
   const [projectStepIndex, setProjectStepIndex] = useState(0)
@@ -168,6 +173,11 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
   }, [workspace, remote])
 
   useEffect(() => {
+    setRegenerationTarget(null)
+    try {
+      const saved = Number(window.localStorage.getItem(`dsh-task-engine:init-timeout:${workspace}`))
+      setTimeoutMinutes(TIMEOUT_CHOICES.includes(saved) ? saved : DEFAULT_INIT_TIMEOUT_MINUTES)
+    } catch { setTimeoutMinutes(DEFAULT_INIT_TIMEOUT_MINUTES) }
     setProjectDraft(null)
     setProjectResources([])
     setProjectStepIndex(0)
@@ -281,12 +291,16 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
     return () => { active = false }
   }, [workspace, remote, projectPlan, projectStepIndex, projectBusy, evidenceDrafts])
 
-  const generateProject = async (oneStep: boolean): Promise<void> => {
+  const generateProject = async (oneStep: boolean, confirmedTarget?: string): Promise<void> => {
     if (projectPlan === null || projectBusy) return
     const selected = initSteps[projectStepIndex]
     if (oneStep && !selected) return
     if (oneStep && projectResources.some(resource => resource.name === selected!.name)
-      && !window.confirm(`重新生成 ${selected!.name} 将在成功后替换该项草案（包括手动修改）；其他草案会保留。确认继续？`)) return
+      && confirmedTarget !== selected!.name) {
+      setRegenerationTarget({ workspace, name: selected!.name })
+      return
+    }
+    setRegenerationTarget(null)
     setProjectBusy(true)
     setProjectDraft(null)
     setProjectInitMsg('')
@@ -325,11 +339,11 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
         try {
           let job = await remote.projectInitJob({ path: workspace, generation: { target: step.name,
             prior_resources: resources.filter(resource => resource.name !== step.name), system_prompt: systemPrompt, user_prompt: userPrompt,
-            step_prompt: stepPrompt, evidence_prompt: evidence.prompt, generation_id: generationId } })
-          const deadline = Date.now() + 360_000
+            step_prompt: stepPrompt, evidence_prompt: evidence.prompt, generation_id: generationId, timeout_minutes: timeoutMinutes } })
+          const deadline = Date.now() + initTimeBudget(timeoutMinutes).pollMs
           while (job.ok && job.value.status === 'running') {
             setActiveStep(`${index + 1}/${steps.length} · ${step.name} · 作业 ${job.value.job_id.slice(0, 8)}`)
-            if (Date.now() > deadline) throw new Error('作业仍未结束；已保存服务器作业，可稍后从当前步骤继续查询')
+            if (Date.now() > deadline) throw new Error('作业仍未结束；DSH 保持运行时可稍后从当前步骤继续查询')
             await new Promise(resolve => setTimeout(resolve, 1500))
             job = await remote.projectInitJob({ path: workspace, job_id: job.value.job_id })
           }
@@ -338,7 +352,10 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
           else if (job.value.result) result = { ok: true, value: job.value.result }
           else failure = '服务器作业缺少生成结果'
         } catch (error) { failure = error instanceof Error ? error.message : String(error) }
-        if (!result?.ok) throw new Error(`${step.name} 生成失败（服务端已负责重试）：${failure}`)
+        if (!result?.ok) throw new Error(`${step.name} 生成失败：${failure}`)
+        if (result.value.resource === null && resources.some(resource => resource.name === step.name)) {
+          throw new Error('本次未生成有效草案，原有草案已保留，可审阅后决定是否重试')
+        }
         evidenceEntries = { ...evidenceEntries, [step.name]: { ...evidence, reads: result.value.reads ?? [], graph_queries: result.value.graph_queries ?? [] } }
         setEvidenceDrafts(evidenceEntries)
         writeEvidenceDrafts(workspace, projectPlan, evidenceEntries)
@@ -577,7 +594,9 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
         planMessage ? createElement('p', { role: 'status', style: styles.status }, planMessage) : null,
         projectPlan ? createElement('div', { style: styles.section },
           createElement('p', { style: styles.muted },
-            `已检查 ${projectPlan.inventory.modules.length} 个一级模块、${projectPlan.inventory.manifests.length} 份构建清单。下列都是可选的项目 Skill 候选；没有可靠证据时可以不生成。已有阶段 Skill 会保留并挂载。`),
+            `已发现 ${projectPlan.inventory.modules.length} 个目录/模块、${projectPlan.inventory.manifests.length} 份构建清单。下列都是可选的项目 Skill 候选；没有可靠证据时可以不生成。已有阶段 Skill 会保留并挂载。`),
+          projectPlan.inventory.discovery ? createElement('div', { style: styles.muted },
+            `目录发现：${({ complete: '已完成限定范围扫描', partial: '扫描不完整，不能确认项目地图覆盖', unavailable: '无法列目录，不能确认项目地图覆盖' })[projectPlan.inventory.discovery.status]}；扫描 ${projectPlan.inventory.discovery.directories} 个目录。排除：${projectPlan.inventory.discovery.exclusions.join('、')}。${projectPlan.inventory.discovery.warnings.join('；')}`) : null,
           ...projectMetaSkillTargets(projectPlan.inventory.project_name).filter(({ name }) => existingSkillNames.has(name)).map(({ meta, name }) => createElement('div',
             { key: `stage-${meta}`, style: { ...styles.muted, marginBottom: 4 } },
             `${META_STAGES[meta]}：已有 ${name}，确认时继续挂载`)),
@@ -614,6 +633,14 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
                 } })),
           ),
         ) : null),
+      createElement('label', { style: styles.section }, '单项生成时间预算（含查阅、思考、整理和重试）',
+        createElement('select', { style: styles.input, value: timeoutMinutes, disabled: projectBusy,
+          onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+            const value = Number(event.target.value)
+            setTimeoutMinutes(value)
+            try { window.localStorage.setItem(`dsh-task-engine:init-timeout:${workspace}`, String(value)) } catch { /* optional preference */ }
+          } }, ...TIMEOUT_CHOICES.map(value => createElement('option', { key: value, value }, `${value} 分钟`)))),
+      createElement('p', { style: styles.muted }, '大型项目的文件查阅与模型思考可能耗时较长，可调整时间预算；也可复制当前项提示词，交给能读取项目源码的模型自行生成，审阅后通过技能页新建、安装及挂载。普通网页模型需要你另行提供相关文件。'),
       initSteps.length ? createElement('label', { style: styles.section }, '选择初始化步骤',
         createElement('select', { style: styles.input, 'aria-label': '初始化步骤', value: selectedStep?.name ?? '',
           disabled: projectBusy || planBusy,
@@ -625,6 +652,15 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
         createElement('strong', null, `当前步骤专属证据 · ${initSteps[projectStepIndex]!.name}`),
         createElement(Button, { variant: 'outline', size: 'sm', disabled: projectBusy || planBusy,
           onClick: reloadEvidence }, '重新读取本步证据'),
+        createElement(Button, { variant: 'outline', size: 'sm', disabled: !selectedStep || !stepEvidence || stepEvidence.target !== selectedStep.name,
+          onClick: () => {
+            if (!selectedStep || !stepEvidence || stepEvidence.target !== selectedStep.name) return
+            if (!navigator.clipboard?.writeText) { setProjectInitMsg('剪贴板不可用，请从提示词编辑区手动复制。'); return }
+            const text = externalInitPrompt({ root: workspace, target: selectedStep, system: systemPrompt,
+              user: userPrompt, step: stepPrompt, evidence: stepEvidence.prompt, prior: projectResources })
+            void navigator.clipboard.writeText(text).then(() => setProjectInitMsg('已复制当前项完整提示词，可交给能访问源码的模型生成草案。'),
+              () => setProjectInitMsg('剪贴板不可用，请从提示词编辑区手动复制。'))
+          } }, '复制当前项提示词（外部生成）'),
         createElement('p', { style: styles.muted },
           `本步查阅入口（尚非读取记录）：${stepEvidence?.target === initSteps[projectStepIndex]!.name
             ? (stepEvidence.paths.join('、') || '无预设入口，可从项目根目录查阅') : '加载中'}。`),
@@ -666,7 +702,17 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
             setProjectDraft(null); setProjectInitMsg('已清除草案，可从第一步生成。')
           } }, '从头开始') : null,
         createElement('span', { style: styles.muted }, `已处理 ${processedCount}/${initSteps.length} · 草案 ${projectResources.length} · 已跳过 ${completedSteps.filter(name => !projectResources.some(resource => resource.name === name)).length}`),
-        projectBusy ? createElement('span', { style: styles.status }, `已耗时 ${elapsed} 秒`) : null),
+        projectBusy ? createElement('span', { style: styles.status }, `本轮累计已耗时 ${elapsed} 秒`) : null),
+      regenerationTarget && regenerationTarget.workspace === workspace && regenerationTarget.name === selectedStep?.name
+        ? createElement('div', { style: card, role: 'group', 'aria-label': '重新生成确认' },
+          createElement('p', { role: 'status' }, `重新生成 ${regenerationTarget.name} 将在生成有效草案后替换该项内容（包括手动修改）；其他草案会保留。`),
+          createElement('div', { style: styles.row },
+            createElement(Button, { variant: 'outline', size: 'sm', onClick: () => setRegenerationTarget(null) }, '取消重新生成'),
+            createElement(Button, { variant: 'primary', size: 'sm', onClick: () => {
+              if (regenerationTarget.workspace !== workspace || regenerationTarget.name !== selectedStep?.name) return
+              void generateProject(true, regenerationTarget.name)
+            } }, `确认重新生成 ${regenerationTarget.name}`))) : null,
+      createElement('p', { style: styles.muted }, `本项模型生成预算 ${timeoutMinutes} 分钟，读取、思考和重试共用此预算；后台与页面等待额外留出收尾时间。仅网络中断等情况最多重试一次，其他已完成草案保留。`),
       initSteps.length > 0 ? createElement('div', { style: { ...styles.section, gap: 4 } },
         ...initSteps.map((step, index) => createElement('button', { key: `init-step-${step.name}`, type: 'button',
           disabled: projectBusy || planBusy, 'aria-pressed': index === projectStepIndex,
@@ -700,6 +746,11 @@ export function InitPanel({ workspace, remote, onBusyChange }: {
               ? createElement('div', { style: styles.section },
                 createElement('label', null, '简介', createElement('input', { style: styles.input, value: resource.description ?? '', disabled: projectBusy,
                   onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { description: event.target.value }) } })),
+                createElement('label', null, '使用时机（可选）', createElement('input', { style: styles.input, value: resource.whenToUse ?? '', disabled: projectBusy,
+                  placeholder: '例如：涉及页面、组件或前端接口调用时',
+                  onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { whenToUse: event.target.value }) } })),
+                createElement('small', { style: styles.muted }, '按需加载时供模型判断相关性；未填写可参考简介。此字段不会把挂载改成强制或按需。'),
+                createElement('small', { style: styles.muted }, '初始化新增的项目挂载默认按需，已有挂载保留原方式；写入后可在“项目流程与审核”切换强制或按需。核心 Skill 始终强制。'),
                 createElement('label', null, '挂载元技能（逗号分隔）', createElement('input', { style: styles.input, disabled: projectBusy,
                   value: (resource.meta_skills ?? []).join(', '),
                   onChange: (event: ChangeEvent<HTMLInputElement>) => { updateProjectResource(index, { meta_skills: event.target.value.split(',').map(item => item.trim()).filter(Boolean) as InitResource['meta_skills'] }) } })),

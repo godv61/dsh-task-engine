@@ -107,14 +107,23 @@ if (wantsSchema) {
     `${withSchema} of ${strictCodecs}`)
 }
 
+// The shipped composition must not retain removed prompt variables or one-shot/Job configuration.
+const patchPath = join(pluginRoot, 'cordis.patch.yml')
+const patchText = readFileSync(patchPath, 'utf8')
+check('preset uses managed directory context and activation configuration', !/\{\{cwd\}\}|backgroundMode:|enableRunInBackground:|toolFilter:/u.test(patchText))
+check('preset declares the guarded readonly reviewer', patchText.includes('id: task-engine-review') && patchText.includes('@godv61/dsh-task-engine/reviewer'))
+const subagentTypePath = join(dshRoot, 'packages', 'subagent', 'subagent', 'src', 'index.ts')
+if (existsSync(subagentTypePath)) check('host exposes managed startActivation', /startActivation\(/u.test(readFileSync(subagentTypePath, 'utf8')))
+
 // 3. The peer range must actually admit the installed DSH version, because npm
 //    semver will not match a prerelease the range does not name. Implemented
 //    here rather than via the `semver` package: that is a devDependency, so a
 //    consumer running this script from the installed tarball has no copy, and
 //    the whole point of this check is to run against whatever DSH is present.
 const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
-const range = pkg.peerDependencies['@deepseek-ai/dsh-typert-protocol'] ?? ''
-check(`peer range admits DSH ${protocol.version}`, rangeAdmits(range, protocol.version), range)
+for (const [name, range] of Object.entries(pkg.peerDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))) {
+  check(`${name} peer range admits DSH ${protocol.version}`, rangeAdmits(range, protocol.version), range)
+}
 
 /**
  * Whether one of a `||`-joined range's comparators admits `version`.
@@ -142,6 +151,7 @@ function rangeAdmits(range, version) {
     const caret = /^\^(.+)$/u.exec(part)
     const lower = parse(caret === null ? part : caret[1])
     if (lower === undefined) continue
+    if (caret === null) { if (part === version) return true; continue }
     // Same prerelease tuple, or a plain release on the same caret line.
     const sameTuple = target.major === lower.major
       && target.minor === lower.minor
@@ -157,8 +167,7 @@ function rangeAdmits(range, version) {
 
 if (problems.length > 0) {
   console.error(`\n${problems.length} DSH compatibility problem(s)`)
-  console.error('A new DSH alpha likely changed the Typert contract. Update src/client/remote.ts')
-  console.error('and add the version to peerDependencies before releasing.')
+  console.error('Check the failed item: codecs, runtime API and peer version are separate compatibility requirements. Do not widen peers without runtime/preset validation.')
   process.exit(1)
 }
 console.log('\nDSH compatibility verified')

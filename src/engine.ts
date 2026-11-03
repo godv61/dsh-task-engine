@@ -12,10 +12,13 @@
 
 import type { ProjectType } from './project.ts'
 import type { Complexity } from './adaptive.ts'
+import { analysisBlockers } from './delivery-contract.ts'
 import type { SonarAudit, SonarHistoryRef, SonarPolicy } from './sonar.ts'
 import { receiptHasRequiredTests } from './verification-tests.ts'
 import { executionCoverageBlockers, executionItemBlockers } from './execution-plan.ts'
-import { affectedItems, groupEvidenceBlockers, preserveVerification } from './verification-state.ts'
+import { affectedItems, groupEvidenceBlockers, latestGroupRun, preserveVerification, receiptProblems } from './verification-state.ts'
+import { invalidateRequirement, requirementConfirmed, requirementMaterialPath, type RequirementPolicy, type RequirementsState } from './requirements.ts'
+import { isEngineMeta } from './task-paths.ts'
 
 export type WorkSize = 'tiny' | 'standard' | 'complex'
 export type RiskLevel = 'standard' | 'high_risk'
@@ -115,6 +118,8 @@ export function parseResourceRef(text: string): ResourceRef | undefined {
 export interface SkillBinding {
   /** The skill, named with its source layer. */
   skill: ResourceRef
+  /** Per-mount policy. Missing preserves the historical required behavior. */
+  loading?: SkillLoading
   /** Rules this skill follows, each named with its source layer. */
   rules: ResourceRef[]
   /**
@@ -128,6 +133,10 @@ export interface SkillBinding {
    */
   evidence?: EvidenceKind
 }
+
+export type SkillLoading = 'required' | 'on-demand'
+/** Compact stage reference; loading belongs to the mount, never to the Skill profile. */
+export interface SkillMountRef extends ResourceRef { loading?: SkillLoading }
 
 /** One skill's user-owned method, independent of the stages that use it. */
 export interface SkillProfile {
@@ -157,7 +166,7 @@ export type EvidenceKind = 'command' | 'artifact' | 'review' | 'manual' | 'none'
 export interface StageBinding {
   skills?: SkillBinding[]
   /** Persisted schema: stages select skill identities, with methods in skill_profiles. */
-  skill_refs?: ResourceRef[]
+  skill_refs?: SkillMountRef[]
   /**
    * Stage-level rule names from a pre-migration config, preserved verbatim.
    *
@@ -184,6 +193,8 @@ export interface StageBinding {
 export type ReviewDepth = 'two-stage' | 'single'
 
 export interface WorkflowConfig {
+  /** Business confirmation belongs to a specific generated requirement version. */
+  requirement_review?: RequirementPolicy
   stages: string[]
   start_stage: string
   transitions: Transition[]
@@ -284,6 +295,7 @@ export interface ItemDispatch {
   output?: string
   error?: string
   finished_at?: string
+  metrics?: import('./delivery-contract.ts').RunMetrics
   parent_session?: string
 }
 
@@ -405,6 +417,10 @@ export interface VerificationReceipt {
 
 export interface TaskState {
   schema: 1
+  /** Project-relative directory of this task's workspace-owned bundle. */
+  task_directory?: string
+  /** Absent on legacy snapshots; never inferred or migrated implicitly. */
+  delivery?: import('./delivery-contract.ts').DeliveryContract
   id: string
   title: string
   branch: string
@@ -425,6 +441,7 @@ export interface TaskState {
   flow?: FlowSnapshot
   stage: string
   requirement_confirmed: boolean
+  requirements?: RequirementsState
   solution_confirmed: boolean
   items: TaskItem[]
   verification: { passed: boolean; evidence: string[]; receipt?: VerificationReceipt; scope_hash?: string; problems?: string[] }
@@ -438,13 +455,14 @@ export interface TaskState {
   artifacts: Record<string, Record<string, string>>
   /** Repo-relative paths this task may touch (checked by the file-scope commit gate). */
   files: string[]
-  commits: { label: string; hash?: string }[]
+  commits: { label: string; hash?: string; provided_hash?: string }[]
   /** Absolute project root recorded at create time; receipts bind to it and writes may not escape it. Absent on pre-0.21 records. */
   root?: string
   /** Language stack detected at create time. Absent on pre-0.21 records. */
   project_type?: ProjectType
-  /** Audit trail of risk changes; a high_risk → standard downgrade only appears here after human approval. Absent on pre-0.22 records. */
+  /** Approved high_risk → standard downgrades. Absent on pre-0.22 records. */
   risk_downgrades?: { from: string; to: string; at: string }[]
+  risk_changes?: { from: RiskLevel; to: RiskLevel; at: string; review_items: string[]; stage_before: string; stage_after: string }[]
   /** Fingerprint of bundled rules at create time; reports later changes. Absent on pre-0.22 records. */
   /** Monotonic record revision; every write must compare-and-swap on it so concurrent agents cannot silently overwrite each other. Absent on pre-0.23 records (treated as 0). */
   revision?: number
@@ -491,6 +509,13 @@ const GUARD_NAMES: readonly GuardName[] = [
  */
 export function validateWorkflow(config: WorkflowConfig): string[] {
   const problems: string[] = [...(config.configuration_errors ?? [])]
+  if (config.requirement_review) {
+    const review = config.requirement_review
+    if (review.version !== 1 || !config.stages.includes(review.stage)
+      || !config.artifacts.some(def => def.id === review.artifact && def.stage === review.stage)
+      || !config.transitions.some(edge => edge.from === review.stage && edge.requires?.includes('requirement_confirmation')))
+      problems.push('requirement_review requires a valid stage, artifact and requirement_confirmation transition')
+  }
   if (config.stages.length === 0) problems.push('stages must not be empty')
   const seen = new Set<string>()
   for (const stage of config.stages) {
@@ -563,7 +588,13 @@ export function validateWorkflow(config: WorkflowConfig): string[] {
         problems.push(`skill "${skillKey}" has different rules or evidence in multiple stages; copy it as a distinct skill`)
       }
       skillMethods.set(skillKey, method)
-      if (entry.evidence === 'artifact' && !config.artifacts.some(artifact => artifact.stage === stage)) {
+      if (entry.loading !== undefined && !['required', 'on-demand'].includes(entry.loading)) {
+        problems.push(`skill "${skillKey}" has unknown loading policy "${String(entry.loading)}"`)
+      }
+      if (entry.loading === 'on-demand' && entry.skill.source === 'bundled') {
+        problems.push(`bundled core skill "${skillKey}" must use required loading`)
+      }
+      if (entry.loading !== 'on-demand' && entry.evidence === 'artifact' && !config.artifacts.some(artifact => artifact.stage === stage)) {
         problems.push(`skill "${skillKey}" requires artifact evidence, but stage "${stage}" declares no artifact`)
       }
       if (entry.evidence !== undefined && !['command', 'artifact', 'review', 'manual', 'none'].includes(entry.evidence)) {
@@ -675,7 +706,7 @@ export function todosBlockers(state: TaskState, config?: WorkflowConfig): string
 function guardSatisfied(guard: GuardName, state: TaskState, config: WorkflowConfig): boolean {
   switch (guard) {
     case 'requirement_confirmation':
-      return state.requirement_confirmed
+      return requirementConfirmed(state, config)
     case 'solution_confirmation':
       return state.solution_confirmed
     case 'todos_done':
@@ -737,7 +768,7 @@ export function assertAdvance(state: TaskState, targetStage: string, config: Wor
   if (commitRequired(config) && config.commit.policy !== 'manual'
     && config.commit.checkpoints.includes(state.stage)
     && !state.commits.some(commit => commit.label === 'TASK' && commit.hash)) {
-    return { ok: false, errors: ['commit required before leaving this checkpoint: call commit, perform the approved git commit, then record its hash'] }
+    return { ok: false, errors: ['commit required before leaving this checkpoint: inspect status.commit, call commit with message and files, perform the authorized Git commit, then record its actual hash with the same message/files'] }
   }
   return { ok: true }
 }
@@ -877,6 +908,7 @@ export function verificationBlockers(state: TaskState, config: WorkflowConfig): 
  * hold, so the engine cannot be asked to commit before its own state is valid.
  */
 export function commitCheckpoint(state: TaskState, config: WorkflowConfig): CommitCheckpoint {
+  if (config.requirement_review && !requirementConfirmed(state, config)) return { allowed: false, reason: '当前需求版本尚未由用户确认' }
   const { policy, checkpoints } = config.commit
   if (policy === 'manual') {
     return { allowed: false, reason: 'commit policy is manual — await an explicit user instruction' }
@@ -908,7 +940,7 @@ export function commitCheckpoint(state: TaskState, config: WorkflowConfig): Comm
     }
   }
 
-  return { allowed: false, reason: 'no commit is due at this stage under the current policy' }
+  return { allowed: false, reason: `no commit is due at stage ${state.stage}; configured checkpoint stages: ${checkpoints.join(', ') || '(none)'}. Follow the current stage gates before calling commit.` }
 }
 
 /**
@@ -990,8 +1022,9 @@ export function terminalRequirements(config: WorkflowConfig): GuardName[] {
 }
 
 export function completionBlockers(state: TaskState, config: WorkflowConfig): string[] {
-  const blockers: string[] = []
+  const blockers: string[] = [...analysisBlockers(state)]
   if (state.completed !== undefined) return []
+  if (config.requirement_review && !requirementConfirmed(state, config)) blockers.push('当前需求版本尚未由用户确认')
   if (!isTerminalStage(state.stage, config)) {
     blockers.push(`task is at "${state.stage}", which is not a final stage; advance to one of: ${config.stages.filter(s => isTerminalStage(s, config)).join(', ')}`)
   }
@@ -1082,13 +1115,22 @@ export interface RevisionOutcome {
  * @param revision - the rework to apply.
  * @returns the stage reached and the conclusions cleared.
  */
-export function applyRevision(state: TaskState, revision: TaskRevision): RevisionOutcome {
+export function applyRevision(state: TaskState, revision: TaskRevision, currentVerificationHashes?: Record<string, string>): RevisionOutcome {
   if (state.completed !== undefined) throw new Error(`task "${state.id}" is archived; create a new related task`)
   const selective = revision.kind === 'defect' && state.verification_version && revision.affected_items?.length
   const affected = selective ? affectedItems(state, revision.affected_items) : state.items.map(item => item.id)
   preserveVerification(state)
+  // Only the host can supply current input fingerprints. Never revive an older
+  // pass after a newer failure, or accept a receipt under another test plan.
+  const reusableRuns = new Set<string>()
+  if (selective && currentVerificationHashes) for (const group of Object.values(state.verification_groups ?? {})) {
+    const run = latestGroupRun(state, group.id)
+    if (run && !run.invalidated_reason && run.passed && run.plan_key === group.key
+      && currentVerificationHashes[group.id] !== undefined
+      && run.receipt.scope_hash === currentVerificationHashes[group.id] && receiptProblems(run.receipt).length === 0) reusableRuns.add(run.id)
+  }
   const cleared = invalidatedBy(revision.kind)
-  if (cleared.includes('requirement_confirmation')) state.requirement_confirmed = false
+  if (cleared.includes('requirement_confirmation')) invalidateRequirement(state)
   if (cleared.includes('solution_confirmation')) state.solution_confirmed = false
   if (cleared.includes('verification')) {
     state.verification = { passed: false, evidence: [] }
@@ -1121,7 +1163,8 @@ export function applyRevision(state: TaskState, revision: TaskRevision): Revisio
   }
   for (const run of state.verification_runs ?? []) {
     const group = run.group_id ? state.verification_groups?.[run.group_id] : undefined
-    if (!selective || !group || group.item_ids.some(id => affected.includes(id))) run.invalidated_reason = `${revision.kind} revision: ${revision.reason}`
+    if ((!selective || !group || group.item_ids.some(id => affected.includes(id))) && !reusableRuns.has(run.id))
+      run.invalidated_reason = `${revision.kind} revision: ${revision.reason}`
   }
   if (cleared.includes('commits')) state.commits = []
   state.stage = revision.to
@@ -1164,19 +1207,14 @@ export interface FileScopeResult {
  * `file_scope` is off; an empty declared scope refuses every commit (the task
  * must first declare what it may touch).
  */
-/**
- * Engine bookkeeping files that travel with the branch as team-shared facts
- * (`.dsh/task-*.json`, `.dsh/eng.json`). They are metadata, not deliverables,
- * so the file-scope gate never counts them as out-of-scope.
- */
-function isEngineMeta(file: string): boolean {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file)
-}
-
 export function checkFileScope(state: TaskState, committing: string[], config: WorkflowConfig): FileScopeResult {
   if (!config.commit.file_scope) return { ok: true, outside: [], noScope: false }
   if (state.files.length === 0) return { ok: false, outside: [], noScope: true }
-  const outside = committing.filter(file => !state.files.includes(file) && !isEngineMeta(file))
+  const requirementDocument = config.requirement_review ? state.requirements?.document?.path : undefined
+  const materialPaths = new Set(config.requirement_review ? (state.requirements?.materials ?? []).filter(m => {
+    try { return !m.retired_at && m.path === requirementMaterialPath(state, m.name) } catch { return false }
+  }).map(m => m.path) : [])
+  const outside = committing.filter(file => !state.files.includes(file) && file !== requirementDocument && !materialPaths.has(file) && !isEngineMeta(file))
   return outside.length === 0
     ? { ok: true, outside: [], noScope: false }
     : { ok: false, outside, noScope: false }

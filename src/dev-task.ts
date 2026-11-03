@@ -1,3 +1,5 @@
+import { readText, writeText, loadTask, writeTask, taskPath, listTaskIds, taskNamespace, type WriteFs } from './task-store.ts'
+import { isEngineMeta, isTaskLedgerPath, isTaskReviewPath } from './task-paths.ts'
 /**
  * The model-facing `dev_task` tool: the hard engineering-delivery gate.
  *
@@ -12,10 +14,10 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { isAbsolute, join, relative, resolve, win32 } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
@@ -35,17 +37,14 @@ import {
   newTask,
   taskIdFromMessage,
   terminalRequirements,
-  unmetGuards,
   validateCommitMessage,
   validateWorkflow,
   verificationBlockers,
   type FlowSnapshot,
   type ParsedProjectConfig,
   type FrozenResource,
-  type GuardName,
   type ResourceRef,
   type ResourceSource,
-  type Result,
   type SkillProfile,
   type StageBinding,
   type TaskItem,
@@ -55,7 +54,7 @@ import {
 } from './engine.ts'
 import {
   HIGH_RISK_REQUIRED_CAPABILITIES,
-  flowSatisfies,
+  workflowSatisfies,
   resolveFlow,
 } from './workflows.ts'
 import { ADAPTIVE_VERSION, COMPLEXITY_OPTIONS, META_EVIDENCE, META_STAGES, adaptiveWorkflow, isComplexity, metaForStage,
@@ -64,15 +63,32 @@ import { assertLocalSonarReady, inspectSonar, localReviewGate, sonarCommitBlocke
 import { captureLocalAuditBaseline, inspectLocalRules, lastLocalRuleUpdate, localRulesFingerprint } from './sonarlint-local.ts'
 import { renderSonarReport, sonarReportPath } from './sonar-report.ts'
 import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credential.ts'
-import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, type InitResource } from './project-init.ts'
+import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, renderInitSkill, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
-import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
+import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
+import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
+import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type DelegationBenefit, type DeliveryIntent, type InvestigationQuestion } from './delivery-contract.ts'
+import { executeAnalysisCommand } from './analysis-commands.ts'
+import { assertInsideRoot } from './path-guard.ts'
+import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
+import { bindTaskDelivery, installDeliveryAccess } from './delivery-access.ts'
+import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, taskExecutionProblem, type ClarificationQuestion } from './requirements.ts'
+import { executeRequirementCommand, requirementDocumentProblem, REQUIREMENT_OPERATIONS } from './requirement-commands.ts'
+import { MATERIAL_MAX_BYTES, type MaterialArgs, type MaterialTemplate } from './requirement-materials.ts'
+import { assertRealPath } from './resource-import.ts'
+import { REVIEW_PRESET, validReviewPolicy } from './reviewer-spec.ts'
+import type {} from '@deepseek-ai/dsh-working-directory'
+import { isFullOid, isOidInput } from './git-oid.ts'
+import { requiredReviewPaths, validateDeliveryChanges, type DeliveryChange, type DeliveryChangeInput } from './delivery-changes.ts'
 import { reviewEvidenceBlockers, verificationEvidenceBlockers } from './evidence-gate.ts'
 import { withUserSkillProfiles } from './user-skill-profiles.ts'
-import { isGradleTestCommand, skillCommandProblem, testEvidence, validationCommandProblem } from './verification-tests.ts'
+import { isGradleTestCommand, skillCommandProblem, testEvidence, validationCommandProblem, verificationPlanProblem } from './verification-tests.ts'
 import { freshGradleReportSummary, snapshotGradleReports } from './gradle-reports.ts'
 import { affectedItems, groupEvidenceBlockers, groupInputs, groupKey, groupPlanningBlockers, latestGroupRun, preserveVerification, receiptProblems, refreshVerification, requiredGroups, verificationGroupViews, verificationKey, verificationTime } from './verification-state.ts'
-import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, type SkillSession } from './skill-audit.ts'
+import { loadedSkills, needsSkillReceipt, obligationStages, skillBlockers, skillLoadForSession, type SkillSession } from './skill-audit.ts'
+import { appendInitMount, appendMount, mountLoading, mountName, requiredSkill, skillMetadata, validMetaMount, type MetaSkillMount } from './skill-loading.ts'
+import { receiptView, statusView, verificationView } from './task-output.ts'
+import { implementationRecovery, reviewRecoveryMessage } from './task-recovery.ts'
 import {
   detectRoot,
   detectType,
@@ -99,14 +115,6 @@ type Fs = Context['fs']
  * calling session's workspace (`exec.agent.session.header.cwd`); without it the
  * backend falls back to its own base, which is NOT the session workspace.
  */
-async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string | undefined> {
-  try {
-    const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
-    return await (fs as unknown as { readText(target: unknown): Promise<string> }).readText(target)
-  } catch {
-    return undefined
-  }
-}
 
 /**
  * Per-call sandbox policy every dev_task write must carry. DSH's filesystem
@@ -116,63 +124,28 @@ async function readText(fs: Fs, relPath: string, cwd?: string): Promise<string |
  * misjudged as out-of-root and denied. Narrowed like `ApprovalAsk` so this
  * bundle stays free of the dsh-sandbox package's dependency tree.
  */
-interface WritePolicy {
-  mode: 'workspace-write' | 'danger-full-access'
-  workspaceRoot: string
-}
-
-type WriteFs = {
-  resolve(relPath: string, opts?: { cwd?: string }): Promise<unknown>
-  writeText(target: unknown, content: string, expected?: unknown, signal?: unknown, sandboxPolicy?: WritePolicy): Promise<unknown>
-  lstat(path: string, opts?: { cwd?: string }, signal?: unknown): Promise<{ version: unknown } | undefined>
-}
-
-async function writeText(
-  fs: Fs,
-  relPath: string,
-  content: string,
-  cwd?: string,
-  mode: 'workspace-write' | 'danger-full-access' = 'workspace-write',
-  expected?: unknown,
-): Promise<void> {
-  const target = await fs.resolve(relPath, cwd !== undefined ? { cwd } : undefined)
-  const policy: WritePolicy = { mode, workspaceRoot: cwd !== undefined ? cwd : process.cwd() }
-  await (fs as unknown as WriteFs).writeText(target, content, expected, undefined, policy)
-}
-
 /** Project-adapter probe over the sandboxed filesystem. */
 function projectProbe(fs: Fs): FileProbe {
+  if (typeof fs.listDir !== 'function') return { read: (dir, rel) => readText(fs, rel, dir) }
+  const directories = new Map<string, string[] | undefined>()
   return {
     read: (dir, relPath) => readText(fs, relPath, dir),
     list: async (dir, relPath) => {
       try {
         const target = await fs.resolve(relPath, { cwd: dir })
         const entries = await fs.listDir(target)
+        directories.set(`${dir}\0${relPath}`, entries.every(entry => entry.type !== undefined) ? entries.filter(entry => entry.type === 'directory').map(entry => entry.name) : undefined)
         return entries.map(entry => entry.name)
-      } catch {
-        return []
+      } catch (error) {
+        if (['ENOENT', 'ENOTDIR', 'FS_NOT_FOUND', 'FS_NOT_DIRECTORY'].includes((error as { code?: string }).code ?? '')) return []
+        throw error
       }
     },
+    directories: async (dir, rel) => directories.get(`${dir}\0${rel}`),
   }
 }
 
-/**
- * Reject a workspace-relative write whose resolved target escapes the project
- * root. `cwd` is the session workspace (always inside `root`, since `root` is
- * discovered from it upward); this guards the reverse case: a mis-resolved root
- * or a `..`-carrying target must never write outside the project.
- */
-export function assertInsideRoot(root: string, cwd: string, relPath: string): void {
-  if (!isAbsolute(relPath) && win32.isAbsolute(relPath)) {
-    throw new Error(`write target ${relPath} escapes the project root ${root}`)
-  }
-  const target = resolve(cwd, relPath)
-  const rootDir = resolve(root)
-  const inside = relative(rootDir, target)
-  if (inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`write target ${target} escapes the project root ${rootDir}`)
-  }
-}
+export { assertInsideRoot } from './path-guard.ts'
 
 /**
  * The verification command a bare `verify` should run: the project's
@@ -252,7 +225,7 @@ async function runShell(shell: ShellRunner, spec: ShellRunSpec): Promise<ShellRu
  * objective {@link VerificationReceipt}; `passed` derives from the exit code,
  * never from the model's claim.
  */
-async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined, exec: ToolRunContext, approvedMode?: 'workspace-write' | 'danger-full-access'): Promise<VerificationReceipt> {
+async function runVerificationCommand(ctx: Context, command: string, cwd: string | undefined, exec: ToolRunContext, approvedMode?: 'workspace-write' | 'danger-full-access', timeoutMs = VERIFY_TIMEOUT_MS): Promise<VerificationReceipt> {
   const shell = ctx.get('shell') as ShellRunner | undefined
   if (shell === undefined) {
     throw new Error('verify 带 command 需要 host 提供 shell 服务（用于跑真实验证命令），但当前未挂载')
@@ -265,7 +238,7 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
   const standingPolicy = policyService?.resolve({ session: exec.agent?.session })
   const sandboxPolicy = approvedMode === undefined ? standingPolicy : { ...standingPolicy, mode: approvedMode }
   const spec = shell.resolve({ command, ...(cwd !== undefined ? { workdir: cwd } : {}),
-    timeoutMs: VERIFY_TIMEOUT_MS, signal: exec.signal,
+    timeoutMs, signal: exec.signal,
     ...(sandboxPolicy ? { sandboxPolicy } : {}),
   })
   const outcome = await runShell(shell, spec)
@@ -283,16 +256,90 @@ async function runVerificationCommand(ctx: Context, command: string, cwd: string
   }
 }
 
+const shellQuote = (text: string): string => `'${text.replaceAll("'", process.platform === 'win32' ? "''" : "'\\''")}'`
+const gitTextCommand = (command: string): string => process.platform === 'win32'
+  ? `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ${command}` : command
+const successfulCommand = (receipt: VerificationReceipt): boolean => receipt.exit_code === 0 && !receipt.aborted && !receipt.timed_out
+  && !receipt.sandbox?.denied && !receipt.sandbox?.runnerFailed
+
+/** A host may normalize newlines in command output. Accept only a reconstruction matching Git's actual blob OID. */
+function verifiedBlobText(raw: string, oid: string): string {
+  const candidates = new Set([raw, raw.replace(/\r\n/gu, '\n'), raw.replace(/\r?\n/gu, '\r\n')])
+  for (const candidate of [...candidates]) if (candidate.endsWith('\n')) candidates.add(candidate.replace(/\r?\n$/u, ''))
+  for (const text of candidates) {
+    const bytes = Buffer.from(text)
+    if (bytes.length > 262_144 || text.includes('\0')) continue
+    const hash = createHash(oid.length === 64 ? 'sha256' : 'sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex')
+    if (hash === oid) return text
+  }
+  throw new Error('cannot capture a complete text baseline matching the Git blob (binary, oversized or truncated output)')
+}
+
+async function captureDeliveryChanges(ctx: Context, fs: Fs, state: TaskState, changes: DeliveryChangeInput[], exec: ToolRunContext,
+  mode: 'workspace-write' | 'danger-full-access'): Promise<DeliveryChange[]> {
+  const root = state.root ?? exec.agent?.session.header.cwd
+  const head = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
+  const commit = head.stdout.trim().toLowerCase()
+  if (!successfulCommand(head) || !isFullOid(commit)) throw new Error('planned deletion/rename requires a readable Git baseline commit')
+  const snapshot = async (body: string): Promise<{ path: string; sha256: string }> => {
+    if (Buffer.byteLength(body) > 262_144 || body.includes('\0')) throw new Error('planned deletion/rename baseline must be text under 256 KiB')
+    const sha256 = hashText(body), path = `.dsh/review-inputs/${sha256}.txt`
+    const old = await readText(fs, path, root)
+    if (old !== undefined && hashText(old) !== sha256) throw new Error('review baseline cache was modified; restore it before replanning')
+    if (old === undefined) await writeText(fs, path, body, root, mode, { kind: 'createIfAbsent' })
+    return { path, sha256 }
+  }
+  const result: DeliveryChange[] = []
+  for (const change of changes) {
+    const tree = await runVerificationCommand(ctx, gitTextCommand(`git --literal-pathspecs ls-tree -z ${commit} -- ${shellQuote(change.path)}`), root, exec)
+    const entry = /^(?:100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]+)\0\s*$/u.exec(tree.stdout)
+    if (!successfulCommand(tree) || !entry || entry[2] !== change.path) throw new Error(`planned deletion/rename needs a tracked regular-file baseline: ${change.path}`)
+    const blob = entry[1]!
+    const content = await runVerificationCommand(ctx, gitTextCommand(`git cat-file blob ${blob}`), root, exec)
+    if (!successfulCommand(content)) throw new Error(`cannot read Git baseline: ${change.path}`)
+    const body = verifiedBlobText(content.stdout, blob)
+    const baseline: DeliveryChange['baseline'] = { commit, blob, git: await snapshot(body) }
+    const info = await fs.lstat(change.path, root ? { cwd: root } : undefined)
+    if (info && info.type !== 'file') throw new Error(`planned old path is not a regular file: ${change.path}`)
+    const before = info ? await readText(fs, change.path, root) : undefined
+    if (info && before === undefined) throw new Error(`cannot read pre-change worktree content: ${change.path}`)
+    if (before !== undefined && before !== body) baseline.before = await snapshot(before)
+    result.push({ ...change, baseline })
+  }
+  return result
+}
+
+async function assertDeliveryChanges(fs: Fs, plan: { files: string[]; changes?: DeliveryChange[] }, root?: string): Promise<void> {
+  validateDeliveryChanges(plan.changes ?? [], plan.files)
+  for (const change of plan.changes ?? []) {
+    if (await fs.lstat(change.path, root ? { cwd: root } : undefined)) throw new Error(`planned ${change.kind} old path still exists: ${change.path}`)
+    if (change.to && (await fs.lstat(change.to, root ? { cwd: root } : undefined))?.type !== 'file') throw new Error(`rename destination is missing or not a regular file: ${change.to}`)
+    for (const snapshot of [change.baseline.git, ...(change.baseline.before ? [change.baseline.before] : [])]) {
+      if (!/^[a-f0-9]{64}$/u.test(snapshot.sha256) || snapshot.path !== `.dsh/review-inputs/${snapshot.sha256}.txt`)
+        throw new Error('invalid review baseline identity')
+      const body = await readText(fs, snapshot.path, root)
+      if (body === undefined || hashText(body) !== snapshot.sha256) throw new Error(`review baseline is missing or changed: ${snapshot.path}`)
+      if (snapshot === change.baseline.git) verifiedBlobText(body, change.baseline.blob)
+    }
+  }
+}
+
 /** HEAD was checked when recorded; recheck its identity and only the declared delivery paths at close. */
-async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, exec: ToolRunContext, expectedHash?: string): Promise<void> {
+async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, exec: ToolRunContext, expectedHash?: string): Promise<string> {
   const root = state.root ?? exec.agent?.session.header.cwd
   const hash = expectedHash ?? state.commits.findLast(commit => commit.hash)?.hash
   const head = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
-  const headHash = head.stdout.trim()
-  if (head.exit_code !== 0 || !/^[0-9a-f]{7,40}$/iu.test(headHash) || (hash && !headHash.startsWith(hash))) throw new Error('recorded delivery commit is no longer HEAD')
+  const headHash = head.stdout.trim().toLowerCase()
+  if (!successfulCommand(head) || !isFullOid(headHash) || (hash && (!isOidInput(hash) || !headHash.startsWith(hash.toLowerCase())))) throw new Error('recorded delivery commit is no longer HEAD')
+  if (hash && hash.length !== headHash.length) {
+    const quoted = `'${hash}^{commit}'`
+    const resolved = await runVerificationCommand(ctx, `git rev-parse --verify --end-of-options ${quoted}`, root, exec)
+    if (!successfulCommand(resolved) || resolved.stdout.trim().toLowerCase() !== headHash)
+      throw new Error('commit abbreviation is ambiguous or does not resolve uniquely to HEAD; use its full OID')
+  }
   const before = await scopeFingerprint(fs, state, root)
-  const paths = state.files.filter(path => !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/u.test(path))
-  if (!paths.length) return
+  const paths = state.files.filter(path => !isEngineMeta(path))
+  if (!paths.length) return headHash
   const quote = (path: string) => `'${path.replaceAll("'", "'\\''")}'`
   // PowerShell and POSIX use different single-quote escapes. Paths have already passed the scope validator.
   const quoted = paths.map(path => process.platform === 'win32' ? `'${path.replaceAll("'", "''")}'` : quote(path)).join(' ')
@@ -334,6 +381,7 @@ async function assertCommittedContent(ctx: Context, fs: Fs, state: TaskState, ex
   const after = await runVerificationCommand(ctx, 'git rev-parse HEAD', root, exec)
   if (after.exit_code !== 0 || after.stdout.trim() !== headHash || await scopeFingerprint(fs, state, root) !== before)
     throw new Error('delivery changed during commit verification; retry on unchanged content')
+  return headHash
 }
 
 /** Run a local scanner without putting the credential on a command line or in the task record. */
@@ -382,7 +430,7 @@ function sanitize(id: string): string {
   return id.replace(/[^0-9a-zA-Z_-]/g, '-')
 }
 
-const taskPath = (id: string): string => `.dsh/task-${sanitize(id)}.json`
+
 
 /** Hard line cap for the `init`-generated `AGENTS.md` (injected into every session). */
 const INIT_MAX_LINES = 200
@@ -537,65 +585,7 @@ async function installCommitHook(fs: Fs, cwd: string | undefined, mode: 'workspa
   await writeText(fs, rootsPath, JSON.stringify({ roots }, null, 2) + '\n', repoRoot, mode)
 }
 
-async function loadTask(fs: Fs, id: string, cwd?: string): Promise<TaskState> {
-  const raw = await readText(fs, taskPath(id), cwd)
-  if (raw === undefined) throw new Error(`no task "${id}" under ${taskPath(id)}`)
-  const state = JSON.parse(raw) as TaskState
-  if (state.id !== id) throw new Error(`task id collision: ${taskPath(id)} contains "${state.id}" rather than "${id}"`)
-  // Tasks recorded before these features lack the fields; treat them as empty
-  // so every engine gate reads complete state instead of crashing on absence.
-  state.artifacts = state.artifacts ?? {}
-  state.files = state.files ?? []
-  state.items = state.items ?? []
-  state.commits = state.commits ?? []
-  state.verification = state.verification ?? { passed: false, evidence: [] }
-  state.review = state.review ?? { outcome: 'pending' }
-  if (!state.completed && state.review.outcome === 'pass' && !state.review.scope_hash) state.review = { outcome: 'pending' }
-  state.revision = state.revision ?? 0 // pre-0.23 records carry no revision; CAS treats them as 0
-  if (state.flow?.hash !== undefined && hashConfig(state.flow.config) !== state.flow.hash) {
-    throw new Error(
-      `task "${id}" snapshot hash mismatch — the frozen workflow config was edited after creation. ` +
-      'Restore the original record or recreate the task; the gate refuses to run on a tampered snapshot.',
-    )
-  }
-  return state
-}
 
-async function writeTask(fs: Fs, state: TaskState, cwd: string | undefined, mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
-  const path = taskPath(state.id)
-  // Friendly fast-fail first: the logical revision must still be the one loaded.
-  const info = await (fs as unknown as WriteFs).lstat(path, cwd !== undefined ? { cwd } : undefined)
-  const onDiskRaw = await readText(fs, path, cwd)
-  if (onDiskRaw === undefined) {
-    state.revision = state.revision ?? 1 // first write of a fresh record keeps the factory revision
-  } else {
-    const onDisk = JSON.parse(onDiskRaw) as TaskState
-    if ((onDisk.revision ?? 0) !== (state.revision ?? 0)) {
-      throw new Error(
-        `task "${state.id}" changed concurrently (record revision ${onDisk.revision ?? 0} vs the loaded revision ${state.revision ?? 0}) — reload status and retry this operation`,
-      )
-    }
-    state.revision = (state.revision ?? 0) + 1
-  }
-  // Atomic guard: the write carries the file's current version as a
-  // replace-if-version intent, so a concurrent write between our read and our
-  // write fails with FS_STALE_VERSION instead of silently overwriting.
-  const intent = info === undefined
-    ? { kind: 'createIfAbsent' }
-    : { kind: 'replaceIfVersion', version: info.version }
-  try {
-    state.updated_at = new Date().toISOString()
-    await writeText(fs, path, JSON.stringify(state, null, 2), cwd, mode, intent)
-  } catch (error) {
-    const code = (error as { code?: unknown })?.code
-    if (code === 'FS_STALE_VERSION' || code === 'FS_NOT_OBSERVED') {
-      throw new Error(
-        `task "${state.id}" changed concurrently (file version moved) — reload status and retry this operation`,
-      )
-    }
-    throw error
-  }
-}
 
 /**
  * Resolve the sandbox mode before this call's writes or verification command. No escalation args:
@@ -641,19 +631,12 @@ async function resolveWriteMode(
   return mode
 }
 
-/**
- * The workflow a task runs under: its frozen snapshot when present (created
- * 0.18+), otherwise the project's current config re-resolved on demand for
- * pre-snapshot records. A missing snapshot never silently widens a gate — the
- * live config must still resolve cleanly.
- */
-async function workflowFor(state: TaskState, fs: Fs, cwd?: string): Promise<WorkflowConfig> {
+/** Current execution uses its snapshot; a snapshot-less record has only a history view. */
+function workflowFor(state: TaskState): WorkflowConfig {
   if (state.flow !== undefined) return state.flow.config
-  const resolved = await resolveWorkflow(fs, cwd)
-  if (resolved.problems.length > 0) {
-    throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
-  }
-  return resolved.config
+  return { stages: [state.stage], start_stage: state.stage, transitions: [], artifacts: [],
+    high_risk_requires_verification: false,
+    commit: { policy: 'manual', checkpoints: [], file_scope: true, message_pattern: '', message_hint: '' } }
 }
 
 function dshHome(): string {
@@ -735,7 +718,7 @@ async function readSkillAt(ref: ResourceRef, fs: Fs, cwd?: string): Promise<stri
 const RESOURCE_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u
 interface AdaptiveConfig {
   /** Additional logical Skill names per meta-skill. A same-named project Skill replaces the user/bundled Skill. */
-  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  meta_bindings?: Partial<Record<MetaSkill, MetaSkillMount[]>>
   sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
     source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
@@ -747,15 +730,18 @@ async function readAdaptiveConfig(fs: Fs, cwd?: string): Promise<AdaptiveConfig>
   try { config = JSON.parse(raw) as AdaptiveConfig }
   catch (error) { throw new Error(`invalid .dsh/meta.json: ${error instanceof Error ? error.message : String(error)}`) }
   if (config === null || typeof config !== 'object' || Array.isArray(config)) throw new Error('.dsh/meta.json must be an object')
+  if ('requirement_confirmation' in config) throw new Error('requirement_confirmation 配置已移除；删除该字段后使用统一的需求确认流程')
   if (config.meta_bindings !== undefined) {
     if (config.meta_bindings === null || typeof config.meta_bindings !== 'object' || Array.isArray(config.meta_bindings)) {
       throw new Error('.dsh/meta.json meta_bindings must be an object')
     }
     for (const [meta, names] of Object.entries(config.meta_bindings)) {
       if (!(meta in META_STAGES)) throw new Error(`unknown meta-skill "${meta}" in .dsh/meta.json`)
-      if (!Array.isArray(names) || !names.every(name => typeof name === 'string' && RESOURCE_NAME.test(name))) {
-        throw new Error(`meta_bindings.${meta} must be an array of simple Skill names`)
+      if (!Array.isArray(names) || !names.every(validMetaMount)) {
+        throw new Error(`meta_bindings.${meta} must contain Skill names or {name, loading: required|on-demand}`)
       }
+      if (new Set(names.map(mountName)).size !== names.length) throw new Error(`meta_bindings.${meta} has duplicate Skill names`)
+      if (names.some(entry => mountName(entry) === meta && mountLoading(entry) !== 'required')) throw new Error(`core Skill ${meta} must use required loading`)
     }
   }
   if (config.sonar !== undefined) {
@@ -844,15 +830,20 @@ async function resolveAdaptiveWorkflow(grade: Complexity, fs: Fs, cwd?: string, 
   for (const stage of config.stages) {
     const meta = metaForStage(stage)
     if (meta === undefined) continue
-    const names = [...new Set([meta, ...(project.meta_bindings?.[meta] ?? [])])]
+    const mounts = (project.meta_bindings?.[meta] ?? []).reduce((all, mount) => appendMount(all, mount), [meta] as MetaSkillMount[])
     const skills = []
-    for (const name of names) {
-      const ref = await resolveLogicalSkill(name, fs, cwd)
+    for (const mount of mounts) {
+      const name = mountName(mount)
+      const loading = name === meta ? 'required' : mountLoading(mount)
+      let ref: ResourceRef
+      try { ref = await resolveLogicalSkill(name, fs, cwd) }
+      catch (error) { if (loading !== 'on-demand') throw error; ref = { source: 'project', name } }
       const profile = await profileFor(ref, fs, cwd) ?? {
         rules: [], evidence: name === meta ? META_EVIDENCE[meta] : 'none',
       }
       skill_profiles[formatResourceRef(ref)] = profile
       skills.push({ skill: ref, rules: profile.rules,
+        ...(typeof mount !== 'string' ? { loading } : {}),
         evidence: profile.evidence ?? (name === meta ? META_EVIDENCE[meta] : 'none') })
     }
     stage_bindings[stage] = { skills }
@@ -887,14 +878,14 @@ async function freezeResources(
       const skillKey = 'skill:' + formatResourceRef(entry.skill)
       if (!seen.has(skillKey)) {
         const body = await readSkillAt(entry.skill, fs, cwd)
-        if (body === undefined) unreadable.push(skillKey)
+        if (body === undefined) { if (requiredSkill(entry)) unreadable.push(skillKey) }
         else { seen.add(skillKey); resources.push({ kind: 'skill', ref: entry.skill, hash: hashText(body), content: body }) }
       }
       for (const rule of entry.rules) {
         const key = 'rule:' + formatResourceRef(rule)
         if (seen.has(key)) continue
         const body = await readRuleAt(rule.source, rule.name, fs, cwd)
-        if (body === undefined) { unreadable.push(key); continue }
+        if (body === undefined) { if (requiredSkill(entry)) unreadable.push(key); continue }
         seen.add(key)
         resources.push({ kind: 'rule', ref: rule, hash: hashText(body), content: body })
       }
@@ -1001,6 +992,7 @@ async function rulesForBinding(
   // disclosed once, because it is one constraint being followed.
   const seen = new Set<string>()
   for (const skill of binding?.skills ?? []) {
+    if (!requiredSkill(skill)) continue
     for (const rule of skill.rules) {
       const key = formatResourceRef(rule)
       if (seen.has(key)) continue
@@ -1044,11 +1036,52 @@ async function skillBodiesForBinding(
   return result
 }
 
-/** Missing live skill files cannot be satisfied by the creation-time archive. */
+function instructionPath(ref: ResourceRef, kind: 'skill' | 'rule'): string {
+  const relative = kind === 'skill' ? `skills/${ref.name}/SKILL.md` : `rules/${ref.name}.md`
+  if (ref.source === 'project') return `.dsh/${relative}`
+  if (ref.source === 'codex-project') return `.agents/${relative}`
+  return ref.source === 'user' ? join(dshHome(), relative) : fileURLToPath(new URL(`../${relative}`, import.meta.url))
+}
+
+/** Only a currently bound and genuinely loaded Skill can supply a document template. */
+async function readRequirementTemplate(spec: MaterialTemplate, state: TaskState, fs: Fs, cwd: string | undefined, session: SkillSession | undefined): Promise<string> {
+  const entry = bindingsForStage(state.stage, state.flow!.config)?.skills?.find(item => formatResourceRef(item.skill) === spec.skill_name)
+  if (!entry || !skillLoadForSession(state, spec.skill_name, session)) throw new Error('模板只能来自当前节点已绑定且在本任务／会话实际加载的 Skill；先 load_skill')
+  const base = dirname(instructionPath(entry.skill, 'skill')), root = cwd ?? state.root ?? process.cwd()
+  const target = resolve(root, base, spec.path)
+  assertInsideRoot(resolve(root, base), resolve(root, base), spec.path)
+  assertRealPath(target)
+  let content: string | undefined
+  if (entry.skill.source === 'project' || entry.skill.source === 'codex-project') {
+    const path = join(base, spec.path), info = await fs.lstat(path, { cwd: root })
+    if (!info || info.type !== 'file' || (info.size ?? 0) > MATERIAL_MAX_BYTES) throw new Error('模板必须是最多 1 MiB 的普通文件')
+    content = await readText(fs, path, root)
+  } else {
+    const info = lstatSync(target)
+    if (!info.isFile() || info.size > MATERIAL_MAX_BYTES) throw new Error('模板必须是最多 1 MiB 的普通文件')
+    content = readFileSync(target, 'utf8')
+  }
+  if (content === undefined) throw new Error('无法读取已加载 Skill 的模板文件')
+  return content
+}
+
+async function skillIndexForBinding(binding: StageBinding | undefined, fs: Fs, cwd?: string, state?: TaskState, session?: SkillSession) {
+  return Promise.all((binding?.skills ?? []).map(async entry => {
+    const content = await readSkillAt(entry.skill, fs, cwd)
+    const loaded = state ? skillLoadForSession(state, formatResourceRef(entry.skill), session) : undefined
+    return { name: entry.skill.name, source: entry.skill.source, loading: entry.loading ?? 'required',
+      ...skillMetadata(content ?? ''), available: content !== undefined,
+      ...(content !== undefined ? { hash: hashText(content) } : {}),
+      loaded: !!loaded, ...(loaded ? { loaded_at_stage: loaded.stage } : {}),
+      path: instructionPath(entry.skill, 'skill'), rule_paths: entry.rules.map(rule => instructionPath(rule, 'rule')) }
+  }))
+}
+
+/** Missing required live skill files cannot be satisfied by the creation-time archive. */
 async function missingSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd?: string): Promise<string[]> {
   const missing: string[] = []
   for (const entry of binding?.skills ?? []) {
-    if ((await readSkillAt(entry.skill, fs, cwd)) === undefined) missing.push(formatResourceRef(entry.skill))
+    if (requiredSkill(entry) && (await readSkillAt(entry.skill, fs, cwd)) === undefined) missing.push(formatResourceRef(entry.skill))
   }
   return missing
 }
@@ -1061,6 +1094,7 @@ async function changedSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd: 
   baseline?: FrozenResource[]): Promise<string[]> {
   const changed: string[] = []
   for (const entry of binding?.skills ?? []) {
+    if (!requiredSkill(entry)) continue
     const key = formatResourceRef(entry.skill)
     const original = baseline?.find(resource => (resource.kind === 'skill'
       || (resource.kind === undefined && resource.content.startsWith('---')))
@@ -1082,27 +1116,40 @@ async function changedSkillRefs(binding: StageBinding | undefined, fs: Fs, cwd: 
  * @param fs - host filesystem for project-rule resolution.
  * @returns the disclosure text, or an empty string.
  */
-async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string, frozen?: FrozenResource[]): Promise<string> {
+async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, cwd?: string, frozen?: FrozenResource[], full = false,
+  state?: TaskState, session?: SkillSession, disclosed = new Set<string>()): Promise<string> {
   const binding = bindingsForStage(stage, workflow)
   const skills = binding?.skills ?? []
   if (binding === undefined || (skills.length === 0 && (binding.legacy_rules ?? []).length === 0)) return ''
   const { resolved: rules, missing, legacy } = await rulesForBinding(binding, fs, cwd, frozen)
-  const skillPart = skills.length > 0
-    ? `skills to load: ${skills.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use dev_task operation=load_skill with the exact source:name)`
+  const required = skills.filter(requiredSkill)
+  const outstanding = required.filter(entry => !state || !skillLoadForSession(state, formatResourceRef(entry.skill), session))
+  const skillPart = full ? `required skills supplied to this execution context: ${required.map(entry => formatResourceRef(entry.skill)).join(', ') || 'none'}` : outstanding.length > 0
+    ? `required skills to load: ${outstanding.map(skill => formatResourceRef(skill.skill)).join(', ')}  (use dev_task operation=load_skill with the exact source:name)`
     : 'skills to load: none'
   const currentSkills = await skillBodiesForBinding(binding, fs, cwd)
+  const requiredNames = new Set(required.map(entry => formatResourceRef(entry.skill)))
+  const requiredBodies = currentSkills.filter(skill => requiredNames.has(`${skill.source}:${skill.name}`))
+  const once = (key: string) => { if (disclosed.has(key)) return false; disclosed.add(key); return true }
+  const fullBodies = full ? requiredBodies.filter(skill => once(`skill:${skill.source}:${skill.name}`)) : []
+  const fullRules = full ? rules.filter(rule => once(`rule:${rule.source}:${rule.name}`)) : []
+  const skillIndex = await skillIndexForBinding(binding, fs, cwd, state, session)
   const skillInstructions = currentSkills.length > 0
-    ? `current skill instructions for this task (read at this interaction):\n${currentSkills.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
+    ? full ? `current skill instructions for this task (required in this execution context):\n${fullBodies.map(skill => `### ${skill.source}:${skill.name}\n${skill.content}`).join('\n\n')}`
+      : `skill index (loaded means already read in this task/session):\n${JSON.stringify(skillIndex)}`
     : ''
+  const optionalPart = skills.some(entry => !requiredSkill(entry))
+    ? `on-demand skill catalog:\n${JSON.stringify(skillIndex.filter(entry => entry.loading === 'on-demand'))}\nChoose these only when their description/whenToUse applies to this task. No skip justification, load gate or skill_result evidence is required. Parent: use dev_task load_skill. Worker/reviewer: read the listed Skill file and all its rule_paths if selected; do not mutate the parent ledger. Do not read unrelated Skill bodies.` : ''
   const rulePart = rules.length > 0
-    ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${rules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
+    ? full ? `rules in force at this stage (each belongs to the skill shown by the binding):\n${fullRules.map(r => `### ${r.source}:${r.name}\n${r.content}`).join('\n\n')}`
+      : `bound rule index (full text accompanies its Skill load):\n${rules.map(r => `${r.source}:${r.name} · sha256=${hashText(r.content)}`).join('\n')}`
     : ''
   // A bound rule that resolves nowhere is stated explicitly. Silently dropping it
   // left the stage looking as if the constraint had never been configured.
   const missingPart = missing.length > 0
     ? `rules in force at this stage but NOT FOUND in their declared layer: ${missing.join(', ')}`
     : ''
-  const missingSkillPart = skills.length > currentSkills.length
+  const missingSkillPart = required.length > requiredBodies.length
     ? `bound skills NOT FOUND in their declared layer: ${(await missingSkillRefs(binding, fs, cwd)).join(', ')}`
     : ''
   // Legacy stage-level rules are disclosed (so nothing is lost) but named as
@@ -1116,19 +1163,42 @@ async function renderBindings(stage: string, workflow: WorkflowConfig, fs: Fs, c
     // binding's declared evidence kind — a document-producing skill owes an
     // artifact, not a shell command, and saying otherwise would tell the model to
     // run something irrelevant.
-    const additional = skills
+    const additional = required
       .filter(entry => entry.evidence === undefined || entry.evidence === 'command')
       .map(entry => entry.skill.source === 'codex-project' ? formatResourceRef(entry.skill) : entry.skill.name)
       .filter(name => needsSkillReceipt(name))
   const receiptPart = additional.length
     ? `additional skills requiring skill_result command receipts: ${additional.join(', ')}`
     : 'no command skill_result receipt required for this stage; other evidence kinds follow their configured stage operations'
-  return [skillPart, skillInstructions, receiptPart, rulePart, missingPart, missingSkillPart, legacyPart].filter(Boolean).join('\n')
+  return [skillPart, skillInstructions, optionalPart, receiptPart, rulePart, missingPart, missingSkillPart, legacyPart].filter(Boolean).join('\n')
+}
+
+/** Each independent reviewer receives its own complete required context, once per resource. */
+async function reviewBindings(state: TaskState, workflow: WorkflowConfig, fs: Fs, cwd?: string): Promise<string> {
+  const disclosed = new Set<string>()
+  const stages = [...new Set([state.stage, ...(workflow.stages.includes('代码审核') ? ['代码审核'] : [])])]
+  const result: string[] = []
+  for (const stage of stages) result.push(await renderBindings(stage, workflow, fs, cwd, state.flow?.resources, true, undefined, undefined, disclosed))
+  return result.filter(Boolean).join('\n\n')
 }
 
 /** Narrowed view of `defineTool` args (the raw args are a JsonValue record). */
-interface OpArgs {
+export interface OpArgs extends MaterialArgs {
+  document_path?: string
+  clarification_questions?: ClarificationQuestion[]
   operation: string
+  detail?: boolean
+  section?: 'items' | 'verification' | 'artifacts' | 'bindings' | 'sonar'
+  intent?: DeliveryIntent
+  intent_reason?: string
+  delegation_benefit?: DelegationBenefit
+  questions?: InvestigationQuestion[]
+  concurrency?: number
+  conclusion?: string
+  proposal?: string
+  limitations?: string[]
+  source_evidence?: import('./delivery-contract.ts').SourceLocation[]
+  plans?: { id: string; title: string; files: string[]; acceptance: string[]; task_boundary: 'local' | 'independent' | 'coupled'; execution_reason: string; delegation_benefit?: DelegationBenefit; depends_on?: string[] }[]
   task_id?: string
   related_task_id?: string
   relation_kind?: 'defect' | 'enhancement' | 'follow_up'
@@ -1156,6 +1226,7 @@ interface OpArgs {
   context_need?: 'brief' | 'history'
   acceptance?: string[]
   depends_on?: string[]
+  changes?: DeliveryChangeInput[]
   verification_group?: string
   item_ids?: string[]
   affected_items?: string[]
@@ -1169,6 +1240,7 @@ interface OpArgs {
   /** What changed, in the author's words (revise). */
   revision_reason?: string
   command?: string
+  timeout_ms?: number
   passed?: boolean
   evidence?: string[]
   outcome?: 'pass' | 'blocked'
@@ -1224,7 +1296,7 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
 export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, includeGovernance = false): Promise<string> {
   const entries = []
-  for (const path of [...new Set(state.files)].filter(path => includeGovernance || !/^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(path)).sort()) {
+  for (const path of [...new Set(state.files)].filter(path => includeGovernance || !isEngineMeta(path)).sort()) {
     assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
     const root = state.root ?? cwd
     const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
@@ -1301,12 +1373,14 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
   }
   for (const stage of obligationStages(state, workflow)) {
     for (const entry of workflow.stage_bindings?.[stage]?.skills ?? []) {
+      if (!requiredSkill(entry)) continue
       const name = formatResourceRef(entry.skill)
       const content = await readSkillAt(entry.skill, fs, cwd)
       const rules = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
       if (content === undefined || rules.missing.length) continue
       const inputHash = hashText(JSON.stringify([content, rules.resolved.map(rule => [rule.source, rule.name, rule.content])]))
-      const loaded = state.skill_loads?.[stage]?.[name]
+      const loads = Object.values(state.skill_loads ?? {}).map(entries => entries[name]).filter(entry => entry !== undefined)
+      const loaded = loads.find(entry => entry.input_hash === inputHash) ?? loads[0]
       const refs = [entry.skill, ...entry.rules]
       const changed = refs.some(ref => {
         const original = state.flow?.resources?.find(resource => formatResourceRef(resource.ref) === formatResourceRef(ref))
@@ -1319,7 +1393,7 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
     for (const [name, result] of Object.entries(state.skill_results?.[stage] ?? {})) {
       const binding = (workflow.stage_bindings?.[stage]?.skills ?? []).find(entry =>
         name === entry.skill.name || name === `${entry.skill.source}:${entry.skill.name}`)
-      if (!binding || !needsSkillReceipt(name, binding.evidence)) continue
+      if (!binding || !requiredSkill(binding) || !needsSkillReceipt(name, binding.evidence)) continue
       if (result.receipt?.scope_hash !== current) blockers.push(`skill_result for ${name} is stale after file/scope changes; rerun its validation command`)
     }
   }
@@ -1329,6 +1403,16 @@ async function evidenceBlockers(fs: Fs, state: TaskState, workflow: WorkflowConf
 async function assertFreshEvidence(fs: Fs, state: TaskState, workflow: WorkflowConfig, cwd?: string): Promise<void> {
   const blockers = [...await evidenceBlockers(fs, state, workflow, cwd), ...await sonarBlockers(fs, state, cwd)]
   if (blockers.length) throw new Error(blockers.join('; '))
+}
+
+async function staleReviewedItems(fs: Fs, state: TaskState, cwd?: string): Promise<string[]> {
+  const entries = await Promise.all(state.items.map(async item => {
+    if (item.status !== 'done' || !item.review) return item.id
+    const current = await scopeFingerprint(fs, { ...state, files: item.execution_plan?.files ?? state.files }, cwd)
+    return item.review.scope_hash !== current || state.verification_version
+      && item.review.verification_key !== verificationKey(state, item.id) ? item.id : undefined
+  }))
+  return entries.filter((id): id is string => id !== undefined)
 }
 
 async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<string[]> {
@@ -1409,7 +1493,7 @@ async function compactSonarHistory(fs: Fs, state: TaskState, cwd: string | undef
       ...(entry.dispositions ? { dispositions: entry.dispositions.slice(0, 50) } : {}) }); continue }
     if (!entry.report_path && !state.sonar_policy) { compact.push(entry); continue }
     if (!entry.report_path) await writeSonarReport(fs, state, entry, cwd, mode)
-    const detail_path = await storeSonarDetail(fs, entry, cwd, mode)
+    const detail_path = await storeSonarDetail(fs, entry, state.root ?? cwd, mode)
     compact.push({ checked_at: entry.checked_at, gate: entry.gate, target: entry.target,
       scope_hash: entry.scope_hash, report_path: entry.report_path!, detail_path,
       finding_count: entry.findings.length, blocking_count: entry.blocking.length,
@@ -1421,21 +1505,24 @@ async function compactSonarHistory(fs: Fs, state: TaskState, cwd: string | undef
 async function writeSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
   mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   if (!state.sonar_policy) throw new Error('SonarQube is not enabled for this task')
-  const path = sonarReportPath(state.id, audit)
-  await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+  const path = sonarReportPath(state.id, audit, state.task_directory)
+  assertRealPath(resolve(state.root ?? cwd ?? process.cwd(), path))
+  await writeText(fs, path, renderSonarReport(state.id, state.sonar_policy, audit), state.root ?? cwd, mode,
     { kind: 'createIfAbsent' })
   audit.report_path = path
-  await storeSonarDetail(fs, audit, cwd, mode)
+  await storeSonarDetail(fs, audit, state.root ?? cwd, mode)
 }
 
 async function updateSonarReport(fs: Fs, state: TaskState, audit: SonarAudit, cwd: string | undefined,
   mode: 'workspace-write' | 'danger-full-access'): Promise<void> {
   if (!state.sonar_policy || !audit.report_path) throw new Error('the current Sonar audit has no report to update')
+  if (!isTaskReviewPath(state.id, audit.report_path, state.task_directory)) throw new Error('Sonar report is outside this task bundle')
+  assertRealPath(resolve(state.root ?? cwd ?? process.cwd(), audit.report_path))
   const info = await (fs as unknown as WriteFs).lstat(audit.report_path, cwd === undefined ? undefined : { cwd })
   if (!info) throw new Error('the current Sonar report is missing; rerun sonar_check')
-  await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), cwd, mode,
+  await writeText(fs, audit.report_path, renderSonarReport(state.id, state.sonar_policy, audit), state.root ?? cwd, mode,
     { kind: 'replaceIfVersion', version: info.version })
-  await storeSonarDetail(fs, audit, cwd, mode)
+  await storeSonarDetail(fs, audit, state.root ?? cwd, mode)
 }
 
 async function inspectCompletedSonar(policy: SonarPolicy, token: string, ceTaskId: string, target: string,
@@ -1465,9 +1552,6 @@ function requireItem(state: TaskState, id: string | undefined): TaskItem {
   return item
 }
 
-/** Confirmation gates satisfied by a human approval, never by the task record. */
-const CONFIRMATION_GUARDS: readonly GuardName[] = ['requirement_confirmation', 'solution_confirmation']
-
 /** Narrow runtime view of the shared `approval` service (read optionally). */
 interface ApprovalAsk {
   request(input: {
@@ -1479,49 +1563,13 @@ interface ApprovalAsk {
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
 
-/** Human-readable label for a confirmation gate, used in the approval reason. */
-function confirmationLabel(guard: GuardName): string {
-  return guard === 'requirement_confirmation' ? '需求' : '方案'
-}
-
-/**
- * Ask a human to approve the pending confirmation gates, then re-run the
- * transition check. `'allowed-once'` satisfies the gates; every other outcome
- * (`rejected`/`cancelled`/`unavailable`) leaves them unmet and the advance
- * rejected. The approval audit pair lands on the agent's session log.
- */
-export async function approveAdvance(
-  ctx: Context,
-  state: TaskState,
-  target: string,
-  workflow: WorkflowConfig,
-  confirmations: GuardName[],
-  exec: ToolRunContext,
-): Promise<Result> {
-  const approval = ctx.get('approval') as ApprovalAsk | undefined
-  const labels = [...new Set(confirmations.map(confirmationLabel))].join('、')
-  if (approval === undefined) {
-    return { ok: false, errors: [`${labels}确认需人工批准，但审批服务不可用`] }
-  }
-  const outcome = await approval.request({
-    agent: exec.agent,
-    toolName: 'dev_task',
-    callId: exec.callId,
-    reason: `${labels}确认：请确认「${state.title}」的${labels}已达成，批准后流转到下一阶段。`,
-    signal: exec.signal,
-  })
-  if (outcome !== 'allowed-once') {
-    const verb = outcome === 'rejected' ? '被驳回' : outcome === 'cancelled' ? '已取消' : '无人批准'
-    return { ok: false, errors: [`${labels}确认${verb}，流转被拒绝。保持当前阶段；先获取用户的修改意见并修订，不要假定误操作或直接重复申请。`] }
-  }
-  if (confirmations.includes('requirement_confirmation')) state.requirement_confirmed = true
-  if (confirmations.includes('solution_confirmation')) state.solution_confirmed = true
-  return assertAdvance(state, target, workflow)
-}
-
-const OPERATIONS = ['status', 'assess', 'create', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', ...REQUIREMENT_OPERATIONS, 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
+  'New intent=implementation adaptive tasks require a human-confirmed requirement version before business writes: clarify_requirement asks actual business questions; write_requirement_material saves task-owned text or HTML template materials without running commands; record requirement fields; prepare_requirement writes a summary Markdown; confirm_requirement expected_hash asks the human to accept that exact version. Material generation or returned form data never supplies approval. Ordinary tool approval never supplies business consent. ' +
+  'First select the user deliverable: diagnosis/proposal creates intent=analysis with task_id, title, intent_reason (branch optional), investigates directly, then submit_analysis accepts exact source_evidence and a conclusion/proposal/limitations in one transaction. ' +
+  'Minimal analysis create: {"operation":"create","task_id":"TRACE-1","title":"Trace a missing field","intent":"analysis","intent_reason":"User requested cause and proposal only"}. ' +
+  'Use delegate for explicitly beneficial read-only child questions; never call native subagent aliases. Analysis has no implementation/test/Sonar stage. For requested code changes use intent=implementation, plan complete units, verify genuinely, then accept_item. Unsupported task records are read-only; create a new task instead of resuming an old gate. ' +
   'Track engineering delivery in a workspace task record and enforce configured stage guards. Read or create the task record, record a ' +
   'stage artifact, record each implementation item\'s start and two-stage (spec + quality) ' +
   'review audit (the flow decides how many verdicts per item), advance one stage (rejected unless every configured guard already holds, including ' +
@@ -1541,16 +1589,67 @@ const TOOL_DESCRIPTION =
  * @param ctx - a scoped context whose `tools` and `fs` resolve to the host registries.
  */
 export function registerDevTask(ctx: Context): void {
+  installDeliveryAccess(ctx, async agent => {
+    const cwd = agent.session.header.cwd
+    if (!cwd) return undefined
+    const candidates: TaskState[] = []
+    for (const id of await listTaskIds(ctx.fs, cwd)) {
+      const raw = await readText(ctx.fs, taskPath(id), cwd)
+      if (!raw) continue
+      try {
+        const task = JSON.parse(raw) as TaskState
+        if (task.id === id && task.delivery?.parent_session === agent.session.id) candidates.push(task)
+      } catch { /* A bad unrelated record is reported by the ledger, never treated as this session's policy. */ }
+    }
+    return candidates.sort((a, b) => b.delivery!.created_at.localeCompare(a.delivery!.created_at))[0]
+  })
   ctx.tools.register(defineTool({
     name: 'dev_task',
     description: TOOL_DESCRIPTION,
     parameters: {
       operation: { type: 'string', enum: [...OPERATIONS], required: true, description: 'Which task-record action to perform.' },
+      document_path: { type: 'string', description: 'prepare_requirement: optional workspace-relative Markdown path. Default .dsh/tasks/<task_id>/requirement.md. Existing human edits are protected.' },
+      material_name: { type: 'string', description: 'write_requirement_material/retire_requirement_material: relative filename under .dsh/tasks/<task_id>/materials/, e.g. product/checklist-v1.html. Supports html/htm/md/json/txt/csv/svg. Retire only stops using a registered material; files are preserved. Business paths and instruction files are forbidden.' },
+      material_content: { type: 'string', description: 'write_requirement_material: complete UTF-8 text (up to 1 MiB), mutually exclusive with material_template. Does not execute code or approve requirements.' },
+      material_template: { type: 'object', additionalProperties: false, description: 'write_requirement_material: render an HTML asset from a currently bound, loaded Skill; replace only an application/json script data block. No scripts or commands execute.', properties: {
+        skill_name: { type: 'string', required: true, description: 'Exact bound source:name, e.g. user:product-clarification. Must already be loaded in this task/session.' },
+        path: { type: 'string', required: true, description: 'HTML asset path relative to that Skill, e.g. assets/confirmation-checklist-v1.html.' },
+        data_id: { type: 'string', required: true, description: 'id of the template application/json script block, e.g. card-data.' },
+        json: { type: 'string', required: true, description: 'Valid JSON text to embed. HTML-sensitive characters are escaped.' },
+        identity_field: { type: 'string', description: 'Optional top-level JSON key to fill with a host-generated, content-specific material id, e.g. task_id. Prevents reuse of cached answers across changed forms.' },
+      } },
+      clarification_questions: { type: 'array', description: 'clarify_requirement: 1–3 business questions that affect scope or acceptance; the host asks the human and stores real answers.', items: {
+        type: 'object', additionalProperties: false, properties: {
+          id: { type: 'string', required: true }, question: { type: 'string', required: true },
+          options: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { label: { type: 'string', required: true }, description: { type: 'string' } } } },
+        },
+      } },
+      detail: { type: 'boolean', description: 'status/verify: include complete plans, artifacts and logs. load_skill: explicitly restore full Skill and Rule text even if already loaded in this task/session. Default reuses successful identical loads across stages.' },
+      section: { type: 'string', enum: ['items', 'verification', 'artifacts', 'bindings', 'sonar'], description: 'status detail=true: retrieve one section. Use item_id or verification_group to narrow large plans and logs without rerunning work.' },
+      intent: { type: 'string', enum: ['analysis', 'implementation'], description: 'create/assess: select what the user asked to receive, before complexity. analysis is a read-only diagnosis/proposal; implementation requires complexity and a user-confirmed requirement version. Creates require intent. All implementation tasks use the current requirement-confirmation contract; unsupported records are read-only.' },
+      intent_reason: { type: 'string', description: 'Concrete user goal supporting intent (required when intent is supplied).' },
+      delegation_benefit: { type: 'string', enum: ['parallel', 'context_isolation', 'independent_check'], description: 'Concrete delegation benefit; independent boundaries alone do not spawn under the new delivery contract.' },
+      concurrency: { type: 'integer', description: 'delegate: bounded read-only concurrency 1–4, default 2; code writes remain serial.' },
+      plans: { type: 'array', description: 'plan: atomically register implementation units and their execution choices; exact file ownership, dependencies and acceptance. Delete/rename plans use plan_execution.changes.', items: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true }, title: { type: 'string', required: true }, files: { type: 'array', items: { type: 'string' }, required: true },
+        acceptance: { type: 'array', items: { type: 'string' }, required: true }, task_boundary: { type: 'string', enum: ['local', 'independent', 'coupled'], required: true },
+        execution_reason: { type: 'string', required: true }, delegation_benefit: { type: 'string', enum: ['parallel', 'context_isolation', 'independent_check'] },
+        depends_on: { type: 'array', items: { type: 'string' } },
+      } } },
+      questions: { type: 'array', description: 'delegate: concrete independent investigation questions, not implementation tasks.', items: { type: 'object', additionalProperties: false, properties: {
+        id: { type: 'string', required: true }, question: { type: 'string', required: true }, references: { type: 'array', items: { type: 'string' } }, depends_on: { type: 'array', items: { type: 'string' } },
+      } } },
+      conclusion: { type: 'string', description: 'submit_analysis: confirmed causes and their reasoning; report central findings early in conversation.' },
+      proposal: { type: 'string', description: 'submit_analysis: actionable proposal; does not authorize implementation.' },
+      limitations: { type: 'array', items: { type: 'string' }, description: 'submit_analysis: explicitly unknown or unverified aspects.' },
+      source_evidence: { type: 'array', description: 'submit_analysis: relevant current-source locations. Use 1-based ranges, at most 200 lines each. Host always captures the full range and hashes; optional quote only highlights an exact matching substring.', items: { type: 'object', additionalProperties: false, properties: {
+        file: { type: 'string', required: true }, start_line: { type: 'integer', required: true }, end_line: { type: 'integer', required: true }, quote: { type: 'string', description: 'Optional exact substring to highlight, without line-number prefixes. The complete source range is saved whether quote is supplied or omitted.' },
+      } } },
       task_id: { type: 'string', description: 'Required on create and every task operation except assess/status. Omit on status to discover tasks in the current workspace; optionally filter by branch.' },
       related_task_id: { type: 'string', description: 'Archived source task for a new defect, enhancement or follow-up. New work always gets a new task_id.' },
       relation_kind: { type: 'string', enum: ['defect', 'enhancement', 'follow_up'], description: 'How a newly created task relates to related_task_id.' },
       skill_name: { type: 'string', description: 'Bound skill to load or record. For a codex-project skill, pass codex-project:name to load_skill and skill_result. Command evidence needs a real validation command; manual evidence needs human approval.' },
-      branch: { type: 'string', description: 'Current git branch (recorded on create).' },
+      branch: { type: 'string', description: 'Current git branch. New intent contracts can omit it; the engine reads Git HEAD or records unversioned. The branch is optional for create.' },
       title: { type: 'string', description: 'Task title (create).' },
       work_size: { type: 'string', enum: ['tiny', 'standard', 'complex'], description: 'Optional workload tier (create), default standard. This is separate from complexity; do not pass low/medium/high here.' },
       complexity: { type: 'string', enum: ['low', 'medium', 'high', 'ultra'], description: 'Task-level complexity (assess/create). Select from requirement scope and implementation dependencies; independent of risk_level. Passing this on create selects the adaptive meta-skill flow.' },
@@ -1564,6 +1663,7 @@ export function registerDevTask(ctx: Context): void {
       resources: { type: 'array', description: 'Project Skill/Rule drafts for init_project propose/apply; content is reviewed before creation.',
         items: { type: 'object', additionalProperties: false, properties: {
           kind: { type: 'string', enum: ['skill', 'rule'] }, name: { type: 'string' }, description: { type: 'string' },
+          whenToUse: { type: 'string', description: 'Skill: one short task/scope condition for on-demand selection. Recommended for new drafts; older drafts may omit it and use description.' },
           content: { type: 'string' }, meta_skills: { type: 'array', items: { type: 'string' } },
           rules: { type: 'array', items: { type: 'string' } },
         } } },
@@ -1584,13 +1684,15 @@ export function registerDevTask(ctx: Context): void {
       items_mode: { type: 'string', enum: ['merge', 'replace'], description: 'items operation: merge by id (default) or explicitly replace untouched items and reorder the supplied list.' },
       item_id: { type: 'string', description: 'Item id to start or review (dispatch/review_item).' },
       description: { type: 'string', description: 'Implementation intent (dispatch); the current agent may execute it directly.' },
-      execution: { type: 'string', enum: ['direct', 'spawn', 'fork'], description: 'plan_execution: omit for automatic routing; use direct with a concrete cost/benefit reason for very small independent work. dispatch reads the recorded mode; legacy dispatch defaults to direct. Children still need parent verification and review.' },
+      execution: { type: 'string', enum: ['direct', 'spawn', 'fork'], description: 'plan_execution: omit for automatic routing; use direct with a concrete cost/benefit reason for very small independent work. dispatch reads the recorded mode. Children still need parent verification and review.' },
       execution_policy: { type: 'string', enum: ['auto', 'main_only'], description: 'create: auto (default) chooses from task boundaries and real host capabilities; main_only honors a request to keep work and review in the main session.' },
-      execution_reason: { type: 'string', description: 'plan_execution: concrete reason for the task boundary and execution choice. Omit execution for automatic routing; no user reminder is required.' },
+      execution_reason: { type: 'string', description: 'Required with delegate: explain the concrete benefit of delegating these questions. Also used by plan_execution to explain the task boundary and execution choice. No user reminder is required.' },
       task_boundary: { type: 'string', enum: ['local', 'independent', 'coupled'], description: 'plan_execution: local small change, independent deliverable with explicit acceptance, or tightly coupled work. Do not split work merely to spawn children.' },
       context_need: { type: 'string', enum: ['brief', 'history'], description: 'plan_execution: brief (default) gives a fresh child only its task context; history requests fork only when completed parent history is needed.' },
       acceptance: { type: 'array', items: { type: 'string' }, description: 'plan_execution: concrete acceptance conditions for this item.' },
       depends_on: { type: 'array', items: { type: 'string' }, description: 'plan_execution: earlier registered item IDs that must finish first.' },
+      changes: { type: 'array', description: 'plan_execution: explicitly planned delete/rename operations. Keep old paths and rename destinations in files and task scope. The engine captures tracked Git and pre-change worktree text for readonly review.',
+        items: { type: 'object', properties: { path: { type: 'string' }, kind: { type: 'string', enum: ['delete', 'rename'] }, to: { type: 'string' } }, additionalProperties: false } },
       verification_group: { type: 'string', description: 'plan_verification/verify: stable test-group ID, for example backend or frontend. Plan each group with command, files including tests/configuration, and item_ids. Verify executes its declared command; no group is inferred from printed output.' },
       item_ids: { type: 'array', items: { type: 'string' }, description: 'plan_verification: implementation items validated by this group. Each item includes its own implementation and tests, never a later test item depending on its completion.' },
       affected_items: { type: 'array', items: { type: 'string' }, description: 'revise(defect): explicit affected item IDs. Shared files and downstream consumers also reopen. Omit for unknown or task-wide impact. Requirements/solution revisions remain task-wide.' },
@@ -1612,18 +1714,19 @@ export function registerDevTask(ctx: Context): void {
       files: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Repo-relative paths in scope (create/scope) or being committed (commit).',
+        description: 'Repository-relative delivery paths to change (create/scope), or exact paths being committed (commit, required when file_scope is enabled). Read-only build/config inputs belong in plan_verification files. For commit hash recording, repeat the same files and message used for the actual Git commit.',
       },
-      message: { type: 'string', description: 'Commit summary to validate (commit).' },
+      message: { type: 'string', description: 'Exact Git commit subject (commit). Use the same text when preparing the commit, executing Git and recording its hash; do not paraphrase it at the hash-recording step.' },
       revision_kind: { type: 'string', enum: ['requirement', 'solution', 'defect'], description: 'Why the task is going back (revise). Decides which conclusions are invalidated: requirement clears its confirmation and everything downstream; solution keeps the requirement agreed; defect clears only the evidence about the old implementation.' },
       revision_reason: { type: 'string', description: 'What changed, in the author\'s words (revise).' },
       hash: { type: 'string', description: 'Commit hash to record after the git commit (commit).' },
       content: { type: 'string', description: 'Full AGENTS.md body (init propose/apply). Inspect the existing file first via init phase=inspect.' },
       overwrite: { type: 'boolean', description: 'Allow replacing an existing AGENTS.md (init apply); triggers human approval.' },
-      expected_hash: { type: 'string', description: 'The content hash returned by init phase=propose; apply is rejected without it, or with a different hash (init apply).' },
+      expected_hash: { type: 'string', description: 'confirm_requirement: exact summary hash from prepare_requirement. write_requirement_material/retire_requirement_material: current material hash required for updating or retiring a generated file; human edits are never overwritten. init apply: hash returned by init propose.' },
       existing_hash: { type: 'string', description: 'The existing-file hash returned by init phase=propose; when the current AGENTS.md exists, a mismatching existing_hash proves it changed during review (init apply).' },
       sandbox_permissions: { type: 'string', enum: ['workspace-write', 'danger-full-access'], description: 'Sandbox mode for this call\'s file writes and verify/skill_result/local Sonar scanner command. Commands otherwise use the session policy. Retry a denied command with justification; danger-full-access requires approval before execution and applies only to this call.' },
       justification: { type: 'string', description: 'Required with sandbox_permissions: one sentence for the user explaining why this exact operation needs the wider access.' },
+      timeout_ms: { type: 'integer', description: 'verify only: maximum command runtime in milliseconds (integer 1,000–600,000; default 600,000). Set a realistic shorter budget for fast checks. Timeout is recorded as failure; it does not alter the test command or session policy.' },
       phase: { type: 'string', enum: ['inspect', 'propose', 'apply'], description: 'init phase: inspect (read-only), propose (preview draft, no write), apply (write; overwriting an existing file requires human approval).' },
     },
     output: {
@@ -1635,28 +1738,29 @@ export function registerDevTask(ctx: Context): void {
     async execute(args: Record<string, unknown>, exec: ToolRunContext): Promise<string> {
       const a = args as unknown as OpArgs
       const fs = ctx.fs
-      // The session workspace drives every relative path; the backend's own base
-      // (its config.cwd) is the harness process directory, never the workspace.
-      const cwd = exec.agent?.session.header.cwd
+      // Task governance stays anchored to the original project. Native-tool cd does
+      // not move its ledger or grant another root; child/check commands use task.root explicitly.
+      const executionDirectory = exec.agent ? await ctx.get('workingDirectory')?.ensure(exec.agent, exec.signal) : undefined
+      const cwd = exec.agent?.session.header.cwd ?? executionDirectory
       const session = exec.agent?.session as unknown as SkillSession | undefined
-      const mutationPath = a.task_id ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)) : undefined
-      const release = mutationPath && !['status', 'config', 'assess'].includes(a.operation)
+      const mutationPath = a.task_id ? (process.platform === 'win32' ? resolve(cwd ?? process.cwd(), taskPath(a.task_id)).toLowerCase() : resolve(cwd ?? process.cwd(), taskPath(a.task_id))) : undefined
+      const release = mutationPath && !['status', 'config', 'assess', 'delegate', 'clarify_requirement', 'confirm_requirement'].includes(a.operation)
         ? acquireTaskMutation(process.platform === 'win32' ? mutationPath.toLowerCase() : mutationPath) : undefined
       try {
 
       if (a.operation === 'status' && !a.task_id) {
         const tasks: { id: string; title: string; branch: string; stage: string; lifecycle: 'active' | 'ready_to_close' | 'archived'; completed_at?: string; complexity?: Complexity }[] = []
-        const names = await projectProbe(fs).list?.(cwd ?? '', '.dsh') ?? []
-        for (const name of names.filter(name => /^task-.+\.json$/.test(name))) {
-          const raw = await readText(fs, `.dsh/${name}`, cwd)
+        for (const id of await listTaskIds(fs, cwd)) {
+          const raw = await readText(fs, taskPath(id), cwd)
           if (!raw) continue
           const task = JSON.parse(raw) as TaskState
+          if (task.id !== id) throw new Error(`task id mismatch in ${taskPath(id)}`)
           if (!a.branch || task.branch === a.branch) tasks.push({ id: task.id, title: task.title, branch: task.branch, stage: task.stage,
             lifecycle: task.completed ? 'archived' : task.stage === task.flow?.config.stages.at(-1) ? 'ready_to_close' : 'active',
             ...(task.completed ? { completed_at: task.completed.at } : {}),
             ...(task.complexity !== undefined ? { complexity: task.complexity } : {}) })
         }
-        return JSON.stringify({ tasks, next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Call create with task_id, title and current branch.' }, null, 2)
+        return JSON.stringify({ tasks, required_create_fields: ['task_id', 'title', 'intent', 'intent_reason'], next_action: tasks.length ? 'Archived tasks are read-only. Create a new task for a new requirement or post-delivery feedback; continue an active task only for the same unfinished requirement. Ask the user only when ownership is ambiguous.' : 'No task found. Create with task_id, title, intent=analysis|implementation and intent_reason. New contracts read the Git branch automatically; implementation must include the assessed complexity and complexity_reason.' }, null, 2)
       }
 
       if (a.operation === 'config') {
@@ -1671,16 +1775,19 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'assess') {
+        if (a.intent === 'analysis') return JSON.stringify({ intent: 'analysis', stages: analysisWorkflow().stages,
+          instruction: 'Investigate directly; no implementation items, synthetic tests or Sonar required. Create with intent=analysis and intent_reason. Delegate read-only questions only when it has a concrete benefit.' })
         if (a.complexity === undefined) {
           return JSON.stringify({ grades: COMPLEXITY_OPTIONS,
             instruction: 'Analyze the requirement, choose one grade, then call assess with complexity to preview its stages and effective Skill sources. Record the reason on create. Risk is assessed separately.' }, null, 2)
         }
         if (!isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
-        const config = await resolveAdaptiveWorkflow(a.complexity, fs, cwd)
+        const creationPolicy = await readAdaptiveConfig(fs, cwd)
+        const config = await resolveAdaptiveWorkflow(a.complexity, fs, cwd, creationPolicy)
         return JSON.stringify({ complexity: a.complexity, stages: config.stages,
           meta_skills: Object.fromEntries(Object.entries(config.stage_bindings ?? {}).map(([stage, binding]) =>
             [stage, (binding.skills ?? []).map(entry => ({ logical_name: entry.skill.name, effective_source: entry.skill.source,
-              rules: entry.rules }))])),
+              loading: entry.loading ?? 'required', rules: entry.rules }))])),
           artifacts: config.artifacts, review_depth: config.review_depth }, null, 2)
       }
 
@@ -1763,8 +1870,7 @@ export function registerDevTask(ctx: Context): void {
             writeMode, { kind: 'createIfAbsent' })
         }
         for (const resource of resources.filter(resource => resource.kind === 'skill')) {
-          const description = resource.description!.replace(/[\r\n]+/gu, ' ').trim()
-          const body = `---\nname: ${resource.name}\ndescription: ${description}\n---\n\n${resource.content.trimEnd()}\n`
+          const body = renderInitSkill(resource)
           await writeText(fs, `.dsh/skills/${resource.name}/SKILL.md`, body, cwd,
             writeMode, { kind: 'createIfAbsent' })
           const profile: SkillProfile = { rules: (resource.rules ?? []).map(name => ({ source: 'project', name })), evidence: 'none' }
@@ -1773,11 +1879,11 @@ export function registerDevTask(ctx: Context): void {
         }
         const bindings: NonNullable<AdaptiveConfig['meta_bindings']> = { ...meta.meta_bindings }
         for (const { meta: stage, name } of projectMetaSkillTargets(inventory.project_name)) {
-          if (existingMetaSkills.has(name)) bindings[stage] = [...new Set([...(bindings[stage] ?? []), name])]
+          if (existingMetaSkills.has(name)) bindings[stage] = appendInitMount(bindings[stage] ?? [], name, stage)
         }
         for (const resource of resources.filter(resource => resource.kind === 'skill')) {
           for (const skill of resource.meta_skills ?? []) {
-            bindings[skill] = [...new Set([...(bindings[skill] ?? []), resource.name])]
+            bindings[skill] = appendInitMount(bindings[skill] ?? [], resource.name, skill)
           }
         }
         const info = await (fs as unknown as WriteFs).lstat('.dsh/meta.json', { cwd })
@@ -1870,12 +1976,20 @@ export function registerDevTask(ctx: Context): void {
       }
 
       if (a.operation === 'create') {
-        if (!a.task_id || !a.title || !a.branch) {
-          throw new Error('create requires task_id, title, and branch')
+        if (!a.intent) throw new Error('create requires explicit intent=analysis|implementation and intent_reason; legacy creation is not supported')
+        if (!['analysis', 'implementation'].includes(a.intent)) throw new Error('create intent must be analysis|implementation')
+        const required: ('task_id' | 'title' | 'intent_reason')[] = ['task_id', 'title', 'intent_reason']
+        const missing = required.filter(field => !a[field]?.trim())
+        if (!a.task_id || !a.title || missing.length) {
+          throw new Error(`create requires ${required.join(', ')}; missing: ${missing.join(', ')}. New-contract example: ${JSON.stringify({ operation: 'create', task_id: 'TASK-1', title: 'Concrete user goal', intent: a.intent === 'analysis' ? 'analysis' : 'implementation', intent_reason: 'What the user asked to receive' })}. Branch is optional when intent is supplied.`)
         }
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(a.task_id)) {
           throw new Error('task_id must be 1–64 ASCII letters, digits, hyphens or underscores, starting with a letter or digit')
         }
+        if (await fs.lstat(taskPath(a.task_id), cwd === undefined ? undefined : { cwd }) !== undefined) throw new Error('task_id already exists; inspect status and continue it, or use a new task_id. Existing records are never replaced by create.')
+        const adaptiveConfig = a.intent === 'analysis' ? undefined : await readAdaptiveConfig(fs, cwd)
+        if (a.intent === 'implementation' && a.complexity === undefined)
+          throw new Error('implementation create requires complexity and complexity_reason; call assess first')
         if (a.complexity !== undefined && !isComplexity(a.complexity)) throw new Error(`unknown complexity "${String(a.complexity)}"`)
         if ((a.related_task_id === undefined) !== (a.relation_kind === undefined)) throw new Error('related_task_id and relation_kind must be provided together')
         if (a.related_task_id === a.task_id) throw new Error('a follow-up task needs its own task_id')
@@ -1886,22 +2000,21 @@ export function registerDevTask(ctx: Context): void {
         if (a.complexity !== undefined && !a.complexity_reason?.trim()) {
           throw new Error('adaptive create requires complexity_reason explaining the requirement evidence for this grade')
         }
-        const adaptiveConfig = a.complexity === undefined ? undefined : await readAdaptiveConfig(fs, cwd)
-        const resolved = a.complexity !== undefined
-          ? { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
-              config: await resolveAdaptiveWorkflow(a.complexity, fs, cwd, adaptiveConfig), problems: [] }
-          : await resolveWorkflow(fs, cwd)
+        const resolved = a.intent === 'analysis'
+          ? { flow: 'analysis-v1', version: 1, config: analysisWorkflow(), problems: [] }
+          : { flow: `adaptive-${a.complexity}`, version: ADAPTIVE_VERSION,
+              config: await resolveAdaptiveWorkflow(a.complexity!, fs, cwd, adaptiveConfig), problems: [] }
         if (resolved.problems.length > 0) {
           throw new Error(`invalid .dsh/eng.json — fix the project config first:\n- ${resolved.problems.join('\n- ')}`)
         }
         const risk = a.risk_level ?? 'standard'
-        if (risk === 'high_risk' && a.complexity === undefined && !flowSatisfies(resolved.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
+        if (a.intent !== 'analysis' && risk === 'high_risk' && !workflowSatisfies(resolved.config, HIGH_RISK_REQUIRED_CAPABILITIES)) {
           throw new Error(
             `high_risk task cannot run on flow "${resolved.flow}" — it lacks the required capabilities ` +
             `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow or lower the task risk.`,
           )
         }
-        const sonarPolicy = adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
+        const sonarPolicy = a.intent === 'analysis' || a.complexity === undefined || adaptiveConfig === undefined ? undefined : sonarPolicyFor(adaptiveConfig)
         if (sonarPolicy?.source === 'ide-local' && resolved.config.stages.includes('代码审核')) {
           resolved.config.commit = { ...resolved.config.commit, checkpoints: ['代码审核'] }
         }
@@ -1920,10 +2033,20 @@ export function registerDevTask(ctx: Context): void {
             resources: frozen.resources,
         }
         const root = await detectRoot(projectProbe(fs), cwd ?? '')
+        let branch = a.branch?.trim()
+        if (!branch) {
+          let head = await readText(fs, '.git/HEAD', root)
+          if (head === undefined) {
+            const gitDir = (await readText(fs, '.git', root))?.match(/^gitdir:\s*(.+)\s*$/u)?.[1]?.trim()
+            if (gitDir) head = await readText(fs, resolve(root, gitDir, 'HEAD'), root)
+          }
+          branch = head?.trim().match(/^ref:\s*refs\/heads\/(\S+)$/u)?.[1]
+            ?? (head && /^[a-f0-9]{40,64}$/iu.test(head.trim()) ? `detached@${head.trim().slice(0,12)}` : 'unversioned')
+        }
         const state = newTask({
           id: a.task_id,
           title: a.title,
-          branch: a.branch,
+          branch,
           work_size: a.work_size ?? 'standard',
           risk_level: risk,
           ...(a.complexity !== undefined ? { complexity: a.complexity, complexity_reason: a.complexity_reason!.trim() } : {}),
@@ -1932,30 +2055,75 @@ export function registerDevTask(ctx: Context): void {
           root,
           project_type: await detectType(projectProbe(fs), root),
         })
+        state.task_directory = taskNamespace(state.id, root, cwd ?? root)
         if (a.related_task_id !== undefined) state.related_task = { id: a.related_task_id, kind: a.relation_kind! }
+        if (a.intent !== undefined) {
+          state.delivery = deliveryContract(a.intent, a.intent_reason ?? '')
+          if (session?.id) state.delivery.parent_session = session.id
+          const events = (session?.snapshotEvents() ?? []) as readonly { type: string; time?: number; data: { source?: { kind?: string } } }[]
+          const request = [...events].reverse().find(event => event.type === 'user/message' && event.data.source?.kind === 'user' && typeof event.time === 'number')
+          if (request?.time !== undefined) state.delivery.requested_at = new Date(request.time).toISOString()
+        }
         state.items = normalizeItems(a.items)
         state.execution_version = 1
-        if (state.complexity !== undefined) { state.delegation_version = 1; state.verification_version = 1; state.execution_policy = a.execution_policy ?? 'auto' }
-        state.files = a.files ?? []
+        if (state.complexity !== undefined && !isAnalysis(state)) { state.delegation_version = 1; state.verification_version = 1; state.execution_policy = a.execution_policy ?? 'auto' }
+        if (isAnalysis(state)) {
+          if (state.items.length) throw new Error('analysis does not use implementation items; create without items, then investigate directly or delegate questions')
+          if (a.files?.length) state.delivery!.references = a.files
+          state.execution_policy = a.execution_policy ?? 'auto'
+        }
+        state.files = isAnalysis(state) ? [] : a.files ?? []
         let baselineNotice = ''
+        if (flow.config.requirement_review) baselineNotice += '\nBusiness writes are blocked until the human confirms this requirement version. Read related source, clarify important gaps, record requirement fields, prepare_requirement, then confirm_requirement expected_hash. Low complexity uses a short summary in its initial stage.'
         if (sonarPolicy?.source === 'ide-local') {
           try { state.sonar_baseline = await captureLocalAuditBaseline(root, sonarPolicy.reference_branch ?? 'HEAD') }
           catch { baselineNotice = '\nExisting changes baseline unavailable; local audit will conservatively require every changed code file in the task scope.' }
         }
         assertInsideRoot(root, cwd ?? '', taskPath(state.id))
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources)}\nBefore advance, load all bound skills${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
+        await bindTaskDelivery(ctx, exec.agent, state)
+        if (isAnalysis(state)) return JSON.stringify({ created: state.id, delivery: deliveryView(state),
+          instruction: 'Read source and return findings early. Finish with submit_analysis; no synthetic implementation items, tests or commits. Project Skills are available as relevant investigation context.' })
+        return `created ${state.id} at stage ${state.stage}; legal next: ${legalTargets(state.stage, flow.config).join(', ') || 'none'}\n${await renderBindings(state.stage, flow.config, fs, cwd, flow.resources, false, state, session)}\nBefore advance, load required skills (reuse prior successful loads in this task/session); choose on-demand skills only when relevant${state.complexity !== undefined ? ' with dev_task load_skill and exact source:name' : ''}. Record each required skill's declared evidence. Terminal bindings must finish before entering the terminal stage.${baselineNotice}`
       }
 
       if (!a.task_id) throw new Error('task_id is required for this operation')
       const state = await loadTask(fs, a.task_id, cwd)
-      const workflow = await workflowFor(state, fs, cwd)
+      await bindTaskDelivery(ctx, exec.agent, state)
+      const executionProblem = taskExecutionProblem(state)
+      if (executionProblem && a.operation !== 'status') throw new Error(executionProblem)
+      const workflow = workflowFor(state)
       if (state.completed !== undefined && a.operation === 'complete') {
         return `task already completed at ${state.completed.at}`
       }
       if (state.completed !== undefined && a.operation !== 'status') {
         throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
       }
+
+      if ((REQUIREMENT_OPERATIONS as readonly string[]).includes(a.operation)) {
+        if (a.operation === 'write_requirement_material' || a.operation === 'retire_requirement_material') {
+          const canonical = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+          const currentRoot = await detectRoot(projectProbe(fs), cwd ?? '')
+          if (canonical(state.root ?? cwd ?? '') !== canonical(currentRoot)) throw new Error('任务登记的项目根与当前工作区不一致；不能写入需求材料，请核对任务所属项目')
+        }
+        if (state.task_directory !== undefined && state.task_directory !== taskNamespace(state.id, state.root ?? cwd ?? '', cwd ?? state.root ?? ''))
+          throw new Error('任务目录与当前工作区不一致；不能重定向需求产物')
+        if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? ''))))
+          throw new Error('a child dispatch is still active; wait or recover it before changing requirements')
+        try { return await executeRequirementCommand(a, { ctx, exec, state, cwd, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
+          readTemplate: spec => readRequirementTemplate(spec, state, fs, cwd, session) }) }
+        finally { await bindTaskDelivery(ctx, exec.agent, await loadTask(fs, state.id, cwd)) }
+      }
+      if (workflow.requirement_review && !state.completed) {
+        const problem = await requirementDocumentProblem(fs, state, cwd)
+        if ((!requirementConfirmed(state, workflow) || problem) && !['status', 'load_skill', 'record', 'scope', 'revise', 'advance'].includes(a.operation))
+          throw new Error(problem ?? '需求尚未由用户确认；先 clarify_requirement（有疑问时）、record、prepare_requirement、confirm_requirement，再实施')
+        if (problem && a.operation === 'advance') throw new Error(problem)
+      }
+
+      if (isAnalysis(state) && a.operation !== 'status') return await executeAnalysisCommand(a, {
+        ctx, exec, fs, state, cwd, session, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
+      })
       if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? '')))
         && a.operation !== 'status' && a.operation !== 'recover_dispatch') {
         throw new Error('a child dispatch is still active; wait or recover it before changing the parent task')
@@ -1972,13 +2140,15 @@ export function registerDevTask(ctx: Context): void {
         const { resolved, missing } = await resolveRules(entry.rules, fs, cwd, state.flow?.resources)
         if (missing.length) throw new Error(`bound rule for ${a.skill_name} cannot be read: ${missing.join(', ')}`)
         const inputHash = hashText(JSON.stringify([content, resolved.map(rule => [rule.source, rule.name, rule.content])]))
+        const reusable = skillLoadForSession(state, a.skill_name!, session, inputHash)
+        if (reusable && !a.detail) return `skill: ${a.skill_name}\nreused: true; already loaded in this task/session at stage ${reusable.stage}. The full Skill and attached Rules remain applicable; no repeated body is returned. Current stage evidence is still checked independently. Use load_skill detail=true only when full instructions need to be restored.`
         const previous = state.skill_loads?.[stage]?.[a.skill_name!]
         const changedSinceCreation = [entry.skill, ...entry.rules].some(ref => {
           const original = state.flow?.resources?.find(resource => formatResourceRef(resource.ref) === formatResourceRef(ref))
           const live = ref === entry.skill ? content : resolved.find(rule => rule.source === ref.source && rule.name === ref.name)?.content
           return original && hashText(live ?? '') !== original.hash
         })
-        if ((previous && previous.input_hash !== inputHash) || (!previous && changedSinceCreation)) {
+        if (requiredSkill(entry) && ((previous && previous.input_hash !== inputHash) || (!previous && changedSinceCreation))) {
           state.verification = { passed: false, evidence: [] }
           state.review = { outcome: 'pending' }
           delete state.skill_results?.[stage]?.[a.skill_name!]
@@ -1990,10 +2160,16 @@ export function registerDevTask(ctx: Context): void {
         state.skill_loads[stage]![a.skill_name!] = { input_hash: inputHash, session_id: session?.id ?? '', at: new Date().toISOString() }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
         return [`skill: ${a.skill_name}`, `current skill instructions:\n${content}`,
-          resolved.length ? `rules attached to this skill:\n${resolved.map(rule => `### ${rule.source}:${rule.name}\n${rule.content}`).join('\n\n')}` : 'rules attached to this skill: none'].join('\n\n')
+          resolved.length ? `rules attached to this skill:\n${resolved.map(rule => `### ${rule.source}:${rule.name}\n${rule.content}`).join('\n\n')}` : 'rules attached to this skill: none',
+          'Skill loading policy: only required mounts have load/evidence gates. Select on-demand mounts by description and whenToUse; do not load unrelated Skills or manufacture skip/evidence records. Successful identical loads in this task/session are reusable across stages; stage artifacts, verification and review are separate obligations.',
+          'Task execution contract: implementation. Direct work uses plan/plan_execution, real verify, review_dispatch when the plan requires independent review, then accept_item. No implementation dispatch is required for direct work. Dispatch is for delegated implementation. All applicable project code constraints remain in force.'].join('\n\n')
       }
 
       if (a.operation === 'status') {
+        if (isAnalysis(state)) return JSON.stringify({ id: state.id, stage: state.stage, lifecycle: state.completed ? 'archived' : 'active', delivery: deliveryView(state) })
+        if (a.detail && a.section === 'items' && a.item_id) requireItem(state, a.item_id)
+        if (a.detail && a.section === 'verification' && a.verification_group
+          && !Object.hasOwn(state.verification_groups ?? {}, a.verification_group)) throw new Error(`unknown verification group ${a.verification_group}`)
         const binding = bindingsForStage(state.stage, workflow)
         const {
           resolved: rules,
@@ -2018,10 +2194,15 @@ export function registerDevTask(ctx: Context): void {
             ...resourceBlockers(missingRules, state.stage), ...staleEvidence, ...await sonarBlockers(fs, state, cwd)]
           : []
         const planItemBlockers = taskPlanItemBlockers(state)
-        return JSON.stringify({
+        const commitState = checkpoint.allowed && commitBlockers.length
+          ? { ...checkpoint, allowed: false, reason: commitBlockers.join('; ') } : checkpoint
+        const recordedCommit = state.commits.findLast(entry => entry.label === checkpoint.label && entry.hash)?.hash
+        return JSON.stringify(statusView({
           id: state.id,
           stage: state.stage,
           flow: state.flow !== undefined ? { flow: state.flow.flow, version: state.flow.version } : null,
+          ...(executionProblem ? { execution_blocker: executionProblem } : {}),
+          ...(state.delivery ? { delivery: deliveryView(state) } : {}),
           risk_level: state.risk_level,
           complexity: state.complexity ?? null,
           complexity_reason: state.complexity_reason ?? null,
@@ -2031,23 +2212,24 @@ export function registerDevTask(ctx: Context): void {
           completion_blockers: completionIssues,
           work_size: state.work_size,
           requirement_confirmed: state.requirement_confirmed,
+          requirements: requirementsView(state, !!await requirementDocumentProblem(fs, state, cwd), a.detail),
           solution_confirmed: state.solution_confirmed,
           items_done: `${state.items.filter(i => i.status === 'done').length}/${state.items.length}`,
           items: state.items,
-          execution_policy: state.execution_policy ?? 'legacy-direct',
+          execution_policy: state.execution_policy ?? null,
           subagent_capabilities: executionCapabilities(ctx, !!exec.agent),
           execution_planning: state.delegation_version ? { required: true, operation: 'plan_execution',
-            instruction: 'For every item record boundary, files, acceptance and execution_reason in orchestration or before implementation. Omit execution to route automatically. dispatch then uses the recorded plan; independent review uses review_dispatch before review_item.' } : { required: false },
+            instruction: 'For every item record boundary, delivery files, acceptance and execution_reason before implementation. Put read-only build/configuration inputs in plan_verification, not task delivery scope. Direct: implement + verify, review_dispatch if review=independent, then accept_item; no implementation dispatch. Delegated: dispatch, inspect delivery, verify, review_dispatch if required, then accept_item.' } : { required: false },
           verification_planning: { required: !!state.verification_version, operation: 'plan_verification',
             blockers: groupPlanningBlockers(state), groups: state.verification_groups ?? {},
             example: { operation: 'plan_verification', verification_group: 'backend', item_ids: ['BE'], files: ['src/service.java', 'test/service.test.java', 'pom.xml'], command: 'mvn test' },
-            instruction: 'One item includes implementation and its necessary tests. Declare every required test group before dispatch; verify one group at a time. No test-count or coverage claims are inferred from model text.' },
+            instruction: 'One item includes implementation and its necessary tests. Declare every required test group before implementation; verify missing, failed or stale groups. Reuse passing groups with unchanged inputs across stages. Repeating an equivalent successful check preserves acceptance; any failed run breaks that continuity. No test-count or coverage claims are inferred from model text.' },
           verification_runs: (state.verification_runs ?? []).map(run => ({ id: run.id, group_id: run.group_id,
             command: run.receipt.command, finished_at: run.receipt.finished_at, exit_code: run.receipt.exit_code,
             test_count: run.receipt.test_summary?.count ?? null, passed: run.passed, invalidated_reason: run.invalidated_reason })),
           task_plan_item_blockers: planItemBlockers,
           skill_obligations: obligationStages(state, workflow).map(stage => {
-            const bindings = workflow.stage_bindings?.[stage]?.skills ?? []
+            const bindings = (workflow.stage_bindings?.[stage]?.skills ?? []).filter(requiredSkill)
             const skills = bindings.map(entry => state.complexity !== undefined || entry.skill.source === 'codex-project'
               ? formatResourceRef(entry.skill) : entry.skill.name)
             // Only bindings whose evidence is a command owe a command receipt, so a
@@ -2098,22 +2280,30 @@ export function registerDevTask(ctx: Context): void {
           legal_next: legalTargets(state.stage, workflow),
           actionable_operations: ['status', 'load_skill', 'record', 'scope', 'items', 'plan_verification', 'verify', 'revise',
             ...(['任务编排', '开发', '代码开发'].includes(state.stage) ? ['plan_execution'] : []),
-            ...(['开发', '代码开发'].includes(state.stage) ? ['dispatch', 'review_item', 'review_dispatch'] : []),
-            ...(state.stage === '代码审核' ? ['sonar_check', 'review'] : []), 'advance'],
-          commit: checkpoint.allowed && commitBlockers.length
-            ? { ...checkpoint, allowed: false, reason: commitBlockers.join('; ') }
-            : checkpoint,
+            ...(['开发', '代码开发'].includes(state.stage) ? ['dispatch', 'accept_item', 'review_item', 'review_dispatch'] : []),
+            ...(state.stage === '代码审核' ? ['sonar_check', 'review'] : []),
+            ...(commitState.allowed ? ['commit'] : []),
+            ...(state.stage === workflow.stages.at(-1) && !completionIssues.length && !state.completed ? ['complete'] : []), 'advance'],
+          commit: { ...commitState, policy: workflow.commit.policy, checkpoints: workflow.commit.checkpoints,
+            ...(recordedCommit ? { recorded_hash: recordedCommit } : {}),
+            required_fields: workflow.commit.file_scope ? ['message', 'files'] : ['message'],
+            next_action: !commitState.allowed ? commitState.reason
+              : recordedCommit ? 'This checkpoint commit is recorded. Follow remaining stage gates, then advance; do not create another commit merely to change stages.'
+              : 'Call commit with the exact message and repository-relative changed files; perform the authorized Git commit, then call commit again with the same message/files and its actual HEAD hash before advance.' },
           bindings: {
             skills: binding?.skills ?? [],
-            skill_contents: await skillBodiesForBinding(binding, fs, cwd),
+            ...(a.detail ? { skill_contents: await skillBodiesForBinding(binding, fs, cwd) } : {
+              skill_index: await skillIndexForBinding(binding, fs, cwd, state, session),
+            }),
             // The layer is disclosed with each rule, because two same-named rules in
             // different layers are distinct resources and the caller needs to know
             // which one is actually in force. Reporting only the name made them
             // indistinguishable in exactly the case where the distinction matters.
-            rules: rules.map(r => ({ name: r.name, source: r.source, content: r.content })),
+            rules: rules.map(r => ({ name: r.name, source: r.source, hash: hashText(r.content), ...(a.detail ? { content: r.content } : {}) })),
           },
           risk_downgrades: state.risk_downgrades ?? [],
-        }, null, 2)
+          risk_changes: state.risk_changes ?? [],
+        }, state, a.detail, { section: a.section, itemId: a.item_id, groupId: a.verification_group }), null, a.detail ? 2 : undefined)
       }
 
       if (a.operation === 'sonar_check') {
@@ -2121,10 +2311,20 @@ export function registerDevTask(ctx: Context): void {
         if (state.stage !== '代码审核') throw new Error('sonar_check runs only in the 代码审核 stage')
         const functionalProblems = await evidenceBlockers(fs, state, workflow, cwd)
         if (!state.verification.passed || functionalProblems.length) {
-          throw new Error(`functional verification must pass on the current files before sonar_check; ${[...functionalProblems, ...(state.verification.problems ?? [])].join('; ') || 'run verify with the required real test command'}`)
+          throw new Error(reviewRecoveryMessage(state, workflow,
+            `functional verification must pass on the current files before sonar_check; ${[...functionalProblems, ...(state.verification.problems ?? [])].join('; ') || 'run verify with the required real test command'}`,
+            await staleReviewedItems(fs, state, cwd)))
         }
         if (state.sonar_policy.source !== 'ide-local' && !state.commits.some(commit => commit.hash !== undefined)) {
           throw new Error('sonar_check requires a recorded Git commit at the 测试 checkpoint; CI mode also requires a push')
+        }
+        if (state.sonar_policy.source !== 'ide-local') {
+          const recorded = state.commits.findLast(commit => commit.hash !== undefined)!
+          if (!isFullOid(recorded.hash!)) {
+            const canonical = await assertCommittedContent(ctx, fs, state, exec, recorded.hash)
+            recorded.provided_hash = recorded.hash!
+            recorded.hash = canonical
+          }
         }
         const target = state.sonar_policy.mode === 'branch' ? state.branch : a.pull_request
         if (!target) throw new Error('pull-request SonarQube audit requires pull_request')
@@ -2151,8 +2351,10 @@ export function registerDevTask(ctx: Context): void {
           return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
             uncovered_files: audit.uncovered_files ?? [], report_path: audit.report_path,
             rule_learning_candidates: ruleLearningCandidates(state),
+            ...(audit.gate !== 'OK' ? { recovery: implementationRecovery(state, workflow,
+              state.items.filter(item => item.execution_plan?.files.some(file => audit.blocking.some(finding => finding.file === file))).map(item => item.id)) } : {}),
             next_action: audit.gate === 'OK' ? '继续代码审核；检查历史阻断问题是否有可复用的修复经验，再决定是否通过 learn_rule 提议项目 Rule。误报或一次性问题不要沉淀。'
-              : '修复新增代码问题，并处理未覆盖文件；重新测试后再次运行 sonar_check。' }, null, 2)
+              : '先按 recovery 回到代码开发，再修复、验证和逐项验收，之后返回代码审核运行 sonar_check。先使用本次问题消息中的格式、位置和报告；仍不明确时定点查询规则说明，不扫描 DSH 安装目录、app.asar 或整个用户运行目录。' }, null, 2)
         }
         let ceTaskId = a.ce_task_id
         if (state.sonar_policy.source === 'local') {
@@ -2192,9 +2394,11 @@ export function registerDevTask(ctx: Context): void {
         return JSON.stringify({ gate: audit.gate, ...(audit.server_gate ? { server_gate: audit.server_gate } : {}),
           blocking: audit.blocking, findings: audit.findings, report_path: audit.report_path,
           rule_learning_candidates: ruleLearningCandidates(state),
-          analysis_id: audit.analysis_id, next_action: audit.gate === 'OK' && audit.blocking.length === 0
+          analysis_id: audit.analysis_id,
+          ...(audit.gate !== 'OK' || audit.blocking.length ? { recovery: implementationRecovery(state, workflow) } : {}),
+          next_action: audit.gate === 'OK' && audit.blocking.length === 0
             ? 'Review prior blocking issues for reusable fixes with learn_rule; do not learn false positives. Continue code review, then record review pass.'
-            : 'Record review blocked, fix findings, rerun tests and the scan, then call sonar_check again.' }, null, 2)
+            : 'Read the finding messages and report. Follow recovery before editing: return to implementation, fix affected items, verify changed inputs, accept them and return to code review. Do not scan DSH installations or user runtime directories to guess rule requirements.' }, null, 2)
       }
 
       if (a.operation === 'sonar_disposition') {
@@ -2243,10 +2447,10 @@ export function registerDevTask(ctx: Context): void {
           .flatMap(entry => unresolvedBlockingFindings(entry)).find(entry => entry.key === a.issue_key)
         if (!issue) for (const entry of state.sonar_history ?? []) {
           if (fullSonarAudit(entry)) continue
-          if (!entry.detail_path.startsWith(`.dsh/reviews/${state.id}/`) || !entry.detail_path.endsWith('.json'))
+          if (!isTaskReviewPath(state.id, entry.detail_path, state.task_directory) || !entry.detail_path.endsWith('.json'))
             throw new Error('invalid Sonar history detail path')
           assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', entry.detail_path)
-          const raw = await readText(fs, entry.detail_path, cwd)
+          const raw = await readText(fs, entry.detail_path, state.root ?? cwd)
           if (!raw) throw new Error('Sonar history detail is unavailable; restore the archived audit')
           issue = unresolvedBlockingFindings(JSON.parse(raw) as SonarAudit).find(finding => finding.key === a.issue_key)
           if (issue) break
@@ -2330,20 +2534,25 @@ export function registerDevTask(ctx: Context): void {
           throw new Error(`commit summary names task "${committedId}" but this operation targets "${state.id}" — put the target task id in the summary`)
         }
         if (a.hash) {
-          if (!/^[0-9a-f]{7,40}$/i.test(a.hash)) throw new Error('commit hash must be a Git object id')
+          if (!isOidInput(a.hash)) throw new Error('commit hash must be a Git object id')
           const receipt = await runVerificationCommand(ctx, 'git -c core.quotepath=false log -1 --format=%H%n%s%n --name-only HEAD', state.root ?? cwd, exec)
           if (receipt.exit_code !== 0 || receipt.aborted || receipt.timed_out || receipt.sandbox?.denied || receipt.sandbox?.runnerFailed) throw new Error('cannot verify the recorded Git commit')
           const lines = receipt.stdout.trim().split(/\r?\n/)
-          if (!lines[0]?.startsWith(a.hash) || lines[1] !== a.message) throw new Error('Git commit does not match the approved hash and summary')
+          if (!lines[0]?.toLowerCase().startsWith(a.hash.toLowerCase()) || lines[1] !== a.message) throw new Error('Git HEAD does not match the supplied hash/message. Read git log -1, then record its exact hash and subject with the same files; do not create another commit merely to repair this receipt.')
           const paths = lines.slice(2).map(line => line.trim()).filter(Boolean)
           if (!paths.length || (workflow.commit.file_scope && !checkFileScope(state, paths, workflow).ok)) throw new Error('actual committed files do not match the task scope')
           if (paths.some(isSensitivePath) && !riskApproved) throw new Error('实际提交触及敏感路径，但任务缺少 high_risk 验证回执')
-          await assertCommittedContent(ctx, fs, state, exec, a.hash)
-          if (!state.commits.some(entry => entry.hash === a.hash)) state.commits.push({ label: checkpoint.label!, hash: a.hash })
+          const canonical = await assertCommittedContent(ctx, fs, state, exec, a.hash)
+          const existing = state.commits.find(entry => entry.hash === canonical || entry.hash === a.hash)
+          if (existing) { existing.hash = canonical; existing.provided_hash ??= a.hash }
+          else state.commits.push({ label: checkpoint.label!, hash: canonical, provided_hash: a.hash })
         }
         await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
-        if (a.hash) return `commit recorded (${checkpoint.label ?? ''}): ${a.hash}; use status to inspect remaining gates, then advance`
-        return `commit approved (${checkpoint.label ?? ''}) — git add ${(a.files ?? []).join(' ')}; git commit -m "${a.message ?? ''}"`
+        return JSON.stringify({ status: a.hash ? 'recorded' : 'ready', stage: state.stage, label: checkpoint.label,
+          message: a.message ?? '', files: a.files ?? [], ...(a.hash ? { hash: a.hash } : {}),
+          next_action: a.hash ? 'Commit recorded. Follow remaining stage gates, then advance; do not repeat verification on unchanged passing inputs.'
+            : 'Perform the authorized Git commit using this exact message and these files. Then record the actual HEAD hash with the call below; do not paraphrase the committed subject.',
+          ...(!a.hash ? { record_call: { operation: 'commit', task_id: state.id, message: a.message ?? '', files: a.files ?? [], hash: '<actual Git HEAD hash>' } } : {}) }, null, 2)
       }
 
         if (a.operation === 'complete') {
@@ -2369,6 +2578,7 @@ export function registerDevTask(ctx: Context): void {
           state.completed = hash === undefined
             ? { at: new Date().toISOString() }
             : { at: new Date().toISOString(), commit_hash: hash }
+          if (state.delivery) state.delivery.metrics = parentMetrics(session, Date.parse(state.delivery.requested_at ?? state.delivery.created_at))
           await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
           return hash === undefined
             ? `task archived at "${state.stage}"; the record is now read-only`
@@ -2388,7 +2598,8 @@ export function registerDevTask(ctx: Context): void {
             if (target === undefined || !workflow.stages.includes(target)) {
               throw new Error('revise requires target_stage naming a stage of this flow: ' + workflow.stages.join(', '))
             }
-            if (target === state.stage && !(kind === 'defect' && ['开发', '代码开发'].includes(target)))
+            if (target === state.stage && !(kind === 'defect' && ['开发', '代码开发'].includes(target))
+              && !(kind === 'requirement' && workflow.requirement_review?.stage === target))
               throw new Error('same-stage revise is supported only for a defect in the implementation stage; otherwise choose an earlier target_stage')
             // Which stages are reachable backwards is a property of the flow, not of the
             // tool: any earlier stage is a legal place to resume from.
@@ -2401,19 +2612,36 @@ export function registerDevTask(ctx: Context): void {
             if (state.items.some(item => ['running', 'starting'].includes(item.dispatch?.status ?? '')))
               throw new Error('a child dispatch is still active; wait or recover it before revising')
             let impact = kind === 'defect' && state.verification_version && a.affected_items?.length ? affectedItems(state, a.affected_items) : undefined
+            let currentVerificationHashes: Record<string, string> | undefined
             if (impact) {
               const hashes = await verificationInputHashes(fs, state, cwd)
+              currentVerificationHashes = hashes
               for (const group of Object.values(state.verification_groups ?? {})) {
                 const run = latestGroupRun(state, group.id)
                 if (run && run.receipt.scope_hash !== hashes[group.id]) impact.push(...group.item_ids)
               }
               for (const [stage, entries] of Object.entries(state.skill_loads ?? {})) for (const binding of workflow.stage_bindings?.[stage]?.skills ?? []) {
+                if (!requiredSkill(binding)) continue
                 const loaded = entries[formatResourceRef(binding.skill)]
                 if (!loaded) continue
                 const content = await readSkillAt(binding.skill, fs, cwd)
                 const rules = await resolveRules(binding.rules, fs, cwd, state.flow?.resources)
                 const currentKey = hashText(JSON.stringify([content, rules.resolved.map(rule => [rule.source, rule.name, rule.content])]))
-                if (content === undefined || rules.missing.length || currentKey !== loaded.input_hash) impact = state.items.map(item => item.id)
+                if (content === undefined || rules.missing.length || currentKey !== loaded.input_hash) {
+                  impact = state.items.map(item => item.id)
+                  currentVerificationHashes = undefined
+                }
+              }
+              for (const resource of state.flow?.resources ?? []) {
+                if (!Object.values(workflow.stage_bindings ?? {}).some(stage => stage.skills?.some(binding => requiredSkill(binding)
+                  && (resource.kind === 'skill' ? formatResourceRef(binding.skill) === formatResourceRef(resource.ref)
+                    : binding.rules.some(rule => formatResourceRef(rule) === formatResourceRef(resource.ref)))))) continue
+                const content = resource.kind === 'skill' ? await readSkillAt(resource.ref, fs, cwd)
+                  : resource.kind === 'rule' ? await readRuleAt(resource.ref.source, resource.ref.name, fs, cwd) : undefined
+                if (content === undefined || hashText(content) !== resource.hash) {
+                  currentVerificationHashes = undefined
+                  impact = state.items.map(item => item.id)
+                }
               }
               impact = affectedItems(state, [...new Set(impact)])
             }
@@ -2421,14 +2649,17 @@ export function registerDevTask(ctx: Context): void {
               kind, reason: a.revision_reason.trim(), to: target, from: state.stage,
               at: new Date().toISOString(), invalidated: invalidatedBy(kind),
               ...(impact ? { affected_items: impact } : {}),
-            })
+            }, currentVerificationHashes)
+            if (currentVerificationHashes) refreshVerification(state, currentVerificationHashes, await scopeFingerprint(fs, state, cwd))
             const mode = await resolveWriteMode(ctx, a, exec)
             await compactSonarHistory(fs, state, cwd, mode)
             delete state.sonar_audit
             await writeTask(fs, state, cwd, mode)
+            await bindTaskDelivery(ctx, exec.agent, state)
             return 'revised (' + kind + ') back to "' + outcome.stage + '"; invalidated: ' + outcome.invalidated.join(', ')
               + '; affected_items: ' + (impact ?? state.items.map(item => item.id)).join(', ')
               + '; preserved_items: ' + state.items.filter(item => impact?.length && !impact.includes(item.id)).map(item => item.id).join(', ')
+              + '; valid_verification_groups: ' + verificationGroupViews(state, currentVerificationHashes).filter(group => group.status === 'passed').map(group => group.id).join(', ')
               + '. Re-establish affected evidence before advancing; unchanged item evidence is preserved, history is kept. Read status for current gates.'
           }
 
@@ -2436,6 +2667,25 @@ export function registerDevTask(ctx: Context): void {
       let note: string | undefined
       let approvedWriteMode: 'workspace-write' | 'danger-full-access' | undefined
       switch (a.operation) {
+        case 'plan': {
+          if (!state.delivery || !['任务编排', '代码开发', '开发'].includes(state.stage)) throw new Error('plan requires a new implementation contract in orchestration or development')
+          if (!a.plans?.length) throw new Error('plan requires complete plans')
+          state.items = normalizeItems(a.plans.map(plan => ({ id: plan.id, title: plan.title })), state.items)
+          for (const plan of a.plans) for (const file of plan.files) {
+            assertInsideRoot(state.root!, state.root!, file)
+            if (isSensitivePath(file)) throw new Error(`sensitive delivery path: ${file}`)
+            const info = await fs.lstat(file, { cwd: state.root! })
+            if (info && info.type !== 'file') throw new Error(`plan contains a non-regular file: ${file}`)
+          }
+          state.files = [...new Set([...state.files, ...a.plans.flatMap(plan => plan.files)])]
+          for (const input of a.plans) {
+            const item = requireItem(state, input.id)
+            if (item.dispatch || item.review) throw new Error('plan cannot replace started work; revise/replan the affected item explicitly')
+            item.execution_plan = makeExecutionPlan(state, item, input, executionCapabilities(ctx, !!exec.agent))
+          }
+          note = JSON.stringify({ items: state.items.map(item => ({ id: item.id, plan: item.execution_plan })), next_action: 'Declare necessary verification groups, record the required task-plan artifact if in orchestration, then advance. Direct items need no implementation dispatch: implement, verify, review_dispatch when independent review is required, then accept_item to record the verdict and done atomically.' })
+          break
+        }
         case 'record': {
           if (!a.artifact) throw new Error('record requires artifact (the artifact id)')
           const def = workflow.artifacts.find(artifact => artifact.id === a.artifact)
@@ -2453,6 +2703,7 @@ export function registerDevTask(ctx: Context): void {
             merged[field] = value === undefined || value === null ? '' : String(value)
           }
           state.artifacts[def.id] = merged
+          if (workflow.requirement_review?.artifact === def.id && state.requirements?.document?.source !== requirementSource(state, workflow.requirement_review)) invalidateRequirement(state)
           const missing = def.fields.filter(field => !merged[field] || merged[field].trim() === '')
           note = missing.length === 0
             ? `recorded ${def.name} ("${def.id}") — all required fields present`
@@ -2466,11 +2717,11 @@ export function registerDevTask(ctx: Context): void {
         case 'plan_verification': {
           if (!a.verification_group || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/u.test(a.verification_group)) throw new Error('plan_verification requires verification_group, e.g. backend')
           if (!a.command?.trim() || !a.files?.length || !a.item_ids) throw new Error('plan_verification requires command, files (implementation + tests + relevant configuration), and item_ids (empty for task-level integration checks)')
-          const problem = validationCommandProblem(a.command)
+          const problem = verificationPlanProblem(a.command)
           if (problem) throw new Error(problem)
           for (const file of a.files) {
             assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', file)
-            if (/^\.dsh[\\/]task-[^/\\]+\.json$/u.test(file)) throw new Error('a test group cannot include its own changing task ledger')
+            if (isTaskLedgerPath(file)) throw new Error('a test group cannot include its own changing task ledger')
           }
           for (const id of a.item_ids) requireItem(state, id)
           if (state.items.some(item => ['running', 'starting'].includes(item.dispatch?.status ?? ''))) throw new Error('wait for active children before changing verification plans')
@@ -2484,7 +2735,7 @@ export function registerDevTask(ctx: Context): void {
           ;(state.verification_groups ??= {})[group.id] = group
           state.review = { outcome: 'pending' }
           await refreshVerification(state, await verificationInputHashes(fs, state, cwd), await scopeFingerprint(fs, state, cwd))
-          note = JSON.stringify({ group, blockers: groupPlanningBlockers(state), next_action: `Implement this complete unit, then verify verification_group=${group.id}; a later test item must not depend on this unit being done.` })
+          note = JSON.stringify({ group, blockers: groupPlanningBlockers(state), next_action: `Implement this complete unit, then verify verification_group=${group.id}. verify itself executes the real command and captures its receipt; do not run the same registered suite in a native terminal first. Set timeout_ms to a realistic budget. A later test item must not depend on this unit being done.` })
           break
         }
         case 'items':
@@ -2506,11 +2757,16 @@ export function registerDevTask(ctx: Context): void {
           const item = requireItem(state, a.item_id)
           if (item.status !== 'todo') throw new Error('reopen the item as todo before replanning execution')
           for (const path of a.files ?? []) assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
-          item.execution_plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          const plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          validateDeliveryChanges(a.changes ?? [], plan.files)
+          if (a.changes?.length) plan.changes = await captureDeliveryChanges(ctx, fs, state, a.changes, exec, await resolveWriteMode(ctx, a, exec))
+          item.execution_plan = plan
           delete item.independent_review
           delete item.review
           note = JSON.stringify({ item_id: item.id, execution_plan: item.execution_plan,
-            next_action: 'Dispatch with item_id only; the engine uses this plan. Complete dependencies first. Parent verifies delivery and executes the recorded review strategy.' })
+            next_action: item.execution_plan.mode === 'direct'
+              ? 'Complete dependencies, implement this unit in the main session, verify its required groups, review_dispatch if independent review is required, then accept_item. No implementation dispatch is needed.'
+              : 'Complete dependencies, then dispatch with item_id only; the engine uses this plan. Parent verifies delivery and executes the recorded review strategy before accept_item.' })
           break
         }
         case 'dispatch': {
@@ -2540,18 +2796,18 @@ export function registerDevTask(ctx: Context): void {
           if (execution !== 'direct') {
             if (!exec.agent) throw new Error('delegation requires the live parent agent')
             const runtime = taskSubagents(ctx)
-            if (!runtime?.start) throw new Error('DSH subagents service is unavailable; no child was started')
+            if (!runtime?.startActivation) throw new Error('DSH subagents service is unavailable; no child was started')
             const mode = await resolveWriteMode(ctx, a, exec)
             item.dispatch.provider = execution
             item.dispatch.parent_session = session?.id ?? ''
             item.dispatch.status = 'starting'
             await writeTask(fs, state, cwd, mode)
-            const prompt = `You are the implementation worker, not the workflow controller. Do not call dev_task or delegate further.\nTask ${state.id}: ${state.title}\nItem ${item.id}: ${item.title}\n${a.description ?? ''}\nExecution brief:\n${JSON.stringify(plan ?? {})}\nAllowed delivery paths: ${(plan?.files ?? state.files).join(', ')}\nWork in ${state.root ?? cwd}. Preserve existing worktree changes. Follow the parent task instructions below. Do not change the parent task ledger, commit or archive. Return changed files, actual checks and remaining issues; report BLOCKED if context is insufficient.\nTask artifacts and acceptance context:\n${JSON.stringify(state.artifacts)}\n${await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources)}`
-            let run: Awaited<ReturnType<NonNullable<typeof runtime.start>>> | undefined
+            const prompt = `You are the implementation worker, not the workflow controller. Do not call dev_task or delegate further.\nTask ${state.id}: ${state.title}\nItem ${item.id}: ${item.title}\n${a.description ?? ''}\nExecution brief:\n${JSON.stringify(plan ?? {})}\nAllowed delivery paths: ${(plan?.files ?? state.files).join(', ')}\nWork in ${state.root ?? cwd}. Preserve existing worktree changes. Follow the parent task instructions below. Do not change the parent task ledger, commit or archive. Return changed files, actual checks and remaining issues; report BLOCKED if context is insufficient.\nTask artifacts and acceptance context:\n${JSON.stringify(state.artifacts)}\n${await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, true)}`
+            let run: TaskActivation | undefined
             try {
-              run = await runtime.start(execution, { label: `${state.id}/${item.id}`, parent: exec.agent,
-                prompt: [{ type: 'text', text: prompt }], signal: exec.signal, maxDepth: 3 })
-              item.dispatch.run_id = run.id
+              run = ownActivation(await runtime.startActivation({ provider: execution, label: `${state.id}/${item.id}`, delivery: 'caller', signal: exec.signal,
+                request: { parent: exec.agent, cwd: state.root ?? cwd!, prompt: [{ type: 'text', text: prompt }], maxDepth: 3 } }), exec.signal)
+              item.dispatch.run_id = run.childId
               item.dispatch.status = 'running'
               await writeTask(fs, state, cwd, mode)
               const result = await run.result
@@ -2562,7 +2818,9 @@ export function registerDevTask(ctx: Context): void {
               item.dispatch.status = 'failed'
               item.dispatch.error = error instanceof Error ? error.message : String(error)
             } finally {
+              item.dispatch.metrics = unknownMetrics(Date.parse(item.dispatch.at))
               if (run) {
+                try { item.dispatch.metrics = runMetrics(await reviewerEvents(ctx, run.childId, exec.signal), Date.parse(item.dispatch.at)) } catch {}
                 try { await run.dispose() }
                 catch (error) { item.dispatch.status = 'running'; item.dispatch.error = `child disposal failed; inspect host state and recover_dispatch before retrying: ${String(error)}` }
               }
@@ -2570,30 +2828,35 @@ export function registerDevTask(ctx: Context): void {
             if (item.dispatch.status !== 'running') item.dispatch.finished_at = new Date().toISOString()
             await writeTask(fs, state, cwd, mode)
             return JSON.stringify({ item_id: item.id, dispatch: item.dispatch,
-              next_action: 'Parent must inspect the delivery, run verify, review_item and mark done. Child completion does not satisfy task evidence.' })
+              next_action: 'Parent must inspect the delivery and run verify; review_dispatch when independent review is required, then accept_item with the exact outcomes. Child completion does not satisfy task evidence.' })
           }
           note = `item "${item.id}" is doing; implementation intent recorded: ${item.dispatch.description || '(no description)'}. Implement it directly or with help, then review_item and mark it done.`
           break
         }
         case 'review_dispatch': {
-          if (!['开发', '代码开发'].includes(state.stage)) throw new Error('review_dispatch runs in implementation stage')
+          if (!['开发', '代码开发'].includes(state.stage)) throw new Error(reviewRecoveryMessage(state, workflow, 'review_dispatch runs in implementation stage', a.item_id ? [a.item_id] : undefined))
           const item = requireItem(state, a.item_id)
           const plan = item.execution_plan
           if (!plan || plan.review !== 'independent') throw new Error('item has no independent review plan')
           const coverage = executionCoverageBlockers(state)
           if (coverage.length) throw new Error(coverage.join('; '))
           if (state.items.some(other => other.id !== item.id && other.status === 'doing')) throw new Error('finish or pause the current doing item before reviewing another item')
-          if (!item.dispatch || (item.dispatch.status && item.dispatch.status !== 'completed')) throw new Error('implementation must finish before independent review')
+          if (plan.depends_on.some(id => state.items.find(other => other.id === id)?.status !== 'done')) throw new Error('item dependencies are not accepted')
+          if ((!item.dispatch && plan.mode !== 'direct') || (item.dispatch?.status && item.dispatch.status !== 'completed')) throw new Error('implementation must finish before independent review')
           if (!exec.agent || !executionCapabilities(ctx, true).reviewer) throw new Error('independent readonly reviewer is unavailable; no verdict was recorded')
           const runtime = taskSubagents(ctx)!
           const structuredReview = runtime.getProvider!('spawn')!.capabilities.outputSchema === true
           const verificationProblems = await itemVerificationBlockers(fs, state, item.id, cwd)
           if (verificationProblems.length) throw new Error(verificationProblems.join('; '))
+          await assertDeliveryChanges(fs, plan, state.root ?? cwd)
+          // A verified main-session delivery needs no implementation child or
+          // preparatory dispatch call. Persist this identity with the reviewer
+          // start so accept_item can accept the same delivery afterwards.
+          item.dispatch ??= { execution: 'direct', description: 'Verified main-session delivery submitted for independent review', at: new Date().toISOString() }
           const current = await itemContextScope(fs, state, item.id, cwd)
           const scope = await scopeFingerprint(fs, { ...state, files: plan.files }, cwd)
-          const reviewConstraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources),
-            workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources) : ''].filter(Boolean).join('\n\n')
-          const contextHash = hashText(JSON.stringify({ plan, artifacts: state.artifacts, constraints: reviewConstraints, scope: current,
+          const reviewConstraints = await reviewBindings(state, workflow, fs, cwd)
+          const contextHash = hashText(JSON.stringify({ plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints: reviewConstraints, scope: current,
             ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
           const previous = item.independent_review
           const history = [...(item.independent_review_history ?? []), ...(previous ? [previous] : [])].slice(-10)
@@ -2610,41 +2873,60 @@ export function registerDevTask(ctx: Context): void {
           item.independent_review = review
           const mode = await resolveWriteMode(ctx, a, exec)
           await writeTask(fs, state, cwd, mode)
-          let run: Awaited<ReturnType<NonNullable<typeof runtime.start>>> | undefined
+          const testReceipts = state.verification_version ? requiredGroups(state, item.id).map(group => {
+            const checked = latestGroupRun(state, group.id)!
+            return { group: group.id, run_id: checked.id, passed: checked.passed, files: checked.files, receipt: receiptView(checked.receipt) }
+          }) : receiptView(state.verification.receipt)
+          let run: TaskActivation | undefined
           try {
-            run = await runtime.start!('spawn', { label: `${state.id}/${item.id}/review`, parent: exec.agent, signal: exec.signal,
+            run = ownActivation(await runtime.startActivation({ provider: 'spawn', label: `${state.id}/${item.id}/review`, delivery: 'caller', signal: exec.signal,
+              request: { parent: exec.agent, cwd: state.root ?? cwd!, agentPreset: REVIEW_PRESET,
               ...structuredReview ? { outputSchema: REVIEW_OUTPUT_SCHEMA } : {},
-              maxDepth: 3, toolFilter: { allow: ['read'] }, prompt: [{ type: 'text', text:
-                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.\nReview ${state.id}/${item.id}: ${item.title}.\nRead every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.\nBrief: ${JSON.stringify(plan)}\nTask artifacts: ${JSON.stringify(state.artifacts)}\nApplicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):\n${reviewConstraints}\nImplementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}\nActual parent test receipts: ${JSON.stringify(state.verification_version ? requiredGroups(state, item.id).map(group => ({ group: group.id, run: latestGroupRun(state, group.id) })) : state.verification.receipt)}\n${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] })
-            review.run_id = run.id
+              maxDepth: 3, prompt: [{ type: 'text', text:
+                `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.
+Review ${state.id}/${item.id}: ${item.title}.
+Current task risk: ${state.risk_level}. Read every delivery file in this brief in ${state.root ?? cwd}; use line windows to read past truncation. Do not trust implementer claims. Check concrete acceptance and relevant edge cases, then code quality. Cite file:line evidence.
+Planned changes: for delete/rename, verify the old path is absent and read baseline.git.path (committed old content) and baseline.before.path if present (pre-change worktree content). For rename, also read the new destination. Required complete reads: ${JSON.stringify(requiredReviewPaths(plan))}.
+Brief: ${JSON.stringify(plan)}
+Task artifacts: ${JSON.stringify(state.artifacts)}
+Applicable project Skills and Rules (apply their code constraints; workflow actions belong to the parent):
+${reviewConstraints}
+Implementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}
+Actual parent test receipts (host-captured summary; complete command output remains in the parent ledger): ${JSON.stringify(testReceipts)}
+${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. State blocking findings first; keep notes concise and cite concrete evidence rather than narrating the entire implementation. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] } }), exec.signal)
+            review.run_id = run.childId
             review.status = 'running'
             await writeTask(fs, state, cwd, mode)
             const result = await run.result
             review.output = result.output.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').slice(0, 24000)
             if (result.stopReason !== 'completed') throw new Error(result.diagnostic ?? result.stopReason)
+            review.policy = reviewerProof(ctx, run.childId, structuredReview)
             const verdict = structuredReview ? validateIndependentReview(result.structured) : parseIndependentReview(review.output)
-            const sources = await Promise.all(plan.files.map(async file => {
+            const sources = await Promise.all(requiredReviewPaths(plan).map(async file => {
               const content = await readText(fs, file, state.root ?? cwd)
               if (content === undefined) throw new Error(`review delivery is missing: ${file}`)
               return { file, content }
             }))
             const readKey = (path: string): string => process.platform === 'win32' ? resolve(state.root ?? cwd ?? '', path).toLowerCase() : resolve(state.root ?? cwd ?? '', path)
-            review.read_coverage = fullReadCoverage(run.localAgent?.session.snapshotEvents() ?? [], sources, readKey)
+            review.read_coverage = fullReadCoverage(await reviewerEvents(ctx, run.childId, exec.signal), sources, readKey)
             review.read_files = review.read_coverage.map(entry => entry.file)
-            if (!hasFullReadCoverage(review, plan.files)) throw new Error('reviewer did not successfully read every planned delivery file in full; read missing windows or untruncated lines, then retry; no independent verdict is accepted')
+            if (!hasFullReadCoverage(review, requiredReviewPaths(plan))) throw new Error('reviewer did not successfully read every planned delivery file in full; read missing windows or untruncated lines, then retry; no independent verdict is accepted')
             Object.assign(review, verdict)
             if (structuredReview) review.output = JSON.stringify(verdict)
             if (scope !== await scopeFingerprint(fs, { ...state, files: plan.files }, cwd)) throw new Error('delivery changed during independent review')
+            await assertDeliveryChanges(fs, plan, state.root ?? cwd)
             review.status = 'completed'
           } catch (error) { review.status = 'failed'; review.error = error instanceof Error ? error.message : String(error) }
           finally {
+            review.metrics = unknownMetrics(Date.parse(review.at))
+            if (run) try { review.metrics = runMetrics(await reviewerEvents(ctx, run.childId, exec.signal), Date.parse(review.at)) } catch {}
             if (run) try { await run.dispose() }
             catch (error) { review.status = 'running'; review.error = `reviewer disposal failed; inspect host and recover_dispatch dispatch_role=review: ${String(error)}` }
           }
           if (review.status !== 'running') review.finished_at = new Date().toISOString()
           await writeTask(fs, state, cwd, mode)
           return JSON.stringify({ item_id: item.id, independent_review: review,
-            next_action: 'Parent inspects this verdict. Fix any failure, re-verify and re-review; otherwise review_item must accept these exact outcomes before items marks done.' })
+            next_action: 'Parent inspects this verdict. Fix any failure, re-verify and re-review; otherwise accept_item must accept these exact outcomes and mark the item done. Do not run an extra implementation dispatch or repeat a current passing test just to change stages.' })
         }
         case 'recover_dispatch': {
           const item = requireItem(state, a.item_id)
@@ -2673,23 +2955,30 @@ export function registerDevTask(ctx: Context): void {
           note = dispatch.error
           break
         }
+        case 'accept_item':
         case 'review_item': {
           const item = requireItem(state, a.item_id)
-          if (!['开发', '代码开发'].includes(state.stage)) throw new Error('review_item runs only in implementation stage')
+          if (a.operation === 'accept_item') {
+            if (!state.delivery || !item.execution_plan) throw new Error('accept_item requires a new implementation contract and execution plan')
+            if (item.execution_plan.depends_on.some(id => state.items.find(other => other.id === id)?.status !== 'done')) throw new Error('item dependencies are not accepted')
+            if (!item.dispatch && item.execution_plan.mode === 'direct') item.dispatch = { execution: 'direct', description: 'Main-session delivery submitted for acceptance', at: new Date().toISOString() }
+          }
+          if (!['开发', '代码开发'].includes(state.stage)) throw new Error(reviewRecoveryMessage(state, workflow, 'review_item runs only in implementation stage', a.item_id ? [a.item_id] : undefined))
           if (item.dispatch?.status && item.dispatch.status !== 'completed') throw new Error('delegated item has not completed successfully')
           if (a.spec_outcome !== 'pass' && a.spec_outcome !== 'fail') throw new Error('review_item requires spec_outcome: pass|fail')
           if (a.quality_outcome !== 'pass' && a.quality_outcome !== 'fail') throw new Error('review_item requires quality_outcome: pass|fail')
+          if (item.execution_plan) await assertDeliveryChanges(fs, item.execution_plan, state.root ?? cwd)
           if (item.execution_plan?.review === 'independent') {
             const review = item.independent_review
             if (review?.status !== 'completed' || !review.run_id
+              || !validReviewPolicy(review.policy, review.run_id)
               || review.plan_key !== executionPlanKey(item.execution_plan) || review.dispatch_at !== item.dispatch?.at
-              || !hasFullReadCoverage(review, item.execution_plan.files)
+              || !hasFullReadCoverage(review, requiredReviewPaths(item.execution_plan))
               || review.scope_hash !== await scopeFingerprint(fs, { ...state, files: item.execution_plan.files }, cwd))
               throw new Error('independent review is missing or stale; run review_dispatch on the current verified delivery')
             if (a.spec_outcome !== review.spec || a.quality_outcome !== review.quality) throw new Error('parent verdict cannot override independent findings; fix and re-review first')
-            const constraints = [await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources),
-              workflow.stages.includes('代码审核') ? await renderBindings('代码审核', workflow, fs, cwd, state.flow?.resources) : ''].filter(Boolean).join('\n\n')
-            const contextHash = hashText(JSON.stringify({ plan: item.execution_plan, artifacts: state.artifacts, constraints,
+            const constraints = await reviewBindings(state, workflow, fs, cwd)
+            const contextHash = hashText(JSON.stringify({ plan: item.execution_plan, risk_level: state.risk_level, artifacts: state.artifacts, constraints,
               scope: await itemContextScope(fs, state, item.id, cwd),
               ...(state.verification_version ? { checks: requiredGroups(state, item.id).map(group => group.key) } : {}) }))
             if (review.context_hash !== contextHash) throw new Error('independent review context changed; rerun review_dispatch before accepting new requirements or rules')
@@ -2705,6 +2994,11 @@ export function registerDevTask(ctx: Context): void {
             ...(item.execution_plan?.review === 'independent' ? { independent_run_id: item.independent_review!.run_id } : {}),
             spec: { outcome: a.spec_outcome, ...auditNotes },
             quality: { outcome: a.quality_outcome, ...auditNotes },
+          }
+          if (a.operation === 'accept_item') {
+            const blockers = executionItemBlockers(state, item)
+            if (blockers.length) throw new Error(blockers.join('; '))
+            item.status = 'done'
           }
           note = `reviewed item "${item.id}": spec=${a.spec_outcome}, quality=${a.quality_outcome}; item status remains ${item.status}. ${a.spec_outcome === 'pass' && a.quality_outcome === 'pass' ? 'If implementation is complete, use items with this id and status=done before dispatching another item.' : 'Fix the findings before marking this item done.'}`
           break
@@ -2727,21 +3021,12 @@ export function registerDevTask(ctx: Context): void {
           const unresolvedRules = (await rulesForBinding(bindingsForStage(state.stage, workflow), fs, cwd, state.flow?.resources)).missing
           const resourceIssues = resourceBlockers(unresolvedRules, state.stage)
           if (resourceIssues.length) throw new Error(resourceIssues.join('; '))
-          let result = assertAdvance(state, target, workflow)
-          if (!result.ok) {
-            const unmet = unmetGuards(state, target, workflow)
-            const confirmations = unmet.filter(guard => CONFIRMATION_GUARDS.includes(guard))
-            const others = unmet.filter(guard => !CONFIRMATION_GUARDS.includes(guard))
-            // Confirmation gates are satisfied by a human approval, not the record.
-            if (confirmations.length > 0 && others.length === 0 && exec.agent !== undefined) {
-              result = await approveAdvance(ctx, state, target, workflow, confirmations, exec)
-            }
-          }
+          const result = assertAdvance(state, target, workflow)
           if (!result.ok) throw new Error(result.errors!.join('; '))
           state.stage = target
-          const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources)
+          const disclosure = await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, false, state, session)
           const terminalObligations = obligationStages(state, workflow).filter(stage => stage !== state.stage)
-          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd, state.flow?.resources)}`))
+          const terminalDisclosure = await Promise.all(terminalObligations.map(async stage => `Before entering ${stage}, execute its bindings now:\n${await renderBindings(stage, workflow, fs, cwd, state.flow?.resources, false, state, session)}`))
           note = [`advanced to ${state.stage}`, disclosure, ...terminalDisclosure].filter(Boolean).join('\n')
           break
         }
@@ -2755,15 +3040,9 @@ export function registerDevTask(ctx: Context): void {
             break
           }
           if (target === 'high_risk') {
-            if (state.flow === undefined) {
+            if (!workflowSatisfies(workflow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
               throw new Error(
-                'legacy task has no frozen workflow snapshot — recreate (or migrate) the task before raising risk to high_risk; ' +
-                'a task without a frozen snapshot cannot prove its flow carries the high-risk capabilities',
-              )
-            }
-            if (!flowSatisfies(state.flow.flow, HIGH_RISK_REQUIRED_CAPABILITIES)) {
-              throw new Error(
-                `cannot raise risk to high_risk on flow "${state.flow.flow}" — it lacks the required capabilities ` +
+                `cannot raise risk to high_risk on flow "${state.flow!.flow}" — it lacks the required capabilities ` +
                 `(${HIGH_RISK_REQUIRED_CAPABILITIES.join(', ')}). Use the standard flow.`,
               )
             }
@@ -2784,15 +3063,35 @@ export function registerDevTask(ctx: Context): void {
               throw new Error(`risk downgrade was not approved (${outcome}); risk_level unchanged`)
             }
           }
-          state.risk_downgrades = [
-            ...(state.risk_downgrades ?? []),
-            { from: state.risk_level, to: target, at: new Date().toISOString() },
-          ]
+          const previousRisk = state.risk_level, stageBefore = state.stage, at = new Date().toISOString()
+          if (previousRisk === 'high_risk' && target === 'standard') (state.risk_downgrades ??= []).push({ from: previousRisk, to: target, at })
           state.risk_level = target
-          note = `risk_level set to ${target} (recorded in risk_downgrades)`
+          const reviewItems: string[] = []
+          if (target === 'high_risk') {
+            const capabilities = executionCapabilities(ctx, !!exec.agent)
+            for (const item of state.items) {
+              if (item.execution_plan) {
+                Object.assign(item.execution_plan, reviewStrategy(state, item.execution_plan.mode, capabilities), { capabilities, at })
+                reviewItems.push(item.id)
+              }
+              if (item.independent_review) item.independent_review_history = [...(item.independent_review_history ?? []), item.independent_review].slice(-10)
+              delete item.independent_review
+              delete item.review
+              if (item.status === 'done') item.status = 'todo'
+            }
+            state.review = { outcome: 'pending' }
+            const implementation = workflow.stages.find(stage => stage === '开发' || stage === '代码开发')
+            if (state.items.length && implementation && workflow.stages.indexOf(state.stage) > workflow.stages.indexOf(implementation)) state.stage = implementation
+            const index = workflow.stages.indexOf(implementation ?? state.stage)
+            for (const stage of Object.keys(state.skill_results ?? {})) if (workflow.stages.indexOf(stage) >= index) delete state.skill_results![stage]
+          }
+          ;(state.risk_changes ??= []).push({ from: previousRisk, to: target, at, review_items: reviewItems, stage_before: stageBefore, stage_after: state.stage })
+          note = `risk_level set to ${target}; recorded in risk_changes. Stage: ${state.stage}. ${reviewItems.length ? `Re-review items ${reviewItems.join(', ')} using their updated review strategy; unchanged implementation and test receipts are retained. Read status before advancing.` : 'Read status for current evidence requirements.'}`
           break
         }
         case 'verify': {
+          if (a.timeout_ms !== undefined && (!Number.isSafeInteger(a.timeout_ms) || a.timeout_ms < 1000 || a.timeout_ms > VERIFY_TIMEOUT_MS))
+            throw new Error(`verify timeout_ms must be an integer from 1000 to ${VERIFY_TIMEOUT_MS}`)
           const groups = Object.values(state.verification_groups ?? {})
           const groupId = a.verification_group ?? (groups.length === 1 ? groups[0]!.id : '')
           const group = state.verification_version && Object.hasOwn(state.verification_groups ?? {}, groupId) ? state.verification_groups![groupId] : undefined
@@ -2816,7 +3115,7 @@ export function registerDevTask(ctx: Context): void {
             const scopeBefore = await scopeFingerprint(fs, testScope, cwd, !!group)
             approvedWriteMode = await resolveWriteMode(ctx, { ...a, command }, exec)
             const gradleBefore = verifyRoot && isGradleTestCommand(command) ? snapshotGradleReports(verifyRoot) : undefined
-            const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode)
+            const receipt = await runVerificationCommand(ctx, command, verifyRoot, exec, a.sandbox_permissions === undefined ? undefined : approvedWriteMode, a.timeout_ms)
             if (gradleBefore && verifyRoot) {
               const report = freshGradleReportSummary(gradleBefore, snapshotGradleReports(verifyRoot))
               if (report) receipt.gradle_report = report
@@ -2847,13 +3146,27 @@ export function registerDevTask(ctx: Context): void {
           }
           const views = state.verification_version ? verificationGroupViews(state, await verificationInputHashes(fs, state, cwd)) : []
           const selected = group ? views.find(view => view.id === group.id) : undefined
-          note = JSON.stringify({ ok: state.verification.passed, task_verified: state.verification.passed,
-            ...(selected ? { group_result: selected } : {}), stage: state.stage, verification: state.verification,
+          const environmentBlocked = views.some(view => view.status === 'blocked')
+            || state.verification.problems?.some(problem => problem.startsWith('ENVIRONMENT_BLOCKED'))
+          const pendingItems = (group ? state.items.filter(item => group.item_ids.includes(item.id)) : state.items)
+            .filter(item => item.status !== 'done' || !item.review || state.verification_version && item.review.verification_key !== verificationKey(state, item.id))
+          const passedAction = ['开发', '代码开发'].includes(state.stage) && pendingItems.length
+            ? `Review the validated implementation item(s) ${pendingItems.map(item => item.id).join(', ')}: use review_dispatch when the plan requires independent review, then accept_item with the exact verdict. Direct work needs no implementation dispatch.`
+            : 'Reuse the current passing test receipts and item acceptance. Record any missing current-stage artifact, inspect status.commit, then advance. Do not re-verify or re-dispatch a reviewer solely to enter another stage.'
+          note = JSON.stringify({ ok: state.verification.passed, task_verified: state.verification.passed, execution_budget_ms: a.timeout_ms ?? VERIFY_TIMEOUT_MS,
+            ...(selected ? { group_result: selected } : {}), stage: state.stage, verification: verificationView(state, a.detail),
+            details: { operation: 'status', task_id: state.id, detail: true, section: 'verification', ...(group ? { verification_group: group.id } : {}) },
             diagnostics: state.verification_version
               ? views.flatMap(view => view.problems.map(reason => ({ group_id: view.id, code: reason.split(':', 1)[0], reason })))
               : (state.verification.problems ?? []).map(reason => ({ code: reason.split(':', 1)[0], reason })),
+            ...(environmentBlocked ? { recovery: { kind: 'environment_blocked', command,
+              verification_group: group?.id, requires_human_approval: true,
+              instruction: 'Keep the project test command and harness intact. Inspect status detail=true section=verification. If necessary, request a one-call sandbox approval for this exact command; do not alter ACLs, disable isolation or widen the whole session.',
+              retry_call: { operation: 'verify', task_id: state.id, ...(group ? { verification_group: group.id } : { command }),
+                ...(a.timeout_ms !== undefined ? { timeout_ms: a.timeout_ms } : {}),
+                sandbox_permissions: 'danger-full-access', justification: '<why this exact test command needs one-call approval>' } } } : {}),
             next_action: selected?.status === 'passed'
-              ? `Group ${selected.id} passed. Review its validated implementation item before marking it done.${state.verification.passed ? ' All required groups passed.' : ' Task-level verification is pending: ' + state.verification.problems?.join('; ')}`
+              ? `Group ${selected.id} passed. ${passedAction}${state.verification.passed ? ' All required groups passed.' : ' Task-level verification is pending: ' + state.verification.problems?.join('; ')}`
               : state.verification.problems?.length ? state.verification.problems.join('; ') : 'Review the validated implementation item before marking it done.' }, null, 2)
           break
         }
@@ -2931,6 +3244,7 @@ export function registerDevTask(ctx: Context): void {
       }
 
       await writeTask(fs, state, cwd, approvedWriteMode ?? await resolveWriteMode(ctx, a, exec))
+      await bindTaskDelivery(ctx, exec.agent, state)
       return note ?? `ok (stage ${state.stage})`
       } finally { release?.() }
     },

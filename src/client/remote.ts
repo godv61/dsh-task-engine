@@ -47,22 +47,25 @@ const commitSchema = z.object({
 /** Preserve source-qualified identities across the browser/host boundary. */
 const resourceRefSchema = z.object({ source: z.enum(['bundled', 'project', 'codex-project', 'user']), name: z.string() })
 const evidenceSchema = z.enum(['command', 'artifact', 'review', 'manual', 'none'])
+const loadingSchema = z.enum(['required', 'on-demand'])
 const skillProfileSchema = z.object({ rules: z.array(resourceRefSchema), evidence: evidenceSchema.optional() })
 const skillBindingSchema = z.object({
   skill: resourceRefSchema,
   rules: z.array(resourceRefSchema),
   evidence: evidenceSchema.optional(),
+  loading: loadingSchema.optional(),
 })
 
 /** Browser-safe shape of one stage's skill references and legacy bindings. */
 const stageBindingSchema = z.object({
   skills: z.array(skillBindingSchema).optional(),
-  skill_refs: z.array(resourceRefSchema).optional(),
+  skill_refs: z.array(resourceRefSchema.extend({ loading: loadingSchema.optional() })).optional(),
   legacy_rules: z.array(z.string()).optional(),
 })
 
 /** The complete workflow config. Structural only: semantic checks live in `validateWorkflow`. */
 const configSchema = z.object({
+  requirement_review: z.object({ version: z.literal(1), stage: z.string(), artifact: z.string() }).optional(),
   stages: z.array(z.string()),
   start_stage: z.string(),
   transitions: z.array(transitionSchema),
@@ -105,6 +108,7 @@ const skillCatalogSchema = z.object({
   skills: z.array(z.object({
     name: z.string(),
     description: z.string(),
+    whenToUse: z.string().optional(),
     source: z.string(),
     ref: resourceRefSchema,
     sourceLabel: z.string(),
@@ -214,15 +218,23 @@ const deleteRuleRequestSchema = z.object({
   path: z.string().optional(),
 })
 
+const runMetricsSchema = z.object({ elapsed_ms: z.number(), tool_calls: z.number().nullable(), errors: z.number().nullable(),
+  input_tokens: z.number().nullable(), cached_input_tokens: z.number().nullable(), output_tokens: z.number().nullable() })
+
 /** Browser-safe shape of one task ledger item's dispatch/review audit. */
-const taskDispatchSchema = z.object({ description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
+const taskDispatchSchema = z.object({ metrics: runMetricsSchema.optional(), description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
   status: z.string().optional(), execution: z.string().optional(), output: z.string().optional(), error: z.string().optional(), finished_at: z.string().optional() })
 const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spawn', 'fork']), mode: z.enum(['direct', 'spawn', 'fork']),
+  delegation_benefit: z.enum(['parallel','context_isolation','independent_check']).optional(),
   reason: z.string(), boundary: z.enum(['local', 'independent', 'coupled']), context: z.enum(['brief', 'history']),
   files: z.array(z.string()), acceptance: z.array(z.string()), depends_on: z.array(z.string()),
+  changes: z.array(z.object({ path: z.string(), kind: z.enum(['delete', 'rename']), to: z.string().optional(),
+    baseline: z.object({ commit: z.string(), blob: z.string(), git: z.object({ path: z.string(), sha256: z.string() }),
+      before: z.object({ path: z.string(), sha256: z.string() }).optional() }) })).optional(),
   review: z.enum(['main', 'independent']), review_reason: z.string(), at: z.string(),
   capabilities: z.object({ spawn: z.boolean(), fork: z.boolean(), reviewer: z.boolean() }) })
-const independentReviewSchema = z.object({ status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
+const independentReviewSchema = z.object({ metrics: runMetricsSchema.optional(), status: z.enum(['starting', 'running', 'completed', 'failed']), at: z.string(), parent_session: z.string(),
+  policy: z.object({ version: z.literal(1), preset: z.string(), child_id: z.string(), tools: z.array(z.string()) }).optional(),
   run_id: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), output: z.string().optional(),
   scope_hash: z.string(), plan_key: z.string(), dispatch_at: z.string(), verification_at: z.string(),
   spec: z.enum(['pass', 'fail']).optional(), quality: z.enum(['pass', 'fail']).optional(), notes: z.array(z.string()).optional(), read_files: z.array(z.string()).optional(),
@@ -242,10 +254,34 @@ const taskLedgerItemSchema = z.object({
 })
 
 /** `readTasks` result: every task record under the workspace's `.dsh/`. */
+const sourceClaimSchema = z.object({ file: z.string(), start_line: z.number(), end_line: z.number(), quote: z.string() })
+const deliveryViewSchema = z.object({ version: z.literal(1), intent: z.enum(['analysis','implementation']), reason: z.string(),
+  created_at: z.string(), requested_at: z.string().optional(), parent_session: z.string().optional(), metrics: runMetricsSchema.optional(),
+  references: z.array(z.string()).optional(),
+  result: z.object({ conclusion: z.string(), proposal: z.string(), limitations: z.array(z.string()), accepted_at: z.string(),
+    evidence: z.array(sourceClaimSchema.extend({ content_hash: z.string(), range_hash: z.string().optional(), highlight: z.string().optional() })) }).optional(),
+  runs: z.array(z.object({ id: z.string(), question: z.object({ id: z.string(), question: z.string(), references: z.array(z.string()).optional(), depends_on: z.array(z.string()).optional() }),
+    parent_session: z.string(), status: z.enum(['queued','starting','running','returned','failed']), at: z.string(), run_id: z.string().optional(),
+    started_at: z.string().optional(), finished_at: z.string().optional(), error: z.string().optional(), acceptance: z.string().optional(), metrics: runMetricsSchema.optional(),
+    report: z.object({ status: z.enum(['complete','partial','blocked']), summary: z.string(), evidence: z.array(sourceClaimSchema), limitations: z.array(z.string()) }).optional(),
+  })), next_actions: z.array(z.string()), instruction: z.string(),
+})
+
 const taskLedgerViewSchema = z.object({
   next_cursor: z.string().optional(), total_count: z.number().optional(),
   errors: z.array(z.object({ file: z.string(), message: z.string() })).optional(),
   tasks: z.array(z.object({
+    content: z.object({ directory: z.string(), ledger_path: z.string(), stages: z.array(z.string()), files: z.array(z.string()),
+      artifacts: z.array(z.object({ id: z.string(), name: z.string(), stage: z.string(),
+        fields: z.array(z.object({ key: z.string(), label: z.string(), value: z.string() })) })),
+      verification_inputs: z.array(z.object({ group_id: z.string(), files: z.array(z.string()), item_ids: z.array(z.string()) })),
+    }).optional(),
+    requirements: z.object({ status: z.enum(['clarifying', 'draft', 'awaiting_confirmation', 'confirmed', 'changes_requested', 'stale']),
+      pending_questions: z.number(), path: z.string().optional(), version: z.number().optional(), hash: z.string().optional(),
+      confirmed_at: z.string().optional(), feedback: z.string().optional(), content: z.string().optional(),
+      material_root: z.string().optional(), materials: z.array(z.object({ name: z.string(), path: z.string(), id: z.string(), version: z.number(),
+        hash: z.string(), bytes: z.number(), updated_at: z.string(), retired_at: z.string().optional(), template: z.object({ skill_name: z.string(), path: z.string(), hash: z.string(), data_id: z.string() }).optional() })).optional() }).optional(),
+    delivery: deliveryViewSchema.optional(),
     evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
     verification_groups: z.array(z.object({ id: z.string(), command: z.string(),
       status: z.enum(['passed', 'failed', 'blocked', 'stale', 'missing']), test_count: z.number().nullable(),
@@ -317,6 +353,7 @@ const initDraftSchema = z.object({
 
 const projectInitResourceSchema = z.object({
   kind: z.enum(['skill', 'rule']), name: z.string(), description: z.string().optional(),
+  whenToUse: z.string().optional(),
   content: z.string(), meta_skills: z.array(z.string()).optional(), rules: z.array(z.string()).optional(),
 })
 const projectInitInventorySchema = z.object({
@@ -325,6 +362,8 @@ const projectInitInventorySchema = z.object({
   manifests: z.array(z.object({ path: z.string(), facts: z.array(z.string()) })),
   suggestions: z.array(z.object({ name: z.string(), kind: z.enum(['skill', 'rule']), meta_skills: z.array(z.string()), why: z.string() })),
   caution: z.string(),
+  discovery: z.object({ status: z.enum(['complete', 'partial', 'unavailable']), directories: z.number(), entries: z.number(),
+    warnings: z.array(z.string()), exclusions: z.array(z.string()), limits: z.object({ directories: z.number(), depth: z.number(), entries: z.number() }) }).optional(),
 })
 const projectInitPromptViewSchema = z.object({
   inventory: projectInitInventorySchema,
@@ -340,6 +379,7 @@ const projectInitGenerateRequestSchema = initGenerateRequestSchema.extend({
 const projectInitStepRequestSchema = projectInitGenerateRequestSchema.extend({
   target: z.string(), prior_resources: z.array(projectInitResourceSchema), step_prompt: z.string().optional(),
   evidence_prompt: z.string().optional(),
+  timeout_minutes: z.number().int().min(1).max(30).optional(),
 })
 const projectInitStepInspectRequestSchema = initGenerateRequestSchema.extend({ target: z.string() })
 const projectInitStepResultSchema = z.object({ resource: projectInitResourceSchema.nullable(), reason: z.string(),
@@ -369,7 +409,7 @@ const resourcePreviewSchema = z.object({ ok: z.boolean(), name: z.string(), desc
 const resourceRootsRequestSchema = z.object({ kind: z.enum(['skill', 'rule']), path: z.string() })
 const resourceRootsSchema = z.object({ project: z.string(), user: z.string() })
 const adaptiveConfigSchema = z.object({
-  meta_bindings: z.record(z.string(), z.array(z.string())).optional(),
+  meta_bindings: z.record(z.string(), z.array(z.union([z.string(), z.object({ name: z.string(), loading: loadingSchema })]))).optional(),
   sonar: z.object({
     enabled: z.boolean().optional(), host_url: z.string().optional(), project_key: z.string().optional(),
     mode: z.enum(['branch', 'pull-request']).optional(), token_env: z.string().optional(),

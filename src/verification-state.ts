@@ -42,7 +42,7 @@ export function receiptProblems(receipt: VerificationReceipt): string[] {
   if (receipt.scope_changed_during_run) problems.push('INPUTS_CHANGED: test inputs changed during execution; rerun on stable inputs')
   if (!receiptHasRequiredTests(receipt)) problems.push(receipt.test_summary?.count === 0
     ? 'NO_PASSING_TESTS: tests failed, were all skipped, or no tests ran'
-    : 'NO_TEST_SUMMARY: no supported nonzero test summary; use a real runner such as node --test --test-reporter=tap, Maven test, or pytest. Do not print a synthetic count. On Windows, if Node child-process capture is denied, check whether --experimental-test-isolation=none is supported and suitable for this suite.')
+    : 'NO_TEST_SUMMARY: no supported nonzero test summary; use the project\'s real test runner and inspect the captured output. Do not print a synthetic count. For an environment blocker, preserve the test command and harness; request approval for only the exact necessary command instead of changing ACLs, session access or test isolation.')
   return problems
 }
 
@@ -125,9 +125,31 @@ export function verificationGroupViews(state: TaskState, hashes?: Record<string,
   })
 }
 
+/** First receipt in the latest uninterrupted set of equivalent successful executions.
+ * Repeating a passing check on identical inputs does not change the reviewed facts.
+ * A failed/invalidated run, changed input/plan, result count or executor boundary
+ * ends the set: a later pass cannot silently revive an earlier acceptance.
+ */
+function acceptanceRun(state: TaskState, group: VerificationGroup): VerificationRun | undefined {
+  const runs = (state.verification_runs ?? []).filter(run => run.group_id === group.id)
+  const latest = runs[runs.length - 1]
+  if (!latest || !latest.passed || latest.invalidated_reason || receiptProblems(latest.receipt).length || !latest.receipt.scope_hash) return latest
+  let accepted = latest
+  for (let index = runs.length - 2; index >= 0; index--) {
+    const run = runs[index]!
+    if (!run.passed || run.invalidated_reason || receiptProblems(run.receipt).length
+      || run.plan_key !== latest.plan_key || run.receipt.scope_hash !== latest.receipt.scope_hash
+      || run.receipt.command !== latest.receipt.command || run.receipt.root !== latest.receipt.root
+      || run.receipt.sandbox?.mode !== latest.receipt.sandbox?.mode
+      || run.receipt.test_summary?.count !== latest.receipt.test_summary?.count) break
+    accepted = run
+  }
+  return accepted
+}
+
 export function verificationKey(state: TaskState, itemId?: string): string | undefined {
   if (!state.verification_version) return state.verification.receipt?.finished_at
-  return JSON.stringify(requiredGroups(state, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map(group => [group.id, group.key, latestGroupRun(state, group.id)?.id]))
+  return JSON.stringify(requiredGroups(state, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map(group => [group.id, group.key, acceptanceRun(state, group)?.id]))
 }
 
 export function verificationTime(state: TaskState, itemId?: string): string | undefined {

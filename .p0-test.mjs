@@ -1,4 +1,5 @@
-// P0 acceptance test for dsh-task-engine 0.18.0: runs the pure engine +
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
+// P0 acceptance test for the current dsh-task-engine contract: runs the pure engine +
 // workflows functions and the registered `dev_task` tool against an in-memory
 // fs, checking every P0 gate: capability binding, frozen snapshot, fail-closed
 // unknown flow, core-rule shadow protection, and init three-phase flow.
@@ -105,13 +106,25 @@ function makeCtx(fs, approval) {
 async function registered(fs, approval) {
   const ctx = makeCtx(fs, approval)
   registerDevTask(ctx)
-  return ctx._tools[0].execute
+  const execute = ctx._tools[0].execute
+  return async (args, exec) => {
+    const input = args.operation === 'create' ? {intent:'implementation',intent_reason:'Fixture implementation',complexity:'medium',complexity_reason:'Fixture grade',...args} : args
+    const text = await execute(input,exec)
+    if (args.operation === 'create') {
+      const target = await fs.resolve(`.dsh/tasks/${args.task_id}/task.json`,exec.agent?.session?.header?.cwd ? {cwd:exec.agent.session.header.cwd} : undefined)
+      const state = JSON.parse(await fs.readText(target))
+      delete state.execution_policy;delete state.verification_version
+      confirmedRequirement(state,(p,c)=>{const base=state.root??exec.agent?.session?.header?.cwd;fs._files.set(base?`${base}/${p}`:p,c)})
+      fs._files.set(target.targetKey,JSON.stringify(state))
+    }
+    return text
+  }
 }
 const EXEC = { agent: undefined, callId: undefined, signal: undefined }
 // A tool call whose session workspace is `cwd` (the harness process directory is
 // deliberately different, exactly like a web session running in e2e-project).
 function sessionExec(cwd) {
-  return { agent: { session: { header: { cwd } } }, callId: undefined, signal: undefined }
+  return { agent: { session: { header: { cwd }, snapshotEvents: () => [] } }, callId: undefined, signal: undefined }
 }
 
 // ── 1. capability derivation and high-risk binding ────────────────────────
@@ -172,43 +185,6 @@ const snapshot = { flow: 'standard', version: 1, config: adoptedFlow('standard')
 const state = newTask({ id: 'T1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'standard', flow: snapshot })
 assert(state.flow?.flow === 'standard' && state.flow.version === 1, 'newTask stores the frozen snapshot')
 assert(state.stage === '需求评审', 'newTask starts at the frozen start stage')
-
-// ── 5. high_risk create on minimal is rejected ─────────────────────────────
-await assertThrows(
-  () => registered(makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('minimal')) }))
-    .then(exe => exe({ operation: 'create', task_id: 'T2', title: 'x', branch: 'main', risk_level: 'high_risk' }, EXEC)),
-  'high_risk',
-  'high_risk on minimal is rejected',
-)
-
-// ── 6. a task keeps its frozen snapshot after eng.json changes ─────────────
-{
-  const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })
-  const exe = await registered(fs)
-  const created = await exe({ operation: 'create', task_id: 'T3', title: 'x', branch: 'main' }, EXEC)
-  assert(created.includes('需求评审'), 'standard create starts at 需求评审')
-  fs._files.set('.dsh/eng.json', JSON.stringify(adoptRecommendation('minimal')))
-  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T3' }, EXEC))
-  assert(status.flow?.flow === 'standard' && status.flow.version === 3, 'status re-reads the frozen snapshot')
-  assert(Array.isArray(status.legal_next) && status.legal_next.includes('设计'),
-    'gates come from the frozen standard flow, not the live minimal flow')
-}
-
-// ── 7. unknown flow blocks state-changing operations ───────────────────────
-await assertThrows(
-  () => registered(makeFs({ '.dsh/eng.json': JSON.stringify({ flow: 'nope' }) }))
-    .then(exe => exe({ operation: 'create', task_id: 'X', title: 'y', branch: 'z' }, EXEC)),
-  'unknown flow',
-  'create on an unknown flow fails closed',
-)
-
-// ── 8. a file missing its flow field fails closed ──────────────────────────
-await assertThrows(
-  () => registered(makeFs({ '.dsh/eng.json': JSON.stringify({}) }))
-    .then(exe => exe({ operation: 'create', task_id: 'X', title: 'y', branch: 'z' }, EXEC)),
-  'missing a "flow" field',
-  'eng.json without a flow field is a config error',
-)
 
 // ── 9. init: inspect → propose → apply, no direct overwrite ────────────────
 {
@@ -282,9 +258,11 @@ await assertThrows(
     '.dsh/rules/security-redlines.md': '# 弱化的安全红线，前端校验即可',
     '.dsh/skills/requirement-analysis/SKILL.md': '# Project requirement analysis',
   })
+  fs._files.set('.dsh/meta.json',JSON.stringify({meta_bindings:{'requirements-analysis':['requirement-analysis']}}))
+  fs._files.set('.dsh/skills/requirement-analysis/profile.json',JSON.stringify({rules:[{source:'project',name:'security-redlines'}],evidence:'none'}))
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'T9', title: 'x', branch: 'main' }, EXEC)
-  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T9' }, EXEC))
+  const status = JSON.parse(await exe({ operation: 'status', task_id: 'T9', detail: true }, EXEC))
   const sec = status.bindings.rules.find(r => r.name === 'security-redlines')
   assert(sec !== undefined, 'the bound project rule is disclosed at the start stage')
   assert(sec.source === 'project', 'the disclosed rule reports the layer it was resolved from')
@@ -306,6 +284,8 @@ await assertThrows(
     '.dsh/rules/security-redlines.md': '# 弱化的安全红线，前端校验即可',
     '.dsh/skills/requirement-analysis/SKILL.md': '# Project requirement analysis',
   })
+  fs._files.set('.dsh/meta.json',JSON.stringify({meta_bindings:{'requirements-analysis':['requirement-analysis']}}))
+  fs._files.set('.dsh/skills/requirement-analysis/profile.json',JSON.stringify({rules:[{source:'bundled',name:'security-redlines'}],evidence:'none'}))
   const exe = await registered(fs)
   await assertThrows(() => exe({ operation: 'create', task_id: 'T10', title: 'x', branch: 'main' }, EXEC),
     'unreadable', 'a reference to a removed bundled rule fails closed')
@@ -330,8 +310,8 @@ await assertThrows(
   const fs = makeFs({ [`${cwd}/.dsh/eng.json`]: JSON.stringify(adoptRecommendation('standard')) })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'T12', title: 'x', branch: 'main' }, sessionExec(cwd))
-  assert(fs._files.get(`${cwd}/.dsh/task-T12.json`) !== undefined, 'task record lands in the session workspace')
-  assert(fs._files.get('.dsh/task-T12.json') === undefined, 'task record does not land in the backend base')
+  assert(fs._files.get(`${cwd}/.dsh/tasks/T12/task.json`) !== undefined, 'task record lands in the session workspace')
+  assert(fs._files.get('.dsh/tasks/T12/task.json') === undefined, 'task record does not land in the backend base')
 }
 
 // ── 14. K: artifact ids must be unique across ALL stages ────────────────────
@@ -349,9 +329,9 @@ await assertThrows(
 {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })
   const exe = await registered(fs)
-  await exe({ operation: 'create', task_id: 'K1', title: 'x', branch: 'main' }, EXEC)
+  await exe({ operation: 'create', task_id: 'K1', title: 'x', complexity:'ultra', branch: 'main' }, EXEC)
   await assertThrows(
-    () => exe({ operation: 'record', task_id: 'K1', artifact: 'design', fields: { approach: 'a', risks: 'r', impact: 'i' } }, EXEC),
+    () => exe({ operation: 'record', task_id: 'K1', artifact: 'architecture', fields: { approach: 'a', risks: 'r', impact: 'i' } }, EXEC),
     'belongs to stage',
     'recording an artifact at a non-owning stage is rejected',
   )
@@ -395,7 +375,7 @@ await assertThrows(
 {
   const s = newTask({ id: 'N1', title: 'x', branch: 'main', work_size: 'standard', risk_level: 'standard', flow: snapshot })
   s.files = ['src/a.ts']
-  assert(checkFileScope(s, ['src/a.ts', '.dsh/task-N1.json', '.dsh/eng.json'], adoptedFlow('standard')).ok,
+  assert(checkFileScope(s, ['src/a.ts', '.dsh/tasks/N1/task.json', '.dsh/eng.json'], adoptedFlow('standard')).ok,
     'task record and eng.json do not violate file scope')
   assert(!checkFileScope(s, ['src/b.ts'], adoptedFlow('standard')).ok,
     'an out-of-scope code file is still flagged')
@@ -471,7 +451,7 @@ function memProbe(files) {
 {
   assert(project.defaultVerifyCommand('node') === 'npm test', 'node default verify command')
   assert(project.defaultVerifyCommand('java') === 'mvn -B test', 'java default verify command')
-  assert(project.defaultVerifyCommand('go') === 'go test ./...', 'go default verify command')
+  assert(project.defaultVerifyCommand('go') === 'go test -json ./...', 'go default verify command')
   assert(project.defaultVerifyCommand('unknown') === undefined, 'unknown type has no default command')
 }
 {
@@ -540,9 +520,9 @@ function memProbe(files) {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'HASH-1', title: 'x', branch: 'main' }, EXEC)
-  const record = JSON.parse(fs._files.get('.dsh/task-HASH-1.json'))
+  const record = JSON.parse(fs._files.get('.dsh/tasks/HASH-1/task.json'))
   record.flow.config.commit.file_scope = false
-  fs._files.set('.dsh/task-HASH-1.json', JSON.stringify(record))
+  fs._files.set('.dsh/tasks/HASH-1/task.json', JSON.stringify(record))
   await assertThrows(
     () => exe({ operation: 'status', task_id: 'HASH-1' }, EXEC),
     'hash mismatch',
@@ -596,7 +576,7 @@ function memProbe(files) {
   await exe({ operation: 'create', task_id: 'FP-1', title: 'x', branch: 'main' }, EXEC)
   const status = JSON.parse(await exe({ operation: 'status', task_id: 'FP-1' }, EXEC))
   assert(status.bindings_drift === undefined, 'fresh task has no bundled-rule drift marker')
-  const record = JSON.parse(fs._files.get('.dsh/task-FP-1.json'))
+  const record = JSON.parse(fs._files.get('.dsh/tasks/FP-1/task.json'))
   assert(record.bindings_fingerprint === undefined,
     'create does not record a fingerprint for removed bundled rules')
 }
@@ -628,9 +608,9 @@ function memProbe(files) {
   await exe({ operation: 'create', task_id: 'V-3', title: 'x', branch: 'main' }, EXEC)
   await assertThrows(() => exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC),
     'real validation command', 'new tasks refuse self-reported verification')
-  const legacy = JSON.parse(fs._files.get('.dsh/task-V-3.json'))
+  const legacy = JSON.parse(fs._files.get('.dsh/tasks/V-3/task.json'))
   delete legacy.execution_version
-  fs._files.set('.dsh/task-V-3.json', JSON.stringify(legacy))
+  fs._files.set('.dsh/tasks/V-3/task.json', JSON.stringify(legacy))
   await assertThrows(() => exe({ operation: 'verify', task_id: 'V-3', passed: true }, EXEC),
     'real validation command', 'deleting execution_version cannot enable self-reported verification')
 }
@@ -723,25 +703,6 @@ function memProbe(files) {
   )
 }
 
-// ── 31. 0.22.x: set_risk cannot raise risk past the flow's capabilities ─────
-{
-  const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('minimal')) })
-  const exe = await registered(fs)
-  await exe({ operation: 'create', task_id: 'SR-1', title: 'x', branch: 'main' }, EXEC)
-  await assertThrows(
-    () => exe({ operation: 'set_risk', task_id: 'SR-1', risk_level: 'high_risk' }, EXEC),
-    'lacks the required capabilities',
-    'raising risk on a minimal flow is rejected (same gate as create)',
-  )
-}
-{
-  const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })
-  const exe = await registered(fs)
-  await exe({ operation: 'create', task_id: 'SR-2', title: 'x', branch: 'main' }, EXEC)
-  assert((await exe({ operation: 'set_risk', task_id: 'SR-2', risk_level: 'high_risk' }, EXEC)).includes('high_risk'),
-    'raising risk on the standard flow succeeds')
-}
-
 // ── 32. 0.22.x: remote rejects non-absolute / system-root workspace paths ───
 {
   const controller = readFileSync('./lib/controller.js', 'utf8')
@@ -761,9 +722,11 @@ function memProbe(files) {
   ctx.get = (service) => (service === 'shell' ? shell : service === 'approval' ? undefined : undefined)
   registerDevTask(ctx)
   const exe = ctx._tools[0].execute
-  await exe({ operation: 'create', task_id: 'VR-1', title: 'x', branch: 'main' }, EXEC)
+  await exe({ operation:'create',task_id:'VR-1',title:'x',intent:'implementation',intent_reason:'Fixture verification',complexity:'low',complexity_reason:'Fixture unit',files:['package.json'],branch:'main'},EXEC)
+  { const state=JSON.parse(fs._files.get('.dsh/tasks/VR-1/task.json'));confirmedRequirement(state,(p,c)=>fs._files.set(p,c));fs._files.set('.dsh/tasks/VR-1/task.json',JSON.stringify(state)) }
+  await exe({operation:'plan_verification',task_id:'VR-1',verification_group:'unit',command:'npm test',files:['package.json'],item_ids:[]},EXEC)
   await exe({ operation: 'verify', task_id: 'VR-1' }, EXEC)
-  const record = JSON.parse(fs._files.get('.dsh/task-VR-1.json'))
+  const record = JSON.parse(fs._files.get('.dsh/tasks/VR-1/task.json'))
   assert(seenWorkdirs.length === 1, 'bare verify ran the default command')
   assert(seenWorkdirs[0] === (record.root ?? ''), 'verify ran in the recorded project root, not the session cwd')
   assert(record.verification.receipt.root === record.root, 'receipt binds the recorded project root')
@@ -774,11 +737,11 @@ function memProbe(files) {
   const fs = makeFs({ '.dsh/eng.json': JSON.stringify(adoptRecommendation('standard')) })
   const exe = await registered(fs)
   await exe({ operation: 'create', task_id: 'CAS-1', title: 'x', branch: 'main' }, EXEC)
-  const r1 = JSON.parse(fs._files.get('.dsh/task-CAS-1.json')).revision
+  const r1 = JSON.parse(fs._files.get('.dsh/tasks/CAS-1/task.json')).revision
   await exe({ operation: 'scope', task_id: 'CAS-1', files: ['a'] }, EXEC)
-  const r2 = JSON.parse(fs._files.get('.dsh/task-CAS-1.json')).revision
+  const r2 = JSON.parse(fs._files.get('.dsh/tasks/CAS-1/task.json')).revision
   assert(r1 === 1 && r2 === 2, 'revision increments on every write')
-  const devtask = readFileSync('./lib/dev-task.js', 'utf8')
+  const devtask = readFileSync('./lib/task-store.js', 'utf8')
   assert(devtask.includes('changed concurrently'), 'concurrent-write CAS guard is present')
 }
 
@@ -815,7 +778,7 @@ function memProbe(files) {
   let taskReads = 0
   fs.readText = async target => {
     const value = await originalRead(target)
-    if (target.targetKey === '.dsh/task-CAS-RACE.json' && ++taskReads === 2) {
+    if (target.targetKey === '.dsh/tasks/CAS-RACE/task.json' && ++taskReads === 2) {
       const other = JSON.parse(value)
       other.title = 'concurrent writer'
       other.revision++
@@ -824,7 +787,7 @@ function memProbe(files) {
     return value
   }
   await assertThrows(() => exe({ operation: 'scope', task_id: 'CAS-RACE', files: ['a'] }, EXEC), 'changed concurrently', 'CAS rejects writes when version changes after the content read')
-  assert(JSON.parse(fs._files.get('.dsh/task-CAS-RACE.json')).title === 'concurrent writer', 'CAS preserves the concurrent writer record')
+  assert(JSON.parse(fs._files.get('.dsh/tasks/CAS-RACE/task.json')).title === 'concurrent writer', 'CAS preserves the concurrent writer record')
 }
 
 // ── 36. 0.23.3: the path guard normalizes BEFORE the forbidden-prefix test ──

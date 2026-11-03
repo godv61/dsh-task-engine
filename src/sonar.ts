@@ -1,3 +1,4 @@
+import { isFullOid } from './git-oid.ts'
 /** Optional SonarQube audit for an existing CI scan or a local scanner run. */
 export interface SonarPolicy {
   enabled: true
@@ -210,10 +211,10 @@ export async function inspectSonar(policy: SonarPolicy, token: string, ceTaskId:
       if (page === 1 && object(result.analyses[0] ?? {}).key !== analysisId)
         throw new Error('SonarQube analysis SCM revision is unavailable for the latest target analysis')
       const exact = result.analyses.map(object).find(entry => entry.key === analysisId)
-      if (exact) { revision = string(exact.revision, 'analysis.revision'); break }
+      if (exact) { revision = string(exact.revision, 'analysis.revision').toLowerCase(); break }
       if (result.analyses.length < 100) break
     }
-    if (!revision || !/^[0-9a-f]{7,40}$/iu.test(expectedCommit) || !revision.startsWith(expectedCommit))
+    if (!revision || !isFullOid(expectedCommit) || revision.toLowerCase() !== expectedCommit.toLowerCase())
       throw new Error('SonarQube analysis SCM revision does not match the recorded commit; run a fresh scan')
   }
   const gateStatus = object((await api(policy, token, 'qualitygates/project_status', { analysisId }, fetcher)).projectStatus)

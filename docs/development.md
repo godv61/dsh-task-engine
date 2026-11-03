@@ -4,17 +4,29 @@
 
 插件分为 host 控制器、agent 工具和浏览器工作台。源码在 `src/`，构建结果在 `lib/`，npm 包包含预构建入口、内置 Skill、预设和提交钩子。
 
-当前发行线要求 DSH `^0.2.0-rc.2`，使用声明式 `@deepseek-ai/dsh-agent-preset` 和宿主子代理服务。不再声明旧 `0.1.x` 宿主兼容；旧版文件预设派生测试在缺少旧宿主包时跳过，不能充当当前声明式预设的验收。当前预设、`spawn` 与 `fork` 需在实际 0.2 宿主单独验证。
+插件 `0.40.0` 以 DSH `0.2.1-rc.5` 构建，明确支持 `rc.3`、`rc.4`、`rc.5`，不自动放行后续预览版。旧宿主 `0.2.0-rc.2` 保持使用插件 `0.34.1`。本版使用声明式 `@deepseek-ai/dsh-agent-preset` 和宿主子代理服务。不再声明旧 `0.1.x` 宿主兼容；旧版文件预设派生测试在缺少旧宿主包时跳过，不能充当当前声明式预设的验收。
 
-新自适应任务保存 `delegation_version=1`：实施前必须 `plan_execution`；高/超高档离开任务编排前检查每项策略，低/中档在代码开发检查。模型提供边界事实、文件、验收与依赖，引擎按真实 `getProvider` 能力决定执行和审核方式，`dispatch` 读取计划而非默认静默 direct。子代理实现或高复杂度/高风险项优先独立审核，缺能力的回退原因保存到计划。`execution_policy=main_only` 用于用户明确要求全程主会话。旧记录不追溯增加门禁。
+边界修复回归在 `.boundary-fixes-test.mjs` 与 `.repair-test.mjs`：使用真实临时 Git 仓库、文件和 Node 测试进程；子代理返回与 Sonar HTTP 为可控适配器，不代表模型语义审核质量或真实 Sonar 服务验收。包黑盒检查也从安装产物运行这些用例。
 
-`review_dispatch` 使用新的 spawn 上下文和宿主 `toolFilter.allow=['read']`；解析成功 read 的模型可见行内容，与当前全部计划文件逐行比较，可合并多个窗口。缺行、行截断或旧内容不接受为全文覆盖；空文件必须收到明确的空文件结果。记录 `read_coverage` 的文件与行数，旧的 `read_files` 路径记录不等于全文核对，升级后的逐项接受须重新审核。单行超过宿主读取上限时须调整宿主配置，不能将截断结果算作全文。宿主声明 `outputSchema` 时使用原生 `structured_output` 捕获及 `result.structured`；捕获缺失或非法时拒绝，不从文本补填。未声明该能力时沿用严格 JSON 文本解析。审核工作工具只保留 read；原生结果提交工具由 DSH 在子作用域注册，不提供写文件或命令能力。
+`set_risk` 按冻结的有效配置推导能力，不查自适应流程名是否存在于静态预设表。升级会刷新执行计划中的审核策略、归档旧独立审核、清除逐项/任务接受并重新打开 done 项；已到后续阶段的任务回到实现阶段。实际实现与未变化的测试回执保留。`risk_changes` 记录全部变更与受影响项，`risk_downgrades` 只记录经批准的降级。审核上下文包含当前风险。
+
+`plan_execution.changes` 显式声明 delete/rename，旧路径与目标仍属交付范围。引擎经宿主 shell 读取固定 Git 提交与 blob，使用 Git 对象哈希核验完整 UTF-8 文本（最多 256 KiB），再经宿主 FS 保存 `.dsh/review-inputs/<sha256>.txt`。已有工作树内容不同时额外保存 before 快照。模型不能提交 baseline；未跟踪文件、目录、二进制、截断或超限文本会拒绝。独立审核要求完整读取快照和存活/新路径，接受时再次检查快照哈希、旧路径缺席和重命名目标存在。普通缺失路径仍失败，已删路径仍纳入代码指纹与提交门禁。快照需保留到任务验收完成。
+
+提交登记调用宿主 Git 唯一解析缩写，保存完整 SHA-1/SHA-256 OID 与 `provided_hash`。旧缩写在新一次 CI/上传式 Sonar 审核前核对 HEAD、工作树与提交内容，成功后才随新审核保存；历史报告不改写。Sonar 比较完整身份，不放宽为前缀匹配。
+
+初始化目录发现为确定性广度扫描，默认最多 1024 目录、16 层、20000 项，排除缓存、生成物、隐藏目录与可识别的符号链接；不运行构建或读取业务源码正文。嵌套清单父目录进入模块覆盖清单。`discovery` 表示该限定范围 complete/partial/unavailable；目录或清单不可读、预算耗尽会记明原因。partial/unavailable 或没有模块证据时，项目地图覆盖检查不能成功，其他可选资源仍可生成。
+
+新自适应任务保存 `delegation_version=1`：实施前必须 `plan_execution`；高/超高档离开任务编排前检查每项策略，低/中档在代码开发检查。模型提供边界事实、文件、验收与依赖，引擎按真实 `getProvider` 能力决定执行和审核方式，`dispatch` 读取计划而非默认静默 direct。旧契约的子代理实现或高复杂度项优先独立审核；新契约按具体风险和审核需求选择，不因委派本身再强制启动一名审核代理，缺能力的回退原因保存到计划。`execution_policy=main_only` 用于用户明确要求全程主会话。旧记录不追溯增加门禁。
+
+`review_dispatch` 通过 `startActivation(delivery='caller')` 使用新的 spawn 上下文和 `task-engine-review` 预设。预设在每个 Agent 创建时安装 scoped `tools.restrict({allow:['read','glob','grep']})`，保留可用的只读读取/搜索工具并隐藏其余继承工具、以单调执行 guard 拒绝 read/glob/grep/structured_output 之外的所有调用，并在提示词组装时核对实际工具目录；父代理必须取得宿主策略回执；解析成功 read 的模型可见行内容，与当前全部计划文件逐行比较，可合并多个窗口。缺行、行截断或旧内容不接受为全文覆盖；空文件必须收到明确的空文件结果。记录 `read_coverage` 的文件与行数，旧的 `read_files` 路径记录不等于全文核对，升级后的逐项接受须重新审核。单行超过宿主读取上限时须调整宿主配置，不能将截断结果算作全文。宿主声明 `outputSchema` 时使用原生 `structured_output` 捕获及 `result.structured`；捕获缺失或非法时拒绝，不从文本补填。未声明该能力时沿用严格 JSON 文本解析。审核工作工具仅有 read/glob/grep；原生结果提交工具由 DSH 在子作用域注册，不提供写文件或命令能力。
 
 回执绑定计划、实施轮次、适用规则/产物上下文和文件 SHA-256 指纹，主代理不能覆盖失败结论。同一代码和审核上下文最多三次有效完成结论；启动失败、取消、读取不全及传输错误只记历史，不消耗该额度。重审将实施项退回 doing 并清除旧父接受，成功后须重新 review_item 与 done；不会保留 done 却无当前接受的状态。审核清理失败保持锁定，通过 `recover_dispatch dispatch_role=review` 在确认宿主及后代不活动后恢复。独立审核不是命令验证，也不自动将实施项设为 done。
 
-新自适应任务的交付文件及测试必须全部归属到实施项计划；派发、编排交接和实施项阶段门禁检查归属并集。主会话和子代理执行项的 done 都要求当前真实非零测试回执及逐项审核；逐项审核绑定对应文件指纹，重跑测试不能让旧审核自动变新。当前进程的全部 agent 注册共享任务变更锁，状态查询保持可用；跨进程竞争继续由宿主文件版本 CAS 保护，不另建锁文件或接管宿主运行生命周期。
+新自适应任务的交付文件及测试必须全部归属到实施项计划；派发、编排交接和实施项阶段门禁检查归属并集。主会话和子代理执行项的 done 都要求当前真实非零测试回执及逐项审核。direct 实施可在验证后直接 review_dispatch，再 accept_item，无需额外实施 dispatch；主会话审核则直接 accept_item。逐项审核绑定对应文件指纹与验证事实；相同输入连续等价成功重测可复用验收，失败、输入/计划/结果数量或执行权限边界变化会打断复用，随后成功不能直接复活旧验收。每次实际执行的完整回执仍独立保留。当前进程的全部 agent 注册共享任务变更锁，状态查询保持可用；跨进程竞争继续由宿主文件版本 CAS 保护，不另建锁文件或接管宿主运行生命周期。
 
-派发实现和审核均请求绝对深度上限，因此能力检测要求 provider 声明 `depthLimit`，并在实际派发时重新核对。能力在计划后被移除时拒绝启动，保留原实施项状态并提示重新规划。`fork` 只继承已完成轮次，当前轮次的验收和说明始终随派发提示传递。当前只使用 one-shot，不把台账恢复描述为 DSH continuable 子会话续跑。
+派发实现和审核均请求绝对深度上限，因此能力检测要求 provider 声明 `depthLimit`，并在实际派发时重新核对。能力在计划后被移除时拒绝启动，保留原实施项状态并提示重新规划。`fork` 只继承已完成轮次，当前轮次的验收和说明始终随派发提示传递。当前每次派发创建新的 managed activation，不复用子会话继续运行。发布后的父取消显式 dispose 该次 activation，清理失败仍保留锁定。子会话日志通过 sessionQuery 的观察租约读取并释放，既有独立审核缺少新只读策略回执时须重新审核。
+
+审核预设的监听由宿主按 scope 路由；插件不自行读取其它模块实例的私有 scope Symbol。每个审核 Agent 单独安装工具限制，继承工具只允许 read，自有结果捕获工具 structured_output 保留；执行守卫同时拦截其它工具及嵌套调用。提示词组装后记录实际工具清单，主会话核对清单、子会话身份、结构化结论和真实全文读取事件后才接受。父会话和其它预设的工具不受此限制影响。
 
 ## 代码位置
 
@@ -51,9 +63,25 @@ npm run verify:package
 
 ## 当前质量约束
 
+实施任务统一使用 adaptive v2 的 `requirement_review`，必须明确 intent、complexity 及其理由。创建无旧流程回退，项目没有关闭或兼容选项；`taskExecutionProblem` 在工具、原生工具权限及 Git hook 上拒绝缺少新版结构的活动任务。旧记录只读，不迁移；没有流程快照的记录展示历史视图，不执行项目当前 eng.json。需求产物为唯一结构化来源，`prepare_requirement` 生成版本文档，`confirm_requirement` 通过宿主 `userQuestions.ask` 收集实际答复，独立于工具权限 approval；相同且有效的已确认版本返回 `reused: true`，不重复询问。澄清、确认等待不持有任务锁；回复只接受同一来源内容、文档指纹与问题实例。`tools/pre-execute` 与每次 `system-prompt/assemble` 重查文档并双向更新工具展示和执行模式；`tools.guard` 保持同步限制。修改文档会收回权限，精确恢复原文可复用确认，需求修订仍须重新确认。`.requirements-test.mjs` 和真实宿主 keyless preset probe 覆盖此闭环。该机制校验确认来源和版本一致性，不能机械保证需求语义已穷尽。
+
+需求阶段由 `prepare_requirement` 写最终总结，`write_requirement_material` 写任务目录下的文本材料；后者支持正文或当前绑定且实际加载 Skill 的 HTML 模板数据区渲染，不开放命令执行。材料版本和指纹参与 `requirementSource`，摘要、实际材料与提交钩子共同核对当前批准依据；原生写工具仍受确认门禁限制。写入使用宿主 sandbox 与文件版本 CAS，拒绝越界、链接、未登记文件及人工修改；已生成内容修订需要当前指纹。`retire_requirement_material` 仅停用本期引用，保留原文件及记录，便于替换缺失或过时材料后重新确认。多角色签署、独立的任意 Skill 产物声明不在当前实现范围内；必读门禁不等于任意正文要求已自动验收。见 `docs/testing/requirement-materials.md`。
+
+Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺省保留旧强制语义；自适应 `meta_bindings` 同时接受旧名称字符串和 `{name, loading}`。核心元技能固定强制，`profile.json` 的 Rule 与 evidence 仍由 Skill 自己拥有。compact/adoption、浏览器严格 codec 和冻结任务均保留挂载策略。
+
+初始化 `InitResource.whenToUse` 为可选字符串，默认生成提示要求新草案说明适用任务/修改范围，旧草案仍兼容；UI 可编辑，所有严格请求/响应 codec 及进度恢复保留此字段。预览冲突校验、控制器写入与 dev_task 写入共享 `renderInitSkill`，使用时机变化使既有提案哈希失效，且不得覆盖不同的已有文件。初始化元数据与 Skill 强制/按需挂载策略分别保存，不相互推导。
+
+必读门禁通过本任务、本会话的真实成功工具事件及读取记录确认，可跨阶段复用；阶段 evidence 不跨阶段复用。按需项不参与读取、完成凭证及缺失资源门禁，选中后仍返回完整 Skill 与其 Rule。`load_skill detail=true` 显式恢复全文。子代理每次得到自己的必要强制约束，同一审核提示跨阶段去重；按需正文只经目录中的文件路径读取，不自动加入提示，也不允许子代理改写父台账。`.skill-loading-test.mjs` 与执行策略回归覆盖这些行为。
+
+- 任务保存已抽到 `task-store.ts`，所有入口共用沙箱写策略、逻辑 revision 与宿主原子版本意图。执行等待不得持有只读调查批次的任务锁。
+- `delivery-contract.ts` 区分交付意图、运行记录与接受结果；`investigation-runtime.ts` 复用 DSH activation，`run-scheduler.ts` 管理只读依赖与并发。源文件引用通过当前文本、行段和 SHA-256 绑定；不能把结构匹配当作语义正确的证明。
+- `delivery-access.ts` 约束分析主会话及嵌套调用，恢复时读取其会话所属契约；只读子代理沿用受保护预设。动态缺失的搜索工具不会导致预设加载失败，存在的只读工具仍可使用。实施权限不通过修改分析任务获得。
+- 只读调查成功返回与父任务接受分别记录；API AUTH 失败停止后续派发并保留报告，取消后清理失败保持 running、拒绝交付。观测失败不虚构 token 或工具计数，缺失字段保持未知。
+- `.delivery-kernel-test.mjs` 检查自然交付类型、真正的并发与失败隔离、证据拒绝、原子计划、真实验证后的原子验收。`.rc3-runtime-test.mjs` 使用原生宿主工具注册表检查搜索可用与写入拒绝，行为模拟不冒充真实模型性能结果。
+
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test、CTest/GoogleTest 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。未知命令和缺少证据的成功退出也不能让测试门禁通过。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Python 标准库 unittest、Go test、Cargo test、CTest/GoogleTest 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。unittest 要求原生 `python -m unittest`（或 Python/py 等价入口）与完整最终摘要，扣除 skipped/expected failures，FAILED 和零测试不能通过。未知命令和缺少证据的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 
@@ -65,8 +93,8 @@ npm run verify:package
 - `review pass` 只允许在流程审核阶段，绑定当前文件指纹与验证回执。旧活动任务缺少审核内容回执时须重新审核，归档记录保持只读。
 - CI/上传式 Sonar 审核要求精确 analysis ID 的 SCM revision 与登记提交相符，并检查读取问题期间分析未变化。接口无权访问、缺少 revision 或无法证明 PR 分析身份时明确拒绝，不使用台账 hash 冒充服务端证据。本地审核记录同步配置与启用规则清单指纹，拒绝当前项目未启用规则的发现。
 - 工作台的历史分析语言筛选仅控制显示。实际本地范围是 Git 比较差异与项目 `include_paths` 的交集，并要求登记全部范围内变更。`HEAD` 表示当前提交，只覆盖未提交差异；完整任务可选任务开始前的固定提交。范围策略在任务创建时保存，修改项目配置不自动重写旧任务。
-- 初始化逐项生成使用 `projectInitJob`，草稿作业 ID 和结果保存于 `.dsh/init-jobs/`。浏览器断开不取消服务器作业；完成结果可以恢复。生成进程重启后，未完成租约最长等待 330 秒再允许重试该步骤，不承诺恢复模型生成到一半的输出。写入相同资源可续办，已有不同内容始终拒绝覆盖。
-- `dispatch execution=spawn|fork` 复用 DSH 的单次前台子代理服务，记录真实运行 ID、状态和交付结果，并释放运行资源。完成委派后主代理仍须验证和逐项审核；子代理不自动获得任务完成证据。执行期间禁止改写父任务台账，释放失败保持锁定。中断使用原父会话的 `recover_dispatch`，通过宿主 `listDescendants` 确认对应子代理及其后代均已停止；查询不支持、运行 ID 缺失或状态不可读时拒绝恢复。当前仍保持单实施项进行中，不并发改写交付文件。
+- 初始化逐项生成使用 `projectInitJob`，后台作业仅保存在进程内存中，不创建项目或本机磁盘缓存。已结束记录自动在 30 分钟后删除，总记录最多 100 条，优先淘汰已结束记录。`timeout_minutes` 可选，合法范围 1–30，默认 10；页面提供 5/10/20/30 分钟选项。查阅、推理、正文与重试共用生成截止时间，后台作业额外留出 30 秒，页面轮询额外留出 60 秒。默认模型的 `reasoningEffort` 原样继承，不使用固定 110 秒收尾阈值。浏览器断开不取消服务器作业，DSH 保持运行且结果尚未淘汰时可找回；进程重启会清空内存记录，浏览器已保存的草案仍可恢复。旧版 `.dsh/init-jobs/` 只兼容读取，不更新或新增文件。正式写入相同资源可续办，已有不同内容始终拒绝覆盖。
+- `dispatch execution=spawn|fork` 复用 DSH 的 managed activation 与 caller delivery，记录真实运行 ID、状态和交付结果，并释放运行资源。完成委派后主代理仍须验证和逐项审核；子代理不自动获得任务完成证据。执行期间禁止改写父任务台账，释放失败保持锁定。中断使用原父会话的 `recover_dispatch`，通过宿主 `listDescendants` 确认对应子代理及其后代均已停止；查询不支持、运行 ID 缺失或状态不可读时拒绝恢复。当前仍保持单实施项进行中，不并发改写交付文件。
 - 台账区别当前有效、过期、失败和交付历史，台账及审核 Markdown 时间固定使用 UTC+08:00，不随浏览器时区变化；JSON 原始 ISO 时间保留。坏记录单独报错，每页最多 100 条，可加载更多。子代理重试保留最近 20 次委派摘要。Sonar 历史最多 20 条，每条内联阻断样本最多 50 个，完整明细保留在报告旁 JSON，`learn_rule` 按需读取。
 
 1. 更新 `package.json` 版本，运行上述验证，再检查 `npm pack --dry-run --json` 的文件清单只有当前文档。
@@ -78,4 +106,28 @@ npm run verify:package
 
 验证支持标准 Maven 生命周期以及 Surefire/Failsafe 的短目标和完整坐标目标；仍要求真实非零测试摘要，失败或全部跳过的测试不通过。
 
-CTest 读取 `N% tests passed, M tests failed out of T`（M 非零按 0 计），GoogleTest 二进制读取 `[==========] N tests from … ran.` 与 `[  PASSED  ] N tests`；`No tests were found` 或 `0 tests from 0 test suites ran.` 按 0 计。
+任务台账和交付路径以所选会话的原始项目根目录为锚点；working_directory 只改变原生工具的当前目录，不搬迁台账或扩大权限。引擎获取宿主当前目录状态，派发及验证则显式使用任务保存的 root，避免父会话 cd 后子代理在另一目录实施。
+
+新工程会话在仓库查阅前通过 status/create 确定交付目标；尚未确定时只展示入口工具，恢复旧任务后沿用旧约束。分析模式隐藏命令工具并保留执行 guard；原生 subagent/workflow 别名在工程预设中关闭，执行 guard 也拒绝后注册的别名。真实运行只能经有台账归属的 delegate/dispatch 发起。普通问答可以直接回答。
+
+submit_analysis 的 source_evidence 使用仓库内相对路径和从 1 开始的行号，每段不超过 200 行；host 采集该段真实原文和内容 SHA-256，不必让模型抄写长代码。可选 quote 必须精确匹配对应行段。子代理的原生结构化结果取 result.structured，失败时不从普通说明文本伪造结果。
+
+run-observation.ts 从宿主会话事件采集主会话、调查/实施/审核运行的耗时、工具数、错误及 token。缓存输入单列；宿主未提供的数值为 null。主会话记录截至接受交付的观察值，包含等待时间；并发子代理耗时不能相加当作用户总耗时。这些采集能力不等于已经完成各类任务的成本对照实验。
+
+## 证据与用例层边界
+
+`analysis-commands.ts` 承担分析委派、恢复与提交用例；入口仍负责参数、审批/沙箱模式和外层事务。事务内返回异步处理器须 await，再释放变更锁。`path-guard.ts` 统一路径包含关系，原工具导出保持兼容，不新增任务代际旗标。
+
+Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分测试与包级完成，跳过、输出内容和基准数据不计作通过；任一失败拒绝，未完成/损坏事件不可证明通过。默认命令同步切换到 JSON，旧文本回执不会继续跨当前门禁。格式依据 https://pkg.go.dev/cmd/test2json 。
+
+分析 evidence.quote 始终是规范化换行后的完整行段，highlight 仅保存可选短引文，range_hash 为该行段 SHA-256；content_hash 继续表示原始文件。旧记录没有 range_hash，按历史引文展示，不伪造或覆盖旧快照。
+
+技能回执证明所记录命令实际执行并成功退出，不证明检查覆盖了 Skill 或需求。拒绝明显的固定输出/直接成功退出及常见外壳转发，保留内联断言、lint 与类型检查；任意脚本的有效性仍由可信项目定义和主会话核对，不宣称拒绝名单能证明程序语义。
+
+`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 默认安装与构建依赖一致的 `rc.5` 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性、需求确认和材料写入限制，零模型调用。设置 `TASK_ENGINE_DSH_VERSION=0.2.1-rc.3` 或 `0.2.1-rc.4` 可验证其他已声明支持的版本；未知版本在安装前拒绝。可用 `TASK_ENGINE_PRESET_NODE_MODULES` 复用版本一致的公开依赖，插件包、工作区和 DSH_HOME 仍每次新建，不复制凭据或用户数据。CI 分别执行三版宿主验证，旧 seeder 的可选实文件探针不代替当前宿主验收。
+
+## 任务目录与台账投影
+
+任务读写、会话权限及提交钩子共用 `task-paths.ts`，工作区按 `.dsh/tasks/<id>/task.json` 查找直接任务目录。`task_directory` 记录相对源码根的命名空间，使子工作区的需求文档、材料、审核产物与其台账物理同目录。台账视图共用 `task-ledger-types.ts`，`task-ledger-content.ts` 只投影已记录产物与文件，`task-ledger-document.ts` 生成可读副本，不增加第二份状态或写接口。正文使用宿主 Markdown 渲染器；历史运行证据集中在 `TaskLedgerAudit.tsx`。见 `docs/testing/task-workspace.md`。
+
+CTest 读取 `N% tests passed, M tests failed out of T`（M 非零按 0 计）与干净跑完的 `100% tests passed out of T`；`***Skipped` 标记的用例不计入通过，全部跳过、`No tests were found!!!` 和 `out of 0` 都按 0 计。GoogleTest 读取 `[==========] N tests from … ran.`、`[  PASSED  ] N tests` 和 `[  SKIPPED ] M tests`：出现 `[  FAILED  ]` 或整个套件全部跳过时按 0 计。两条路径都要求命令真的运行对应程序：Windows 带引号和空格的 `"C:\Program Files\CMake\bin\ctest.exe"` 可识别，`echo`、`cat` 等只输出文字的命令，以及 npm/pytest 等已有运行器，不会借用这两种标记。

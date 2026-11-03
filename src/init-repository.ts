@@ -31,7 +31,7 @@ function initPurpose(step: ProjectInitStep): InitPurpose {
 const PURPOSES: Record<InitPurpose, { title: string; task: string; output: string; graph: string }> = {
   'project-map': { title: '项目地图 / 全仓导航',
     task: '核对全仓独立模块、聚合关系、启动入口及跨模块依赖。区分业务模块、基础框架和独立前端；逐一说明覆盖清单中的模块，职责未知就标明未知。',
-    output: '产出模块职责、依赖、启动/构建入口及导航路径。不展开业务状态机、不罗列依赖版本、不代写当前需求方案。',
+    output: '产出模块职责、依赖、启动/构建入口及导航路径。可用一句话标识业务领域；业务角色、流程、状态流转及业务规则细节由业务能力 Skill 承担。不展开业务状态机、不罗列依赖版本、不代写当前需求方案；地图自身必须可用，不依赖另一 Skill 才能导航。输出前自查简介、正文中的模块数量与列出的清单是否一致，无法确认数量时不写确定数量。',
     graph: '核验索引后优先查询 files 获取目录导航，再用 context 查找主要入口与依赖相关符号，最后核对源码。' },
   'tech-stack': { title: '技术栈 / 版本与构建事实',
     task: '完整读取构建清单，核对父子模块、依赖版本来源、构建插件、脚本和实际配置文件。分别核对各独立应用的语言、框架与版本边界，不预设技术栈，不将声明版本视为运行验证。',
@@ -39,7 +39,7 @@ const PURPOSES: Record<InitPurpose, { title: string; task: string; output: strin
     graph: '版本与构建事实以清单/配置为准；只在找不到构建入口或关联源码时按需查询图谱。' },
   'business-capabilities': { title: '业务能力 / 跨领域能力索引',
     task: '先列出各前端页面/路由、后端接口和业务文档的领域目录，再跨领域抽样查阅页面文案、请求映射、实现与测试。不能只看字母排序靠前的模块；import、类名和包名不能单独证明业务。',
-    output: '按业务领域记录能力、入口、关键流程、证据路径与行号，区分代码事实、合理推导和产品问题；列明已查与未覆盖范围。不把局部模块样本写成全仓业务清单，不预设业务领域。',
+    output: '按业务领域记录能力、业务角色、关键流程、业务规则、证据路径与行号，区分代码事实、合理推导和产品问题；列明已查与未覆盖范围。证据使用完整项目相对路径，或定义能唯一还原的路径前缀；不能仅写文件名或用目录通配符充当已读实现证据。能力名称与结论强度不得超过证据：只查到目录、常量或状态枚举时写作能力线索或配置事实，不据此宣称全流程已实现或完整状态机已核实。若提供项目地图草案，仅将其作为导航与避免重复的参考，仍须读取源码核实；补充业务信息，不复述目录全表、构建或启动说明。允许相同模块名称与路径用于引用，不为去重删掉必要背景。没有地图时独立查证，不等待地图。不把局部模块样本写成全仓业务清单，不预设业务领域。',
     graph: '先用 files 帮助发现领域，再用 context 查找页面/API/控制器/服务线索；低置信匹配不能作为业务事实。' },
   'code-backend': { title: '后端编码 / 项目特有实现约定',
     task: '查阅真实后端源码和测试，沿接口入口、服务、数据访问及 DTO 定位实现。抽查参数校验、异常/返回模型、事务与权限的项目特有方式；框架或层次不存在时不得假定。',
@@ -157,6 +157,9 @@ export class InitRepositoryReader {
   constructor(private readonly probe: FileProbe, private readonly root: string,
     private readonly queryGraph = queryInitCodeGraph) {}
 
+  /** Leave room to compose a draft instead of repeatedly calling tools after their budget is exhausted. */
+  get shouldConclude(): boolean { return this.calls >= 70 || this.characters >= 160_000 }
+
   async execute(name: string, raw: string): Promise<{ text: string; isError: boolean }> {
     try {
       if (++this.calls > 80) throw new Error('已达本步只读查阅次数上限，请基于已有证据完成并说明未覆盖范围')
@@ -228,39 +231,66 @@ export class InitRepositoryReader {
   }
 }
 
+/** Deterministic draft failures must not start another full repository investigation. */
+export class InitOutputError extends Error {}
+
 /** A bounded tool conversation; uses the host assembler to retain provider replay metadata. */
 export async function runInitRepositoryModel(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>,
-  options: GenerateOptions, reader: InitRepositoryReader): Promise<string> {
+  options: GenerateOptions, reader: InitRepositoryReader, validateOutput?: (text: string) => void): Promise<string> {
   const messages = [...options.messages]
-  for (let turn = 0; turn < 24; turn++) {
+  let concluding = false
+  let repaired = false
+  // Up to 23 exploration rounds, with reserved composition/repair rounds inside the same attempt deadline.
+  for (let turn = 0; turn < 26; turn++) {
     options.signal?.throwIfAborted()
+    if (!concluding && (turn >= 23 || reader.shouldConclude)) {
+      concluding = true
+      messages.push(createUserMessage({ content: [{ type: 'text', text: '查阅预算即将用完，停止扩大扫描。现在根据已返回的文件证据输出当前资源 JSON，明确未查范围与待确认事项；不要声称全仓已查证。证据不足可跳过可选资源。' }], source: { kind: 'user' } }))
+    }
     const assembler = new BlockAssembler()
     let outputSize = 0
-    for await (const chunk of stream({ ...options, messages, tools: INIT_REPOSITORY_TOOLS })) {
+    for await (const chunk of stream({ ...options, messages, tools: concluding ? [] : INIT_REPOSITORY_TOOLS })) {
+      options.signal?.throwIfAborted()
       assembler.push(chunk)
       if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') outputSize += chunk.text.length
       if (chunk.type === 'tool-call-delta') outputSize += chunk.argumentsDelta.length
       if (outputSize > 100_000) throw new Error('初始化单轮模型输出过长')
     }
     if (assembler.finish.kind === 'error') throw new Error(assembler.finish.failure.message)
-    if (assembler.finish.kind === 'max-tokens') throw new Error('模型达到输出长度限制')
+    const truncated = assembler.finish.kind === 'max-tokens'
     const assistant = assembler.message({ provider: options.provider, model: options.model,
       ...(assembler.replayState ? { replayState: assembler.replayState } : {}) })
     const calls = assistant.content.filter(block => block.type === 'tool-call')
+    if (truncated && calls.length) throw new InitOutputError('模型的只读调用参数被输出长度限制截断，未执行这些调用；可从本步重试')
     if (!calls.length) {
       if (!reader.reads.length && turn < 2) {
         messages.push(assistant, createUserMessage({ content: [{ type: 'text', text: '你尚未读取任何文件。路径与构建摘要不代表已查证，请先调用只读工具读取相关文件，再输出资源JSON。' }], source: { kind: 'user' } }))
         continue
       }
-      return assistant.content.filter(block => block.type === 'text').map(block => block.text).join('')
+      const text = assistant.content.filter(block => block.type === 'text').map(block => block.text).join('')
+      try {
+        if (truncated) throw new Error('模型输出达到长度限制，请压缩正文，保留已查证结论、必要路径和范围说明')
+        validateOutput?.(text)
+        return text
+      }
+      catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        if (repaired || !reader.reads.length || turn >= 25) throw new InitOutputError(message)
+        // Repair the actual draft with its original evidence; never restart a full repository investigation for JSON errors.
+        repaired = true
+        concluding = true
+        messages.push(assistant, createUserMessage({ content: [{ type: 'text', text: `草案校验失败：${message.slice(0, 4000)}。保留已查证结论，只修复这份资源的格式、长度或已知路径遗漏。不要继续调用工具；未知职责明确写待确认。仅输出完整合法资源 JSON。` }], source: { kind: 'user' } }))
+        continue
+      }
     }
     if (calls.length > 20) throw new Error('单轮只读调用过多，请分批查阅')
     messages.push(assistant)
     for (const call of calls) {
       options.signal?.throwIfAborted()
-      const result = await reader.execute(call.name, call.arguments)
+      const result = concluding || reader.shouldConclude ? { text: JSON.stringify({ error: '查阅已结束，请使用已有证据输出资源 JSON' }), isError: true }
+        : await reader.execute(call.name, call.arguments)
       messages.push(createToolResultMessage({ callId: call.id, content: [{ type: 'text', text: result.text }], isError: result.isError }))
     }
   }
-  throw new Error('本步查阅达到24轮上限，可缩小范围后重试；已有草案保留')
+  throw new InitOutputError('模型在查阅结束后仍未提交可校验草案；可从本步重试，其他草案保留')
 }

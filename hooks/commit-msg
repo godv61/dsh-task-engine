@@ -26,10 +26,244 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 
 // src/hook.ts
 var import_node_child_process3 = require("node:child_process");
-var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// src/command-words.ts
+function commandWords(command) {
+  const words = [];
+  let word = "", quote = "", active = false;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote) {
+      if (char === quote) quote = "";
+      else if (quote === '"' && char === "\\" && command[i + 1] === '"') {
+        word += '"';
+        i++;
+      } else word += char;
+      active = true;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+      active = true;
+    } else if (/\s/u.test(char)) {
+      if (active) {
+        words.push(word);
+        word = "";
+        active = false;
+      }
+    } else {
+      word += char;
+      active = true;
+    }
+  }
+  if (quote) return void 0;
+  if (active) words.push(word);
+  return words;
+}
+function commandName(word) {
+  const parts = (word ?? "").replace(/\\/gu, "/").split("/");
+  return parts[parts.length - 1].replace(/\.(?:exe|cmd|bat)$/iu, "").toLowerCase();
+}
+
+// src/go-test-evidence.ts
+function goTestEvidence(command, output) {
+  const words = commandWords(command);
+  if (!words || commandName(words[0]) !== "go" || words[1] !== "test") return void 0;
+  const end = words.findIndex((word, i) => i > 1 && (word === "-args" || word === "--"));
+  const args = words.slice(2, end < 0 ? void 0 : end);
+  if (!args.some((word) => word === "-json" || word === "-json=true") || args.includes("-json=false")) return { count: null };
+  const packages = /* @__PURE__ */ new Map();
+  const passed = /* @__PURE__ */ new Map();
+  let seen = false;
+  for (const line of output.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    if (!line.trimStart().startsWith("{")) {
+      if (/^go:/u.test(line)) continue;
+      return { count: null };
+    }
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      return { count: null };
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { count: null };
+    const event = value;
+    if (event.Action === "build-output" || event.Action === "build-fail") {
+      if (event.Action === "build-fail") return { count: 0 };
+      continue;
+    }
+    if (typeof event.Package !== "string" || !event.Package.trim() || !["start", "run", "pause", "cont", "pass", "bench", "fail", "output", "skip"].includes(String(event.Action)) || event.Test !== void 0 && typeof event.Test !== "string") return { count: null };
+    seen = true;
+    if (event.Action === "fail") return { count: 0 };
+    if (!packages.has(event.Package)) packages.set(event.Package, "incomplete");
+    if (!event.Test && (event.Action === "pass" || event.Action === "skip")) packages.set(event.Package, event.Action);
+    if (event.Test && event.Action === "pass") passed.set(`${event.Package}\0${event.Test}`, event.Package);
+  }
+  if (!seen || [...packages.values()].some((status) => status === "incomplete")) return { count: null };
+  return { count: [...passed.values()].filter((pkg) => packages.get(pkg) === "pass").length };
+}
+
+// src/skill-command.ts
+var literal = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[+-]?\d+(?:\.\d+)?|true|false|null|undefined|None|True|False)`;
+var literalOnly = new RegExp(`^${literal}$`, "u");
+var printingLiteral = new RegExp(`^(?:console\\.(?:log|info|warn|error)|print)\\(\\s*${literal}(?:\\s*,\\s*${literal})*\\s*\\)$`, "u");
+function obviousNoop(program) {
+  const body = program.trim();
+  return !body || literalOnly.test(body) || printingLiteral.test(body) || /^(?:process\.exit|sys\.exit|exit|quit)\(\s*0?\s*\)$/u.test(body) || /^__import__\(['"]sys['"]\)\.exit\(\s*0?\s*\)$/u.test(body) || /^void\s+0$/u.test(body);
+}
+function inspect(words, depth) {
+  if (depth > 4) return "\u6280\u80FD\u547D\u4EE4\u7684\u5916\u58F3\u8F6C\u53D1\u5D4C\u5957\u8FC7\u6DF1\uFF1B\u8BF7\u76F4\u63A5\u8FD0\u884C\u9879\u76EE\u68C0\u67E5\u547D\u4EE4";
+  const name = commandName(words[0]);
+  if (["echo", "printf", "true", ":", "exit", "write-output", "write-host"].includes(name)) return "\u6280\u80FD\u547D\u4EE4\u5FC5\u987B\u6267\u884C\u5B9E\u9645\u68C0\u67E5\uFF0C\u4E0D\u80FD\u53EA\u6253\u5370\u6587\u5B57\u6216\u76F4\u63A5\u6210\u529F\u9000\u51FA";
+  const shell = ["cmd", "sh", "bash", "powershell", "pwsh"].includes(name);
+  if (shell) {
+    const flag = words.findIndex((word, i) => i > 0 && (name === "cmd" ? /^\/[ck]$/iu : /^-(?:c|command)$/iu).test(word));
+    if (flag >= 0) {
+      const rest = words.slice(flag + 1);
+      if (rest.length === 1) {
+        const nested = commandWords(rest[0]);
+        return nested?.length ? inspect(nested, depth + 1) : "\u6280\u80FD\u5916\u58F3\u547D\u4EE4\u65E0\u6CD5\u89E3\u6790\uFF1B\u8BF7\u76F4\u63A5\u8FD0\u884C\u9879\u76EE\u68C0\u67E5\u811A\u672C";
+      }
+      return rest.length ? inspect(rest, depth + 1) : "\u6280\u80FD\u5916\u58F3\u547D\u4EE4\u7F3A\u5C11\u68C0\u67E5\u7A0B\u5E8F";
+    }
+  }
+  if (["node", "python", "python3"].includes(name)) {
+    for (let i = 1; i < words.length; i++) {
+      const word = words[i];
+      const inline = name === "node" ? /^--(?:eval|print)=(.*)$/su.exec(word)?.[1] : void 0;
+      const separate = name === "node" ? ["-e", "--eval", "-p", "--print"].includes(word) : word === "-c";
+      const program = inline ?? (separate ? words[i + 1] ?? "" : void 0);
+      if (program !== void 0 && obviousNoop(program)) return "\u6280\u80FD\u547D\u4EE4\u662F\u660E\u663E\u7684\u7A7A\u64CD\u4F5C\u6216\u56FA\u5B9A\u8F93\u51FA\uFF1B\u8BF7\u6267\u884C\u5B9E\u9645\u65AD\u8A00\u3001lint\u3001\u7C7B\u578B\u68C0\u67E5\u6216\u9879\u76EE\u68C0\u67E5\u811A\u672C";
+    }
+  }
+  return void 0;
+}
+function skillReceiptProblem(command) {
+  const words = commandWords(command);
+  return words?.length ? inspect(words, 0) : "\u6280\u80FD\u547D\u4EE4\u4E3A\u7A7A\u6216\u5F15\u53F7\u4E0D\u5B8C\u6574";
+}
 
 // src/verification-tests.ts
+function unittestTestEvidence(command, output) {
+  const words = commandWords(command);
+  if (!words) return void 0;
+  const name = commandName(words[0]);
+  if (!/^python(?:\d+(?:\.\d+)*)?$/u.test(name) && name !== "py") return void 0;
+  let index = 1;
+  if (name === "py" && /^-\d+(?:\.\d+)*$/u.test(words[index] ?? "")) index++;
+  while (["-B", "-E", "-I", "-O", "-OO", "-s", "-S", "-u"].includes(words[index] ?? "")) index++;
+  if (words[index] !== "-m" || words[index + 1] !== "unittest") return void 0;
+  const summary = output.replace(/\r\n/gu, "\n").trimEnd().match(/(?:^|\n)Ran (\d+) tests? in \d+(?:\.\d+)?s\n\n(OK|FAILED|NO TESTS RAN)(?: \(([^\n]*)\))?$/u);
+  if (!summary) return { count: null };
+  if (summary[2] === "FAILED") return { count: 0 };
+  const total = Number(summary[1]);
+  if (summary[2] === "NO TESTS RAN") return { count: total === 0 ? 0 : null };
+  let excluded = 0;
+  for (const field of summary[3]?.split(",") ?? []) {
+    const counter = field.trim().match(/^(?:skipped|expected failures)=(\d+)$/u);
+    if (!counter) return { count: null };
+    excluded += Number(counter[1]);
+  }
+  return { count: Number.isSafeInteger(total) && Number.isSafeInteger(excluded) && excluded <= total ? total - excluded : null };
+}
+var outputOnlyCommands = /* @__PURE__ */ new Set([
+  "echo",
+  "printf",
+  "cat",
+  "tee",
+  "head",
+  "tail",
+  "sed",
+  "awk",
+  "grep",
+  "rg",
+  "cut",
+  "tr",
+  "sort",
+  "uniq",
+  "find",
+  "ls",
+  "pwd",
+  "xxd",
+  "od",
+  "strings",
+  "base64",
+  "true",
+  "false",
+  ":"
+]);
+var runnerCommands = /* @__PURE__ */ new Set([
+  "npm",
+  "npx",
+  "pnpm",
+  "yarn",
+  "bun",
+  "node",
+  "deno",
+  "python",
+  "python3",
+  "py",
+  "pytest",
+  "go",
+  "cargo",
+  "mvn",
+  "mvnw",
+  "gradle",
+  "gradlew",
+  "dotnet",
+  "java",
+  "dart",
+  "flutter",
+  "ruby",
+  "rake",
+  "php",
+  "phpunit",
+  "composer",
+  "make",
+  "ninja",
+  "cmake",
+  "msbuild"
+]);
+function commandProgramName(command) {
+  const words = commandWords(command);
+  if (!words?.length) return void 0;
+  let index = 0;
+  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index]) || words[index] === "env")) index++;
+  return index < words.length ? commandName(words[index]) : void 0;
+}
+function ctestEvidence(output) {
+  const text = output.replace(/\r\n/gu, "\n");
+  if (/no tests were found/iu.test(text)) return { count: 0 };
+  const summary = text.match(/(\d+)%\s+tests?\s+passed(?:,\s*(\d+)\s+tests?\s+failed)?\s+out\s+of\s*(\d+)/iu);
+  if (!summary) return { count: null };
+  const failed = Number(summary[2] ?? 0);
+  const total = Number(summary[3]);
+  if (!Number.isSafeInteger(total) || total < 0) return { count: null };
+  if (failed > 0) return { count: 0 };
+  const skipped = text.match(/\*\*\*Skipped\b/gu)?.length ?? 0;
+  return { count: Math.max(0, total - skipped) };
+}
+function gtestEvidence(output) {
+  const text = output.replace(/\r\n/gu, "\n");
+  const ran = text.match(/\[\s*=+\s*\]\s*(\d+)\s+tests?\s+from\s+(\d+)\s+test\s+suite(?:s)?\s+ran\./iu);
+  if (!ran) return null;
+  const total = Number(ran[1]);
+  if (total === 0 || Number(ran[2]) === 0) return { count: 0 };
+  if (/\[\s*FAILED\s*\]/iu.test(text)) return { count: 0 };
+  const passed = text.match(/\[\s*PASSED\s*\]\s*(\d+)\s+tests?/iu);
+  if (!passed) return { count: null };
+  const skipped = Number(text.match(/\[\s*SKIPPED\s*\]\s*(\d+)\s+tests?/iu)?.[1] ?? 0);
+  if (skipped >= total) return { count: 0 };
+  return { count: Number(passed[1]) };
+}
+function ctestOrGtestEvidence(command, output) {
+  const name = commandProgramName(command);
+  if (!name) return null;
+  if (name === "ctest") return ctestEvidence(output);
+  if (outputOnlyCommands.has(name) || runnerCommands.has(name) || skillReceiptProblem(command)) return null;
+  return gtestEvidence(output);
+}
 function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
   const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command);
@@ -55,6 +289,12 @@ function testEvidence(command, output) {
   }
   const maven = mavenTestEvidence(command, output);
   if (maven) return maven;
+  const go = goTestEvidence(command, output);
+  if (go) return go;
+  const unittest = unittestTestEvidence(command, output);
+  if (unittest) return unittest;
+  const ctestOrGtest = ctestOrGtestEvidence(command, output);
+  if (ctestOrGtest) return ctestOrGtest;
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];
@@ -73,9 +313,6 @@ function testEvidence(command, output) {
     if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 };
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
     if (!match && /no tests ran/iu.test(output)) return { count: 0 };
-  } else if (/(?:^|\s)go\s+test\b/iu.test(command)) {
-    const successfulPackages = output.split(/\r?\n/u).filter((line) => /^ok\s+\S+/u.test(line) && !/\[no tests to run\]/iu.test(line));
-    return { count: successfulPackages.length > 0 ? 1 : 0 };
   } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map((entry) => Number(entry[1]));
     return { count: counts.length ? Math.max(...counts) : null };
@@ -86,6 +323,22 @@ function receiptHasRequiredTests(receipt) {
   if (isGradleTestCommand(receipt.command) && receipt.gradle_report !== void 0) return receipt.gradle_report.count > 0;
   return (testEvidence(receipt.command, `${receipt.stdout}
 ${receipt.stderr}`).count ?? 0) > 0;
+}
+
+// src/delivery-changes.ts
+function requiredReviewPaths(plan) {
+  const removed = new Set(plan.changes?.map((change) => change.path));
+  return [.../* @__PURE__ */ new Set([
+    ...plan.files.filter((file) => !removed.has(file)),
+    ...(plan.changes ?? []).flatMap((change) => [change.baseline.git.path, ...change.baseline.before ? [change.baseline.before.path] : []])
+  ])];
+}
+
+// src/reviewer-spec.ts
+var REVIEW_PRESET = "task-engine-review";
+var REVIEW_TOOLS = ["read", "glob", "grep", "structured_output"];
+function validReviewPolicy(proof, childId, structured = false) {
+  return !!proof && proof.version === 1 && proof.preset === REVIEW_PRESET && !!childId && proof.child_id === childId && Array.isArray(proof.tools) && proof.tools.includes("read") && (!structured || proof.tools.includes("structured_output")) && proof.tools.every((tool) => REVIEW_TOOLS.includes(tool));
 }
 
 // src/execution-plan.ts
@@ -106,13 +359,13 @@ function executionItemBlockers(state2, item) {
   const plan = item.execution_plan;
   if (!plan) return [`item ${item.id}: call plan_execution before dispatch (record boundary, files, acceptance and reason)`];
   const blockers = [];
-  if (!item.dispatch) blockers.push(`item ${item.id}: implementation has not been dispatched`);
+  if (!item.dispatch) blockers.push(plan.mode === "direct" ? `item ${item.id}: direct implementation is not accepted; run verify, ${plan.review === "independent" ? "review_dispatch, then " : ""}accept_item (no implementation dispatch is required)` : `item ${item.id}: implementation has not been dispatched`);
   if (item.dispatch?.status && item.dispatch.status !== "completed") blockers.push(`item ${item.id}: implementation child is not completed`);
   if (item.review?.spec.outcome !== "pass" || state2.flow?.config.review_depth !== "single" && item.review.quality?.outcome !== "pass")
     blockers.push(`item ${item.id}: item review is missing or failed before done`);
   if (plan.review === "independent") {
     const review = item.independent_review;
-    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, plan.files))
+    if (review?.status !== "completed" || !review.run_id || review.spec !== "pass" || review.quality !== "pass" || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at || !validReviewPolicy(review.policy, review.run_id) || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`);
   }
   return blockers;
@@ -130,7 +383,7 @@ ${receipt.stderr}`))
   if (receipt.aborted) problems.push("TEST_CANCELLED: command did not finish");
   if (receipt.exit_code !== 0) problems.push(`TEST_COMMAND_FAILED: exit code ${receipt.exit_code}; inspect stdout/stderr before retrying`);
   if (receipt.scope_changed_during_run) problems.push("INPUTS_CHANGED: test inputs changed during execution; rerun on stable inputs");
-  if (!receiptHasRequiredTests(receipt)) problems.push(receipt.test_summary?.count === 0 ? "NO_PASSING_TESTS: tests failed, were all skipped, or no tests ran" : "NO_TEST_SUMMARY: no supported nonzero test summary; use a real runner such as node --test --test-reporter=tap, Maven test, or pytest. Do not print a synthetic count. On Windows, if Node child-process capture is denied, check whether --experimental-test-isolation=none is supported and suitable for this suite.");
+  if (!receiptHasRequiredTests(receipt)) problems.push(receipt.test_summary?.count === 0 ? "NO_PASSING_TESTS: tests failed, were all skipped, or no tests ran" : "NO_TEST_SUMMARY: no supported nonzero test summary; use the project's real test runner and inspect the captured output. Do not print a synthetic count. For an environment blocker, preserve the test command and harness; request approval for only the exact necessary command instead of changing ACLs, session access or test isolation.");
   return problems;
 }
 function itemDependencies(state2, ids) {
@@ -185,15 +438,89 @@ function groupEvidenceBlockers(state2, hashes, itemId) {
   }
   return problems;
 }
+function acceptanceRun(state2, group) {
+  const runs = (state2.verification_runs ?? []).filter((run3) => run3.group_id === group.id);
+  const latest = runs[runs.length - 1];
+  if (!latest || !latest.passed || latest.invalidated_reason || receiptProblems(latest.receipt).length || !latest.receipt.scope_hash) return latest;
+  let accepted = latest;
+  for (let index = runs.length - 2; index >= 0; index--) {
+    const run3 = runs[index];
+    if (!run3.passed || run3.invalidated_reason || receiptProblems(run3.receipt).length || run3.plan_key !== latest.plan_key || run3.receipt.scope_hash !== latest.receipt.scope_hash || run3.receipt.command !== latest.receipt.command || run3.receipt.root !== latest.receipt.root || run3.receipt.sandbox?.mode !== latest.receipt.sandbox?.mode || run3.receipt.test_summary?.count !== latest.receipt.test_summary?.count) break;
+    accepted = run3;
+  }
+  return accepted;
+}
 function verificationKey(state2, itemId) {
   if (!state2.verification_version) return state2.verification.receipt?.finished_at;
-  return JSON.stringify(requiredGroups(state2, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((group) => [group.id, group.key, latestGroupRun(state2, group.id)?.id]));
+  return JSON.stringify(requiredGroups(state2, itemId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0).map((group) => [group.id, group.key, acceptanceRun(state2, group)?.id]));
+}
+
+// src/task-paths.ts
+var TASKS_DIRECTORY = ".dsh/tasks";
+function validTaskId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(id) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/iu.test(id);
+}
+function taskDirectory(id) {
+  if (!validTaskId(id))
+    throw new Error(
+      "task_id must be a portable 1\u201364 character identifier: letters, digits, hyphens or underscores; device names are forbidden"
+    );
+  return `${TASKS_DIRECTORY}/${id}`;
+}
+var taskPath = (id) => `${taskDirectory(id)}/task.json`;
+function taskArtifactDirectory(id, namespace) {
+  const suffix = taskDirectory(id), value = namespace ?? suffix;
+  if (value !== suffix && !value.endsWith("/" + suffix) || value.split("/").some(
+    (part) => !part || part === "." || part === ".." || /[\\:\x00-\x1f<>"|?*]/u.test(part) || /[. ]$/u.test(part)
+  ))
+    throw new Error("\u4EFB\u52A1\u76EE\u5F55\u4E0D\u662F\u672C\u5DE5\u4F5C\u533A\u5185\u7684\u666E\u901A\u8DEF\u5F84");
+  return value;
+}
+var taskMaterialDirectory = (id, namespace) => `${taskArtifactDirectory(id, namespace)}/materials`;
+function isTaskLedgerPath(value) {
+  const parts = value.replace(/\\/gu, "/").split("/");
+  const tail = parts.slice(-4), prefix = parts.slice(0, -4);
+  return parts.length >= 4 && prefix.every((part) => !!part && part !== "." && part !== ".." && !/[\\:\x00-\x1f<>"|?*]/u.test(part)) && tail[0] === ".dsh" && tail[1] === "tasks" && validTaskId(tail[2]) && tail[3] === "task.json";
+}
+function isEngineMeta(value) {
+  const path2 = value.replace(/\\/gu, "/");
+  return path2 === ".dsh/eng.json" || path2 === ".dsh/meta.json" || isTaskLedgerPath(path2);
+}
+
+// src/requirements.ts
+function materialRelativePath(value) {
+  if (!value || value.length > 240 || value.split("/").some((part) => !part || part === "." || part === ".." || /[\\:\x00-\x1f\x7f<>"|?*]/u.test(part) || /[. ]$/u.test(part) || part.startsWith(".") || /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/iu.test(part))) throw new Error("\u6750\u6599\u8DEF\u5F84\u5FC5\u987B\u662F\u666E\u901A\u76F8\u5BF9\u8DEF\u5F84\uFF0C\u4E0D\u5141\u8BB8\u8D8A\u754C\u3001\u9690\u85CF\u8DEF\u5F84\u6216\u8BBE\u5907\u540D");
+}
+function requirementMaterialPath(state2, name) {
+  materialRelativePath(state2.id);
+  materialRelativePath(name);
+  if (state2.id.includes("/")) throw new Error("\u9700\u6C42\u6750\u6599\u9700\u8981\u5355\u5C42\u4EFB\u52A1\u6807\u8BC6");
+  if (!/\.(?:html?|md|json|txt|csv|svg)$/iu.test(name) || /(?:^|\/)(?:agents|skill)\.md$/iu.test(name))
+    throw new Error("\u9700\u6C42\u6750\u6599\u4EC5\u652F\u6301 html\u3001htm\u3001md\u3001json\u3001txt\u3001csv\u3001svg\uFF1B\u4E0D\u80FD\u5199\u5165\u6307\u4EE4\u6587\u4EF6\u6216\u7A0B\u5E8F");
+  return `${taskMaterialDirectory(state2.id, state2.task_directory)}/${name}`;
+}
+function taskExecutionProblem(state2) {
+  if (state2.completed || state2.delivery?.intent === "analysis") return void 0;
+  return state2.flow?.config.requirement_review?.version === 1 ? void 0 : "\u6B64\u4EFB\u52A1\u7F3A\u5C11\u65B0\u7248\u9700\u6C42\u786E\u8BA4\u7ED3\u6784\uFF0C\u4EC5\u53EF\u67E5\u770B\uFF1B\u8BF7\u4F7F\u7528\u65B0\u7684 task_id \u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\uFF0C\u6574\u7406\u9700\u6C42\u603B\u7ED3\u5E76\u7531\u7528\u6237\u786E\u8BA4\u540E\u7EE7\u7EED\u3002\u4E0D\u4F1A\u8FC1\u79FB\u65E7\u56DE\u6267\u6216\u6539\u52A8\u5DF2\u6709\u4EE3\u7801\u3002";
+}
+function requirementSource(state2, policy) {
+  const fields = state2.artifacts[policy.artifact] ?? {};
+  const materials = (state2.requirements?.materials ?? []).filter((m) => !m.retired_at);
+  return JSON.stringify({
+    task: state2.id,
+    title: state2.title,
+    fields: Object.keys(fields).sort().map((key) => [key, fields[key]]),
+    clarifications: (state2.requirements?.clarifications ?? []).map(({ id, question, answer }) => ({ id, question, answer })),
+    ...materials.length ? { materials: materials.map(({ path: path2, hash, version }) => ({ path: path2, hash, version })) } : {}
+  });
+}
+function requirementConfirmed(state2, config2) {
+  if (!config2.requirement_review) return false;
+  const doc = state2.requirements?.document, confirmation = doc?.confirmation;
+  return !!doc && doc.status === "confirmed" && !!confirmation && doc.source === requirementSource(state2, config2.requirement_review) && confirmation.hash === doc.hash && confirmation.version === doc.version && !(state2.requirements?.clarifications ?? []).some((question) => !question.answer);
 }
 
 // src/engine.ts
-function formatResourceRef(ref) {
-  return `${ref.source}:${ref.name}`;
-}
 function artifactsForStage(stage, config2) {
   return config2.artifacts.filter((artifact) => artifact.stage === stage);
 }
@@ -221,7 +548,7 @@ function todosBlockers(state2, config2) {
 function guardSatisfied(guard, state2, config2) {
   switch (guard) {
     case "requirement_confirmation":
-      return state2.requirement_confirmed;
+      return requirementConfirmed(state2, config2);
     case "solution_confirmation":
       return state2.solution_confirmed;
     case "todos_done":
@@ -299,6 +626,7 @@ function verificationBlockers(state2, config2) {
   return blockers;
 }
 function commitCheckpoint(state2, config2) {
+  if (config2.requirement_review && !requirementConfirmed(state2, config2)) return { allowed: false, reason: "\u5F53\u524D\u9700\u6C42\u7248\u672C\u5C1A\u672A\u7531\u7528\u6237\u786E\u8BA4" };
   const { policy, checkpoints } = config2.commit;
   if (policy === "manual") {
     return { allowed: false, reason: "commit policy is manual \u2014 await an explicit user instruction" };
@@ -320,228 +648,21 @@ function commitCheckpoint(state2, config2) {
       return { allowed: true, label: `T${done}` };
     }
   }
-  return { allowed: false, reason: "no commit is due at this stage under the current policy" };
-}
-function isEngineMeta(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
+  return { allowed: false, reason: `no commit is due at stage ${state2.stage}; configured checkpoint stages: ${checkpoints.join(", ") || "(none)"}. Follow the current stage gates before calling commit.` };
 }
 function checkFileScope(state2, committing, config2) {
   if (!config2.commit.file_scope) return { ok: true, outside: [], noScope: false };
   if (state2.files.length === 0) return { ok: false, outside: [], noScope: true };
-  const outside = committing.filter((file) => !state2.files.includes(file) && !isEngineMeta(file));
-  return outside.length === 0 ? { ok: true, outside: [], noScope: false } : { ok: false, outside, noScope: false };
-}
-
-// src/workflows.ts
-var STANDARD = {
-  stages: ["\u9700\u6C42\u8BC4\u5BA1", "\u8BBE\u8BA1", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"],
-  start_stage: "\u9700\u6C42\u8BC4\u5BA1",
-  transitions: [
-    { from: "\u9700\u6C42\u8BC4\u5BA1", to: "\u8BBE\u8BA1", requires: ["requirement_confirmation", "artifacts_present"] },
-    { from: "\u8BBE\u8BA1", to: "\u5F00\u53D1", requires: ["solution_confirmation", "artifacts_present"] },
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
-    { from: "\u4EA4\u4ED8", to: "\u4EE3\u7801\u5BA1\u6838", requires: ["verified"] },
-    { from: "\u4EE3\u7801\u5BA1\u6838", to: "\u5B8C\u6210", requires: ["review_passed", "artifacts_present"] }
-  ],
-  // No artifacts, no commit policy, no skills: the skeleton carries none of them.
-  artifacts: [],
-  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EE3\u7801\u5BA1\u6838"], file_scope: true },
-  high_risk_requires_verification: true
-};
-var STANDARD_RECOMMENDATION = {
-  commit: {
-    // Only the TEXT conventions. Policy, checkpoints and scope stay on the
-    // skeleton: they decide when a gate fires, not how a message reads.
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF08\u5982 GREET-001\uFF09\uFF0C\u5199\u7ED3\u679C\u4E0D\u5199\u7A7A\u6CDB\u52A8\u4F5C"
-  },
-  artifacts: [
-    { stage: "\u9700\u6C42\u8BC4\u5BA1", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope", "acceptance_criteria"] },
-    { stage: "\u8BBE\u8BA1", id: "design", name: "\u8BBE\u8BA1\u6587\u6863", fields: ["approach", "risks", "impact"] },
-    { stage: "\u4EE3\u7801\u5BA1\u6838", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ]
-};
-var AGILE = {
-  stages: ["\u9700\u6C42", "\u5F00\u53D1", "\u4EA4\u4ED8", "\u5BA1\u67E5"],
-  start_stage: "\u9700\u6C42",
-  transitions: [
-    { from: "\u9700\u6C42", to: "\u5F00\u53D1", requires: ["requirement_confirmation"] },
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] },
-    // Entering 审查 is unconditional. A review guard on this edge would be
-    // circular — it would demand the verdict BEFORE the stage that produces it —
-    // and it would also block the commit at 交付, since a commit requires its
-    // stage's outgoing guards. What 审查 requires is declared as completion_guards
-    // instead, because a terminal stage has no outgoing edge to carry it.
-    { from: "\u4EA4\u4ED8", to: "\u5BA1\u67E5", requires: [] }
-  ],
-  artifacts: [],
-  commit: { policy: "item", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: true },
-  high_risk_requires_verification: false,
-  // 审查 is terminal and IS the review, so there is no outgoing edge to carry
-  // the guard. Declaring it here is what makes a blocked review prevent
-  // completion; without it the stage could be reached and finished with the
-  // review failing, which is what the assessment found.
-  completion_guards: ["review_passed"]
-};
-var AGILE_RECOMMENDATION = {
-  commit: {
-    // `item` policy emits two label shapes: `T<n>` mid-flow and `TASK` at the
-    // closing checkpoint. The pattern accepts BOTH, so the label the engine hands
-    // the model always satisfies the rule that validates it.
-    message_pattern: "^\u3010(\\S+)\u3011\u3010(?:TASK|T\\d+)\u3011.+",
-    message_hint: "\u3010<task_id>\u3011\u3010TASK/T1\u3011\u8BF4\u660E \u2014\u2014 \u7B2C\u4E00\u6BB5\u586B\u672C\u4EFB\u52A1 id\uFF1B\u5B9E\u65BD\u9879\u63D0\u4EA4\u7528 T1\u3001T2\uFF0C\u6536\u5C3E\u63D0\u4EA4\u7528 TASK"
-  },
-  artifacts: [
-    { stage: "\u9700\u6C42", id: "requirement", name: "\u9700\u6C42\u8BF4\u660E", fields: ["scope"] },
-    // Optional review record; the flow's review gate itself does not require a skill.
-    { stage: "\u5BA1\u67E5", id: "review", name: "\u8BC4\u5BA1\u8BB0\u5F55", fields: ["conclusion", "issues"] }
-  ]
-};
-var MINIMAL = {
-  stages: ["\u5F00\u53D1", "\u4EA4\u4ED8"],
-  start_stage: "\u5F00\u53D1",
-  transitions: [
-    { from: "\u5F00\u53D1", to: "\u4EA4\u4ED8", requires: ["todos_done"] }
-  ],
-  artifacts: [],
-  commit: { policy: "task", message_pattern: "", message_hint: "\u65E0\u683C\u5F0F\u8981\u6C42", checkpoints: ["\u4EA4\u4ED8"], file_scope: false },
-  high_risk_requires_verification: false
-};
-var MINIMAL_RECOMMENDATION = {
-  // A fast-change flow checks each change once, not twice under two headings a
-  // short change rarely distinguishes. The item still has to be reviewed — what
-  // drops is the duplicated verdict, which is where the weight actually was.
-  review_depth: "single"
-};
-function deriveCapabilities(config2) {
-  const caps = [];
-  const guards = new Set(config2.transitions.flatMap((t) => t.requires ?? []));
-  if (guards.has("verified")) caps.push("verification_gate");
-  if (guards.has("review_passed")) caps.push("review_gate");
-  if (guards.has("artifacts_present")) caps.push("artifact_gate");
-  if (config2.commit.file_scope) caps.push("file_scope");
-  return caps;
-}
-function preset(id, version, label, description, config2, recommendation) {
-  return {
-    id,
-    version,
-    label,
-    description,
-    capabilities: deriveCapabilities(config2),
-    config: config2,
-    // exactOptionalPropertyTypes: omit rather than assign undefined.
-    ...recommendation !== void 0 ? { recommendation } : {}
-  };
-}
-var FLOW_PRESETS = {
-  standard: preset("standard", 3, "\u5B8C\u6574\u7814\u53D1", "\u65B0\u529F\u80FD\u3001\u67B6\u6784\u6216\u8DE8\u6A21\u5757\u6539\u52A8\u3001\u9AD8\u98CE\u9669\u4EFB\u52A1\uFF1A\u9700\u6C42\u786E\u8BA4 \u2192 \u65B9\u6848\u786E\u8BA4 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u8BC1 \u2192 \u5BA1\u6838 \u2192 \u63D0\u4EA4", STANDARD, STANDARD_RECOMMENDATION),
-  // Version 4 for agile: 交付 → 审查 now requires review_passed, where it previously
-  // required nothing. That is a gate-semantics change, so a task created before it
-  // keeps its frozen version 3 config and behaves exactly as it did.
-  //
-  // Version 3 across all three: the preset is now a bare skeleton and its former
-  // built-in bindings, commit rule and artifacts are a separate recommendation a
-  // user adopts explicitly. Tasks created before this keep their frozen config and
-  // are unaffected; a project's existing config is likewise left exactly as it is.
-  agile: preset("agile", 4, "\u65E5\u5E38\u8FED\u4EE3", "\u76EE\u6807\u660E\u786E\u7684\u5E38\u89C4\u529F\u80FD\u4E0E\u7F3A\u9677\u4FEE\u590D\uFF1A\u76EE\u6807\u4E0E\u9A8C\u6536 \u2192 \u5B9E\u73B0 \u2192 \u9A8C\u6536\u4E0E\u5BA1\u67E5 \u2192 \u63D0\u4EA4", AGILE, AGILE_RECOMMENDATION),
-  minimal: preset("minimal", 3, "\u5FEB\u901F\u4FEE\u6539", "\u5C40\u90E8\u3001\u4F4E\u98CE\u9669\u3001\u65B9\u6848\u660E\u786E\u7684\u6539\u52A8\uFF1A\u4FEE\u6539 \u2192 \u68C0\u67E5\u4E0E\u63D0\u4EA4\uFF0C\u6BCF\u9879\u4E00\u6B21\u68C0\u67E5", MINIMAL, MINIMAL_RECOMMENDATION)
-};
-function dedupe(names) {
-  return [...new Set(names)];
-}
-function applyProjectConfig(base, project) {
-  if (project === void 0) return base;
-  const next = { ...base };
-  if (project.stage_bindings !== void 0) {
-    const profiles = { ...project.skill_profiles ?? {} };
-    const explicitProfiles = new Set(Object.keys(project.skill_profiles ?? {}));
-    const problems = [];
-    const bindings = {};
-    for (const [stage, binding] of Object.entries(project.stage_bindings)) {
-      const entry = {};
-      if (binding === null || typeof binding !== "object") {
-        problems.push(`stage_bindings "${stage}" must be an object`);
-        bindings[stage] = entry;
-        continue;
-      }
-      if (binding.skill_refs !== void 0 && binding.skills !== void 0) {
-        problems.push(`stage_bindings "${stage}" has both skill_refs and legacy skills`);
-      }
-      if (binding.skill_refs !== void 0) {
-        if (!Array.isArray(binding.skill_refs)) {
-          problems.push(`stage_bindings "${stage}" skill_refs must be an array`);
-        }
-        entry.skills = (Array.isArray(binding.skill_refs) ? binding.skill_refs : []).flatMap((ref) => {
-          if (ref === null || typeof ref !== "object") {
-            problems.push(`stage_bindings "${stage}" has an invalid skill reference`);
-            return [];
-          }
-          const key = formatResourceRef(ref);
-          const profile = profiles[key];
-          if (profile === void 0) {
-            problems.push(`skill profile "${key}" is missing`);
-            return [];
-          }
-          if (profile === null || !Array.isArray(profile.rules)) {
-            problems.push(`skill profile "${key}" must declare a rules array`);
-            return [];
-          }
-          return [{ skill: ref, rules: profile.rules, ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {} }];
-        });
-      } else if (binding.skills !== void 0) {
-        if (!Array.isArray(binding.skills)) {
-          problems.push(`stage_bindings "${stage}" skills must be an array`);
-        }
-        entry.skills = (Array.isArray(binding.skills) ? binding.skills : []).flatMap((skill) => {
-          if (skill === null || typeof skill !== "object" || skill.skill === null || typeof skill.skill !== "object") {
-            problems.push(`stage_bindings "${stage}" has an invalid skill binding`);
-            return [];
-          }
-          const key = formatResourceRef(skill.skill);
-          if (explicitProfiles.has(key)) {
-            const profile = profiles[key];
-            if (profile === null || !Array.isArray(profile?.rules)) {
-              problems.push(`skill profile "${key}" must declare a rules array`);
-              return [];
-            }
-            return [{
-              skill: skill.skill,
-              rules: profile.rules,
-              ...profile.evidence !== void 0 ? { evidence: profile.evidence } : {}
-            }];
-          }
-          const candidate = { rules: skill.rules ?? [], ...skill.evidence !== void 0 ? { evidence: skill.evidence } : {} };
-          const existing = profiles[key];
-          if (existing !== void 0 && JSON.stringify(existing) !== JSON.stringify(candidate)) {
-            problems.push(`skill "${key}" has different rules or evidence in multiple stages; copy it as a distinct skill`);
-          } else profiles[key] = candidate;
-          return [skill];
-        });
-      }
-      const legacy = dedupe(binding.legacy_rules ?? []);
-      if (legacy.length > 0) entry.legacy_rules = legacy;
-      bindings[stage] = entry;
+  const requirementDocument = config2.requirement_review ? state2.requirements?.document?.path : void 0;
+  const materialPaths = new Set(config2.requirement_review ? (state2.requirements?.materials ?? []).filter((m) => {
+    try {
+      return !m.retired_at && m.path === requirementMaterialPath(state2, m.name);
+    } catch {
+      return false;
     }
-    next.stage_bindings = bindings;
-    next.skill_profiles = profiles;
-    if (problems.length > 0) next.configuration_errors = problems;
-  } else if (project.skill_profiles !== void 0) {
-    next.skill_profiles = project.skill_profiles;
-  }
-  if (project.commit !== void 0) next.commit = project.commit;
-  if (project.artifacts !== void 0) next.artifacts = project.artifacts;
-  if (project.review_depth !== void 0) next.review_depth = project.review_depth;
-  if (project.commit_required !== void 0) next.commit_required = project.commit_required;
-  return next;
-}
-function resolveFlow(flow, project) {
-  const preset2 = FLOW_PRESETS[flow];
-  if (preset2 === void 0) {
-    return { ok: false, code: "UNKNOWN_FLOW", flow, knownFlows: Object.keys(FLOW_PRESETS) };
-  }
-  const { flow: _ignored, ...rest } = project ?? { flow };
-  return { ok: true, config: applyProjectConfig(preset2.config, { flow, ...rest }), preset: preset2 };
+  }).map((m) => m.path) : []);
+  const outside = committing.filter((file) => !state2.files.includes(file) && file !== requirementDocument && !materialPaths.has(file) && !isEngineMeta(file));
+  return outside.length === 0 ? { ok: true, outside: [], noScope: false } : { ok: false, outside, noScope: false };
 }
 
 // src/snapshot.ts
@@ -565,7 +686,7 @@ var TYPE_MARKERS = {
   rust: ["Cargo.toml"]
 };
 var DEFAULT_RISK_POLICY = {
-  // `.dsh/task-*.json` and `.dsh/eng.json` are protected by the snapshot hash and
+  // `.dsh/tasks/*/task.json` and `.dsh/eng.json` are protected by the snapshot hash and
   // the engine-meta exemption, not by this list; `.dsh/rules` / `.dsh/skills`
   // hold regular project content and stay committable by normal tasks.
   sensitive_paths: [".git", ".env", ".credentials.yaml", "credentials", "secrets"],
@@ -575,7 +696,7 @@ function isSensitivePath(path2) {
   const normalized = path2.replace(/\\/gu, "/").toLowerCase();
   const parts = normalized.split("/");
   if (DEFAULT_RISK_POLICY.sensitive_paths.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true;
-  return parts.some((part) => /^\.env(?:\..+)?$/u.test(part) || /^credentials(?:\.[^.]+)?$/u.test(part) || /\.(?:pem|p12|pfx|key)$/u.test(part) || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part));
+  return parts.some((part) => /^\.env(?:\..+)?$|^\.envrc$/u.test(part) || /^\.?credentials(?:\.[^.]+)?$/u.test(part) || /^\.?secrets?(?:\.(?:json|ya?ml|toml|ini|properties))?$/u.test(part) || /\.(?:pem|p12|pfx|key)$/u.test(part) || /^(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$/u.test(part));
 }
 var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
 
@@ -628,12 +749,34 @@ function reviewEvidenceBlockers(state2, currentScopeHash) {
   return [];
 }
 
+// src/resource-import.ts
+var import_node_fs = require("node:fs");
+var import_node_path = require("node:path");
+var IMPORT_LIMITS = { files: 1e3, bytes: 100 * 1024 * 1024, fileBytes: 20 * 1024 * 1024, depth: 20 };
+function assertRealPath(path2) {
+  let cursor = (0, import_node_path.resolve)(path2);
+  for (; ; ) {
+    try {
+      const linked = (0, import_node_fs.lstatSync)(cursor).isSymbolicLink();
+      const actual = import_node_fs.realpathSync.native(cursor);
+      const key = (value) => process.platform === "win32" ? value.replace(/\\/gu, "/").toLowerCase() : value;
+      if (linked || process.platform !== "win32" && key(actual) !== key(cursor)) throw new Error("\u4E0D\u5141\u8BB8\u7B26\u53F7\u94FE\u63A5\u6216\u76EE\u5F55\u8054\u63A5\uFF1A" + cursor);
+      if (key(actual) === key(cursor)) return;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const parent = (0, import_node_path.dirname)(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+}
+
 // src/sonarlint-local.ts
 var import_node_child_process2 = require("node:child_process");
 var import_node_crypto2 = require("node:crypto");
-var import_node_fs = require("node:fs");
+var import_node_fs2 = require("node:fs");
 var import_node_os = require("node:os");
-var import_node_path = require("node:path");
+var import_node_path2 = require("node:path");
 var import_node_util2 = require("node:util");
 
 // src/sonarlint-install.ts
@@ -646,9 +789,9 @@ var BASE = `https://repo.maven.apache.org/maven2/org/sonarsource/sonarlint/core/
 // src/sonarlint-local.ts
 var run2 = (0, import_node_util2.promisify)(import_node_child_process2.execFile);
 function localStateDir(policy, root) {
-  const cacheKey = `${(0, import_node_path.resolve)(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`;
-  return (0, import_node_path.join)(
-    process.env.DSH_HOME ?? (0, import_node_path.join)((0, import_node_os.homedir)(), ".dsh"),
+  const cacheKey = `${(0, import_node_path2.resolve)(root).toLowerCase()}\0${policy.host_url}\0${policy.project_key}`;
+  return (0, import_node_path2.join)(
+    process.env.DSH_HOME ?? (0, import_node_path2.join)((0, import_node_os.homedir)(), ".dsh"),
     "sonarlint-cache",
     (0, import_node_crypto2.createHash)("sha256").update(cacheKey).digest("hex").slice(0, 24)
   );
@@ -658,7 +801,7 @@ function lastLocalRuleUpdate(policy, root) {
 }
 function currentBinding(stateDir) {
   try {
-    const binding = JSON.parse((0, import_node_fs.readFileSync)((0, import_node_path.join)(stateDir, "dsh-binding.json"), "utf8"));
+    const binding = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(stateDir, "dsh-binding.json"), "utf8"));
     if (/^project-[0-9a-f-]{36}$/u.test(binding.connection_id) && !Number.isNaN(Date.parse(binding.updated_at))) {
       return binding;
     }
@@ -671,9 +814,9 @@ function connectionCachePath(stateDir, connectionId) {
   if (connectionId !== "project" && !/^project-[0-9a-f-]{36}$/u.test(connectionId)) {
     throw new Error("\u65E0\u6548\u7684\u672C\u5730 SonarQube \u8FDE\u63A5\u6807\u8BC6");
   }
-  const path2 = (0, import_node_path.resolve)(stateDir, Buffer.from(connectionId).toString("hex"));
-  const relativePath = (0, import_node_path.relative)((0, import_node_path.resolve)(stateDir), path2);
-  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${import_node_path.sep}`) || relativePath.startsWith(import_node_path.sep)) {
+  const path2 = (0, import_node_path2.resolve)(stateDir, Buffer.from(connectionId).toString("hex"));
+  const relativePath = (0, import_node_path2.relative)((0, import_node_path2.resolve)(stateDir), path2);
+  if (!relativePath || relativePath === ".." || relativePath.startsWith(`..${import_node_path2.sep}`) || relativePath.startsWith(import_node_path2.sep)) {
     throw new Error("\u672C\u5730 SonarQube \u7F13\u5B58\u8DEF\u5F84\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
   }
   return path2;
@@ -682,7 +825,7 @@ function localRulesFingerprint(policy, root, connectionId) {
   const stateDir = localStateDir(policy, root);
   const id = connectionId ?? currentBinding(stateDir)?.connection_id ?? "project";
   try {
-    const config2 = (0, import_node_fs.readFileSync)((0, import_node_path.join)(
+    const config2 = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(
       connectionCachePath(stateDir, id),
       "projects",
       Buffer.from(policy.project_key).toString("hex"),
@@ -706,7 +849,7 @@ function refuse(reason) {
 }
 function readJson(abs) {
   try {
-    return JSON.parse(import_node_fs2.default.readFileSync(abs, "utf8"));
+    return JSON.parse(import_node_fs3.default.readFileSync(abs, "utf8"));
   } catch {
     return void 0;
   }
@@ -719,11 +862,13 @@ function normalizeTask(task) {
     branch: String(task.branch ?? ""),
     work_size: task.work_size ?? "standard",
     risk_level: task.risk_level ?? "standard",
+    ...task.delivery ? { delivery: task.delivery } : {},
     ...task.complexity !== void 0 ? { complexity: task.complexity } : {},
     ...task.sonar_policy !== void 0 ? { sonar_policy: task.sonar_policy } : {},
     ...task.sonar_audit !== void 0 ? { sonar_audit: task.sonar_audit } : {},
     stage: String(task.stage ?? ""),
     requirement_confirmed: task.requirement_confirmed === true,
+    ...task.requirements ? { requirements: task.requirements } : {},
     solution_confirmed: task.solution_confirmed === true,
     items: Array.isArray(task.items) ? task.items : [],
     verification: task.verification ?? { passed: false, evidence: [] },
@@ -740,42 +885,50 @@ function normalizeTask(task) {
       verification_runs: task.verification_runs ?? []
     } : {},
     ...typeof task.root === "string" ? { root: task.root } : {},
+    ...typeof task.task_directory === "string" ? { task_directory: task.task_directory } : {},
     ...task.flow !== void 0 ? { flow: task.flow } : {}
   };
 }
 function taskRoots(repoRoot) {
   const roots = /* @__PURE__ */ new Set([repoRoot]);
-  const configPath = import_node_path2.default.join(__dirname, "dsh-task-roots.json");
+  const configPath = import_node_path3.default.join(__dirname, "dsh-task-roots.json");
   const config2 = readJson(configPath);
-  if (import_node_fs2.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
+  if (import_node_fs3.default.existsSync(configPath) && config2 === void 0) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6CD5\u8BFB\u53D6\u6216\u89E3\u6790");
   if (config2?.roots !== void 0 && !Array.isArray(config2.roots)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u65E0\u6548");
   for (const value of config2?.roots ?? []) {
-    if (typeof value !== "string" || import_node_path2.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
-    const root = import_node_path2.default.resolve(repoRoot, value);
-    const inside = import_node_path2.default.relative(repoRoot, root);
-    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
+    if (typeof value !== "string" || import_node_path3.default.isAbsolute(value)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u542B\u975E\u6CD5\u8DEF\u5F84");
+    const root = import_node_path3.default.resolve(repoRoot, value);
+    const inside = import_node_path3.default.relative(repoRoot, root);
+    if (inside.startsWith("..") || import_node_path3.default.isAbsolute(inside)) refuse("\u63D0\u4EA4\u94A9\u5B50\u7684\u5DE5\u4F5C\u533A\u914D\u7F6E\u8D8A\u754C");
     roots.add(root);
   }
   return [...roots];
 }
 function loadTasks() {
   const out = [];
-  const repoRoot = import_node_fs2.default.realpathSync.native(process.cwd());
+  const repoRoot = import_node_fs3.default.realpathSync.native(process.cwd());
   for (const root of taskRoots(repoRoot)) {
-    const dir = import_node_path2.default.join(root, ".dsh");
-    if (!import_node_fs2.default.existsSync(dir)) continue;
-    const names = import_node_fs2.default.readdirSync(dir).filter((name) => name.startsWith("task-") && name.endsWith(".json"));
-    for (const name of names) {
-      const json = readJson(import_node_path2.default.join(dir, name));
+    const dir = import_node_path3.default.join(root, TASKS_DIRECTORY);
+    if (!import_node_fs3.default.existsSync(dir)) continue;
+    assertRealPath(dir);
+    const ids = import_node_fs3.default.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && validTaskId(entry.name)).map((entry) => entry.name);
+    for (const id of ids) {
+      const file = import_node_path3.default.join(root, taskPath(id));
+      assertRealPath(file);
+      const json = readJson(file);
       if (json === void 0 || json.id === void 0) continue;
+      if (json.id !== id) refuse(`\u4EFB\u52A1\u76EE\u5F55\u4E0E\u8BB0\u5F55\u7F16\u53F7\u4E0D\u4E00\u81F4\uFF1A${file}`);
       const task = normalizeTask(json);
-      const projectRoot = import_node_fs2.default.realpathSync.native(task.root === void 0 ? root : import_node_path2.default.resolve(task.root));
-      const insideRepo = import_node_path2.default.relative(repoRoot, projectRoot);
-      const workspaceInsideProject = import_node_path2.default.relative(projectRoot, root);
-      if (insideRepo.startsWith("..") || import_node_path2.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path2.default.isAbsolute(workspaceInsideProject)) {
+      const projectRoot = import_node_fs3.default.realpathSync.native(task.root === void 0 ? root : import_node_path3.default.resolve(task.root));
+      const prefix = import_node_path3.default.relative(projectRoot, root).replaceAll("\\", "/");
+      const expectedDirectory = prefix ? `${prefix}/${taskDirectory(id)}` : taskDirectory(id);
+      if (task.task_directory !== void 0 && task.task_directory !== expectedDirectory) refuse("\u4EFB\u52A1\u76EE\u5F55\u4E0E\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4");
+      const insideRepo = import_node_path3.default.relative(repoRoot, projectRoot);
+      const workspaceInsideProject = import_node_path3.default.relative(projectRoot, root);
+      if (insideRepo.startsWith("..") || import_node_path3.default.isAbsolute(insideRepo) || workspaceInsideProject.startsWith("..") || import_node_path3.default.isAbsolute(workspaceInsideProject)) {
         refuse(`\u4EFB\u52A1 ${task.id} \u7684\u9879\u76EE\u6839\u76EE\u5F55\u4E0E\u94A9\u5B50\u767B\u8BB0\u7684\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4`);
       }
-      out.push({ file: import_node_path2.default.join(dir, name), task: { ...task, root: projectRoot } });
+      out.push({ file, task: { ...task, root: projectRoot } });
     }
   }
   return out;
@@ -819,9 +972,9 @@ function stagedEntries() {
 function assertIndexMatchesWorktree(repoRoot, file) {
   const staged = (0, import_node_child_process3.execFileSync)("git", ["ls-files", "--stage", "-z", "--", file], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
   const exact = staged.filter((line) => line.endsWith(`	${file}`));
-  const target = import_node_path2.default.resolve(repoRoot, file);
+  const target = import_node_path3.default.resolve(repoRoot, file);
   if (exact.length === 0) {
-    if (import_node_fs2.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
+    if (import_node_fs3.default.existsSync(target)) refuse(`\u6682\u5B58\u533A\u5DF2\u5220\u9664\u4F46\u5DE5\u4F5C\u533A\u4ECD\u6709\u6587\u4EF6\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
     return;
   }
   if (exact.length !== 1) refuse(`\u6682\u5B58\u533A\u5B58\u5728\u672A\u89E3\u51B3\u51B2\u7A81\uFF1A${file}`);
@@ -829,7 +982,7 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (!match) refuse(`\u6682\u5B58\u6587\u4EF6\u7C7B\u578B\u4E0D\u53D7\u652F\u6301\uFF1A${file}`);
   let info;
   try {
-    info = import_node_fs2.default.lstatSync(target);
+    info = import_node_fs3.default.lstatSync(target);
   } catch {
     refuse(`\u6682\u5B58\u533A\u4E0E\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
   }
@@ -841,32 +994,29 @@ function assertIndexMatchesWorktree(repoRoot, file) {
   if (worktreeOid !== match[2]) refuse(`\u6682\u5B58\u533A\u5185\u5BB9\u4E0E\u5DF2\u9A8C\u8BC1\u5DE5\u4F5C\u533A\u4E0D\u4E00\u81F4\uFF1A${file}\uFF1B\u91CD\u65B0\u6682\u5B58\u5E76\u9A8C\u8BC1`);
 }
 function pickTask(tasks2, branch2) {
-  const candidates = tasks2.filter(({ task }) => task.branch === branch2 && task.stage !== "\u5B8C\u6210" && task.completed === void 0);
+  const candidates = tasks2.filter(({ task }) => task.branch === branch2 && task.stage !== "\u5B8C\u6210" && task.completed === void 0 && !taskExecutionProblem(task) && task.delivery?.intent !== "analysis");
   if (candidates.length > 1) {
     refuse(`\u5F53\u524D\u5206\u652F\u6709\u591A\u4E2A\u672A\u5B8C\u6210\u4EFB\u52A1\uFF08${candidates.map(({ task }) => task.id).join("\u3001")}\uFF09\uFF1B\u8BF7\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011`);
   }
   return candidates[0]?.task;
 }
 function readCommitMessage(file) {
-  return import_node_fs2.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
+  return import_node_fs3.default.readFileSync(file, "utf8").split("\n").filter((line) => !line.startsWith("#")).join("\n").trim();
 }
 function extractTaskId(message2) {
   const match = /^【([^【】\s]+)】/.exec(message2);
   return match ? match[1] : void 0;
 }
-function isEngineMeta2(file) {
-  return /^\.dsh\/(task-[^/]+\.json|eng\.json|meta\.json)$/.test(file);
-}
 function scopeHash(state2, root, includeGovernance = false) {
-  const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta2(file)).sort().map((file) => {
-    const target = import_node_path2.default.resolve(root, file);
-    const inside = import_node_path2.default.relative(root, target);
-    if (inside.startsWith("..") || import_node_path2.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
+  const entries2 = [...new Set(state2.files)].filter((file) => includeGovernance || !isEngineMeta(file)).sort().map((file) => {
+    const target = import_node_path3.default.resolve(root, file);
+    const inside = import_node_path3.default.relative(root, target);
+    if (inside.startsWith("..") || import_node_path3.default.isAbsolute(inside)) refuse(`\u4EFB\u52A1\u8303\u56F4\u8DEF\u5F84\u8D8A\u754C: ${file}`);
     try {
-      const info = import_node_fs2.default.lstatSync(target);
+      const info = import_node_fs3.default.lstatSync(target);
       if (!info.isFile()) refuse(`\u4EFB\u52A1\u8303\u56F4\u542B\u975E\u666E\u901A\u6587\u4EF6: ${file}`);
       const executable = process.platform === "win32" ? false : (info.mode & 73) !== 0;
-      return [file, hashBytes(import_node_fs2.default.readFileSync(target)), executable];
+      return [file, hashBytes(import_node_fs3.default.readFileSync(target)), executable];
     } catch (error) {
       if (error.code === "ENOENT") return [file, null, null];
       refuse(`\u65E0\u6CD5\u8BFB\u53D6\u4EFB\u52A1\u6587\u4EF6 ${file}: ${error instanceof Error ? error.message : String(error)}`);
@@ -875,50 +1025,24 @@ function scopeHash(state2, root, includeGovernance = false) {
   return hashText(JSON.stringify(entries2));
 }
 function riskyPaths(entries2) {
-  return entries2.filter((entry) => !isEngineMeta2(entry.path)).filter((entry) => isSensitivePath(entry.path)).map((entry) => entry.path);
+  return entries2.filter((entry) => !isEngineMeta(entry.path)).filter((entry) => isSensitivePath(entry.path)).map((entry) => entry.path);
 }
 function riskVerified(state2) {
   const receipt = state2.verification.receipt;
   return state2.risk_level === "high_risk" && receipt !== void 0 && receipt.exit_code === 0 && !receipt.timed_out && !receipt.aborted;
 }
-function defaultConfig() {
-  const resolved = resolveFlow("standard");
-  if (!resolved.ok) throw new Error('built-in "standard" preset is missing');
-  return resolved.config;
-}
-function loadWorkflow(parsed) {
-  if (parsed === void 0) return defaultConfig();
-  const flow = parsed.flow;
-  if (typeof flow !== "string" || flow.trim() === "") {
-    refuse('\u9879\u76EE .dsh/eng.json \u7F3A "flow" \u5B57\u6BB5\u2014\u2014\u8BBE\u4E3A standard|agile|minimal\uFF0C\u6216\u5220\u9664\u8BE5\u6587\u4EF6');
-  }
-  const project = {
-    flow,
-    ...typeof parsed.stage_bindings === "object" && parsed.stage_bindings !== null && !Array.isArray(parsed.stage_bindings) ? { stage_bindings: parsed.stage_bindings } : {},
-    ...typeof parsed.skill_profiles === "object" && parsed.skill_profiles !== null && !Array.isArray(parsed.skill_profiles) ? { skill_profiles: parsed.skill_profiles } : {},
-    ...typeof parsed.commit === "object" && parsed.commit !== null && !Array.isArray(parsed.commit) ? { commit: parsed.commit } : {},
-    ...Array.isArray(parsed.artifacts) ? { artifacts: parsed.artifacts } : {},
-    ...typeof parsed.review_depth === "string" ? { review_depth: parsed.review_depth } : {},
-    ...typeof parsed.commit_required === "boolean" ? { commit_required: parsed.commit_required } : {}
-  };
-  const resolved = resolveFlow(flow, project);
-  if (!resolved.ok) {
-    refuse(`\u672A\u77E5\u6D41\u7A0B "${resolved.flow}"\uFF08\u5DF2\u77E5\u6D41\u7A0B\uFF1A${resolved.knownFlows.join("\u3001")}\uFF09`);
-  }
-  return resolved.config;
-}
 if (!messageFile) {
   process.exit(0);
 }
 var message = readCommitMessage(messageFile);
-var cwd = import_node_fs2.default.realpathSync.native(process.cwd());
+var cwd = import_node_fs3.default.realpathSync.native(process.cwd());
 var tasks = loadTasks();
 var taskId = extractTaskId(message);
 var state;
 if (taskId !== void 0) {
   const found = tasks.filter(({ task }) => task.id === taskId);
   if (found.length === 0) {
-    refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/task-<id>.json\uFF09`);
+    refuse(`\u63D0\u4EA4\u6D88\u606F\u91CC\u7684\u4EFB\u52A1 id "${taskId}" \u627E\u4E0D\u5230\u5BF9\u5E94\u7684\u4EFB\u52A1\u8BB0\u5F55\uFF08.dsh/tasks/<id>/task.json\uFF09`);
   }
   if (found.length > 1) refuse(`\u4EFB\u52A1 id "${taskId}" \u5728\u591A\u4E2A\u5DE5\u4F5C\u533A\u91CD\u590D\uFF1B\u8BF7\u5148\u6D88\u9664\u6B67\u4E49`);
   state = found[0].task;
@@ -928,6 +1052,7 @@ if (taskId !== void 0) {
 if (!state) {
   refuse("\u5F53\u524D\u5206\u652F\u6CA1\u6709\u53EF\u63D0\u4EA4\u7684 dev_task \u4EFB\u52A1\u2014\u2014\u8BF7\u5148\u5EFA\u7ACB\u4EFB\u52A1\uFF0C\u6216\u5728\u63D0\u4EA4\u6D88\u606F\u5F00\u5934\u5199\u660E\u3010\u4EFB\u52A1ID\u3011");
 }
+if (state.completed !== void 0) refuse("\u6B64\u4EFB\u52A1\u5DF2\u5F52\u6863\uFF0C\u4EC5\u53EF\u67E5\u770B\uFF1B\u8BF7\u65B0\u5EFA\u4EFB\u52A1\u540E\u63D0\u4EA4");
 var branch = currentBranch();
 if (!branch || branch === "HEAD" || state.branch !== branch) {
   refuse(`\u4EFB\u52A1 ${state.id} \u8BB0\u5F55\u7684\u5206\u652F\u662F ${state.branch}\uFF0C\u5F53\u524D Git \u5206\u652F\u662F ${branch || "\u672A\u77E5"}\uFF1B\u8BF7\u5207\u56DE\u4EFB\u52A1\u5206\u652F`);
@@ -935,24 +1060,42 @@ if (!branch || branch === "HEAD" || state.branch !== branch) {
 if (state.flow?.hash !== void 0 && hashConfig(state.flow.config) !== state.flow.hash) {
   refuse(`\u4EFB\u52A1 ${state.id} \u7684\u6D41\u7A0B\u5FEB\u7167 hash \u4E0D\u5339\u914D\u2014\u2014task \u8BB0\u5F55\u5728\u521B\u5EFA\u540E\u88AB\u6539\u52A8\u8FC7\uFF0C\u4FEE\u590D\u6216\u91CD\u5EFA\u4EFB\u52A1\u540E\u518D\u63D0\u4EA4`);
 }
+var executionProblem = taskExecutionProblem(state);
+if (executionProblem) refuse(executionProblem);
 var config;
 if (state.flow !== void 0 && state.flow.config !== void 0) {
   config = state.flow.config;
 } else {
-  const configPath = import_node_path2.default.join(state.root ?? cwd, ".dsh", "eng.json");
-  if (import_node_fs2.default.existsSync(configPath)) {
-    let parsed;
-    try {
-      parsed = JSON.parse(import_node_fs2.default.readFileSync(configPath, "utf8"));
-    } catch (error) {
-      refuse("invalid JSON in .dsh/eng.json: " + (error instanceof Error ? error.message : String(error)));
-    }
-    config = loadWorkflow(parsed);
-  } else config = loadWorkflow(void 0);
+  refuse("\u6B64\u4EFB\u52A1\u7F3A\u5C11\u6D41\u7A0B\u5FEB\u7167\uFF0C\u8BF7\u91CD\u65B0\u521B\u5EFA\u4EFB\u52A1\u540E\u63D0\u4EA4");
 }
 var verdict = validateCommitMessage(message, config);
 if (!verdict.ok) {
   refuse(verdict.errors?.[0] ?? "commit summary does not match the configured pattern");
+}
+if (config.requirement_review) {
+  if (!requirementConfirmed(state, config)) refuse("\u5F53\u524D\u9700\u6C42\u7248\u672C\u5C1A\u672A\u7531\u7528\u6237\u786E\u8BA4");
+  const doc = state.requirements.document, workspace2 = state.root ?? cwd;
+  const documentPath = import_node_path3.default.resolve(workspace2, doc.path);
+  const outside = (file) => {
+    const rel = import_node_path3.default.relative(import_node_fs3.default.realpathSync(workspace2), file);
+    return rel.startsWith("..") || import_node_path3.default.isAbsolute(rel);
+  };
+  try {
+    if (outside(import_node_fs3.default.realpathSync(documentPath)) || hashText(import_node_fs3.default.readFileSync(documentPath, "utf8")) !== doc.hash) refuse("\u9700\u6C42\u6587\u6863\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+  } catch {
+    refuse("\u9700\u6C42\u6587\u6863\u65E0\u6CD5\u6838\u5BF9\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+  }
+  for (const material of state.requirements?.materials ?? []) {
+    if (material.retired_at) continue;
+    try {
+      if (material.path !== requirementMaterialPath(state, material.name)) refuse("\u9700\u6C42\u6750\u6599\u767B\u8BB0\u8DEF\u5F84\u4E0D\u5408\u6CD5");
+      const target = import_node_path3.default.resolve(workspace2, material.path);
+      assertRealPath(target);
+      if (outside(import_node_fs3.default.realpathSync(target)) || !import_node_fs3.default.lstatSync(target).isFile() || hashText(import_node_fs3.default.readFileSync(target, "utf8").replace(/\r\n/gu, "\n")) !== material.hash) refuse("\u9700\u6C42\u6750\u6599\u5DF2\u53D8\u5316\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+    } catch {
+      refuse("\u9700\u6C42\u6750\u6599\u65E0\u6CD5\u6838\u5BF9\uFF1B\u8BF7\u4FEE\u8BA2\u5E76\u91CD\u65B0\u786E\u8BA4");
+    }
+  }
 }
 var checkpoint = commitCheckpoint(state, config);
 if (!checkpoint.allowed) {
@@ -975,8 +1118,8 @@ if (state.sonar_policy?.enabled && ["\u4EE3\u7801\u5BA1\u6838", "\u5B8C\u6210"].
 }
 var workspace = state.root ?? cwd;
 var entries = stagedEntries().map((entry) => {
-  const absolute = import_node_path2.default.resolve(cwd, entry.path);
-  const relativePath = import_node_path2.default.relative(workspace, absolute).replaceAll("\\", "/");
+  const absolute = import_node_path3.default.resolve(cwd, entry.path);
+  const relativePath = import_node_path3.default.relative(workspace, absolute).replaceAll("\\", "/");
   return { ...entry, path: relativePath };
 });
 var scope = checkFileScope(state, entries.map((entry) => entry.path), config);
@@ -991,7 +1134,7 @@ if (!scope.ok) {
   refuse("\u63D0\u4EA4\u4E86\u4EFB\u52A1\u8303\u56F4\u4E4B\u5916\u7684\u6587\u4EF6: " + described.join(", "));
 }
 for (const entry of entries) {
-  if (!isEngineMeta2(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path2.default.relative(cwd, import_node_path2.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
+  if (!isEngineMeta(entry.path)) assertIndexMatchesWorktree(cwd, import_node_path3.default.relative(cwd, import_node_path3.default.resolve(workspace, entry.path)).replaceAll("\\", "/"));
 }
 var sensitive = riskyPaths(entries);
 var riskyChanges = entries.filter((entry) => DEFAULT_RISK_POLICY.risky_operations.includes(entry.status[0] ?? "")).map((entry) => `${entry.status}	${entry.path}`);

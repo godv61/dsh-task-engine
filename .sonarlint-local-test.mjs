@@ -38,7 +38,7 @@ test('one review gets a credential-free Markdown report path and issue details',
     scanned_files:['A.java'],uncovered_files:[],
     profile_coverage:[{language:'JAVA',active_rules:66,analyzer:'SYNCED'}] }
   const path = sonarReportPath('QMS-1', audit)
-  assert.match(path, /^\.dsh\/reviews\/QMS-1\/2026-/)
+  assert.match(path, /^\.dsh\/tasks\/QMS-1\/reviews\/2026-/)
   assert.match(path, /2026-10-03T18-11-12-000\+0800-abc12345\.md$/)
   const report = renderSonarReport('QMS-1', {source:'ide-local',project_key:'project',include_paths:['fp-bussiness']}, audit)
   assert.match(report, /java:S103/)

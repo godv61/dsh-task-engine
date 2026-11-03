@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
@@ -8,6 +9,7 @@ import { newTask, validateWorkflow, verificationBlockers } from './lib/engine.js
 import { adoptRecommendation, resolveFlow, retainStageBindings } from './lib/workflows.js'
 import Controller from './lib/controller.js'
 import { registerShippedSkills } from './lib/shipped-skills.js'
+import { receiptView } from './lib/task-output.js'
 
 test('switching to minimal drops only stages outside its graph', () => {
   const requirement = { skills: [{ skill: { source: 'project', name: 'requirements' }, rules: [] }] }
@@ -51,10 +53,11 @@ function fixture(stage = '开发', extra = {}, services = {}) {
   }).config
   const state = newTask({ id: 'LIVE-1', title: 'EAM regression', branch: 'test', work_size: 'standard', risk_level: 'standard', flow: { flow: 'standard', version: 3, config }, root: cwd })
   Object.assign(state, { stage, execution_version: 1, files: ['app.js'], requirement_confirmed: true, solution_confirmed: true, ...extra })
-  const records = new Map([[join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)],
+  const records = new Map([[join(cwd, '.dsh/tasks/LIVE-1/task.json'), JSON.stringify(state)],
     [join(cwd, 'app.js'), 'source'],
     [join(cwd, '.dsh/skills/software-testing/SKILL.md'), 'test instructions'],
     [join(cwd, '.dsh/skills/human-check/SKILL.md'), 'manual check instructions']])
+  confirmedRequirement(state, (p,c) => records.set(join(state.root??cwd,p),c)); records.set(join(cwd,'.dsh/tasks/LIVE-1/task.json'),JSON.stringify(state))
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }
@@ -64,7 +67,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
   const fs = {
     resolve: async (path, options) => ({ targetKey: key(path, options) }),
     readText: async target => records.get(target.targetKey),
-    listDir: async () => [...records.keys()].filter(path => /task-.+\.json$/.test(path)).map(path => ({ name: path.split(/[\\/]/).at(-1) })),
+    listDir: async target => [...new Set([...records.keys()].filter(p => p.startsWith(target.targetKey + '/') || p.startsWith(target.targetKey + '\\')).map(p => p.slice(target.targetKey.length + 1).split(/[\\/]/)[0]))].map(name => ({ name })),
     lstat: async (path, options) => records.has(key(path, options)) ? { version: 'v' } : undefined,
     writeText: async (target, content) => { records.set(target.targetKey, content) },
   }
@@ -73,7 +76,7 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     if (name === 'sandboxPolicy') return { resolve(request) { assert.equal(request.session, session); return policy } }
     if (name === 'shell') return { resolve(request) { runs.push(request); return request }, async execute(request) {
       const fail = request.command === 'fail'
-      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890\n【LIVE-1】【TASK】done\n\napp.js\n' : request.command.includes('status --porcelain') ? '' : request.command === 'git rev-parse HEAD' ? 'abcdef1234567890' : request.command.includes('ls-tree') ? '100644 blob ffffffffffffffffffffffffffffffffffffffff\tapp.js\0' : request.command.startsWith('git hash-object') ? 'ffffffffffffffffffffffffffffffffffffffff' : '# tests 1\n# pass 1' }, stderr: { text: '' } }
+      const outcome = { exitCode: fail ? 1 : 0, timedOut: false, aborted: false, sandbox: { mode: 'workspace-write', denied: false }, stdout: { text: request.command.startsWith('git -c core.quotepath=false log') ? 'abcdef1234567890abcdef1234567890abcdef12\n【LIVE-1】【TASK】done\n\napp.js\n' : request.command.includes('status --porcelain') ? '' : (request.command === 'git rev-parse HEAD' || request.command.startsWith('git rev-parse --verify')) ? 'abcdef1234567890abcdef1234567890abcdef12' : request.command.includes('ls-tree') ? '100644 blob ffffffffffffffffffffffffffffffffffffffff\tapp.js\0' : request.command.startsWith('git hash-object') ? 'ffffffffffffffffffffffffffffffffffffffff' : '# tests 1\n# pass 1' }, stderr: { text: '' } }
       return { result: async () => outcome }
     } }
     return undefined
@@ -85,8 +88,8 @@ function fixture(stage = '开发', extra = {}, services = {}) {
     events.push({ type: 'tool/call', data: { name: 'skill', callId, arguments: JSON.stringify({ name }) } })
     events.push({ type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: callId, isError: !success }] } } })
   }
-  return { call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...args })), exec), load, runs, policy, exec, records, cwd,
-    state: () => JSON.parse(records.get(join(cwd, '.dsh/task-LIVE-1.json'))) }
+  return { call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...(args.operation==='create'?{intent:'implementation',intent_reason:'Fixture implementation',complexity:'low',complexity_reason:'Fixture unit'}:{}), ...args })), exec), load, runs, policy, exec, records, cwd,
+    state: () => JSON.parse(records.get(join(cwd, '.dsh/tasks/LIVE-1/task.json'))) }
 }
 
 test('manual skill evidence is approved by the host without a shell command', async () => {
@@ -131,31 +134,35 @@ test('completion rejects unresolved terminal skills and rules', async () => {
 
 test('same-named skill and rule freeze separately and disclose the rule body', async () => {
   const f = fixture()
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
   } }))
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
   f.records.set(join(f.cwd, '.dsh/rules/custom.md'), 'RULE BODY')
   await f.call({ operation: 'create', title: 'collision', branch: 'main', files: ['app.js'] })
   const resources = f.state().flow.resources.filter(resource => resource.ref.name === 'custom')
   assert.deepEqual(resources.map(resource => resource.kind).sort(), ['rule', 'skill'])
-  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+  assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'CHANGED SKILL')
-  const status = JSON.parse(await f.call({ operation: 'status' }))
-  assert.equal(status.bindings.skill_contents[0].content, 'CHANGED SKILL')
+  const status = JSON.parse(await f.call({ operation: 'status', detail: true }))
+  assert.equal(status.bindings.skill_contents.find(s=>s.name==='custom').content, 'CHANGED SKILL')
   assert.ok(status.changed_source_skills.some(ref => ref.includes('project:custom')))
   f.records.delete(join(f.cwd, '.dsh/skills/custom/SKILL.md'))
-  const missing = JSON.parse(await f.call({ operation: 'status' }))
+  const missing = JSON.parse(await f.call({ operation: 'status', detail: true }))
   assert.ok(missing.missing_skills.includes('project:custom'))
-  assert.equal(missing.bindings.skill_contents.length, 0)
+  assert.ok(!missing.bindings.skill_contents.some(s=>s.name==='custom'))
 })
 
 test('task creation applies skill_profiles rules even when legacy inline bindings are empty', async () => {
   const f = fixture()
   const skill = { source: 'project', name: 'custom' }
   const rule = { source: 'project', name: 'my-rule' }
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal',
     stage_bindings: {
       '开发': { skills: [{ skill, rules: [], evidence: 'none' }] },
@@ -163,24 +170,90 @@ test('task creation applies skill_profiles rules even when legacy inline binding
     },
     skill_profiles: { 'project:custom': { rules: [rule], evidence: 'none' } },
   }))
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
   f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), 'SKILL BODY')
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[rule],evidence:'none'}))
   await assert.rejects(f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] }), /rule:project:my-rule/)
   f.records.set(join(f.cwd, '.dsh/rules/my-rule.md'), 'RULE BODY')
   await f.call({ operation: 'create', title: 'profile regression', branch: 'main', files: ['app.js'] })
-  assert.deepEqual(f.state().flow.config.stage_bindings['开发'].skills[0].rules, [rule])
-  assert.deepEqual(f.state().flow.config.stage_bindings['交付'].skills[0].rules, [rule])
+  assert.deepEqual(f.state().flow.config.stage_bindings['代码开发'].skills.find(s=>s.skill.name==='custom').rules, [rule])
   assert.equal(f.state().flow.resources.find(resource => resource.kind === 'rule')?.content, 'RULE BODY')
-  assert.equal(JSON.parse(await f.call({ operation: 'status' })).bindings.rules[0].content, 'RULE BODY')
+  assert.equal(JSON.parse(await f.call({ operation: 'status', detail: true })).bindings.rules[0].content, 'RULE BODY')
 })
 
 test('task creation rejects an unavailable skill or rule before writing a record', async () => {
   const f = fixture()
-  f.records.delete(join(f.cwd, '.dsh/task-LIVE-1.json'))
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
   f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
     '开发': { skills: [{ skill: { source: 'project', name: 'missing-skill' }, rules: [] }] },
   } }))
-  await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /unreadable bound resources/)
-  assert.equal(f.records.has(join(f.cwd, '.dsh/task-LIVE-1.json')), false)
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['missing-skill']}}))
+  await assert.rejects(f.call({ operation: 'create', title: 'missing', branch: 'main' }), /was not found|unreadable bound resources/)
+  assert.equal(f.records.has(join(f.cwd, '.dsh/tasks/LIVE-1/task.json')), false)
+})
+
+test('stage prompts and default status use an index, while load_skill retains every bound rule body', async () => {
+  const f = fixture()
+  f.records.delete(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'))
+  f.records.set(join(f.cwd, '.dsh/eng.json'), JSON.stringify({ flow: 'minimal', stage_bindings: {
+    '开发': { skills: [{ skill: { source: 'project', name: 'custom' }, rules: [{ source: 'project', name: 'custom' }], evidence: 'none' }] },
+  } }))
+  const skill = 'UNIQUE_SKILL_BODY\n' + 'detailed instructions\n'.repeat(1000)
+  const rule = 'UNIQUE_RULE_BODY\n' + 'required constraints\n'.repeat(1000)
+  f.records.set(join(f.cwd,'.dsh/meta.json'),JSON.stringify({meta_bindings:{'code-development':['custom']}}))
+  f.records.set(join(f.cwd,'.dsh/skills/custom/profile.json'),JSON.stringify({rules:[{source:'project',name:'custom'}],evidence:'none'}))
+  f.records.set(join(f.cwd, '.dsh/skills/custom/SKILL.md'), skill)
+  f.records.set(join(f.cwd, '.dsh/rules/custom.md'), rule)
+  const created = await f.call({ operation: 'create', title: 'compact disclosure', branch: 'main', files: ['app.js'] })
+  assert.ok(!created.includes('UNIQUE_SKILL_BODY'))
+  assert.ok(!created.includes('UNIQUE_RULE_BODY'))
+  const raw = await f.call({ operation: 'status' }), compact = JSON.parse(raw)
+  assert.ok(!raw.includes('UNIQUE_RULE_BODY'))
+  assert.ok(raw.length < 12000)
+  assert.equal(compact.bindings.skill_index.find(s=>s.name==='custom').name, 'custom')
+  assert.match(compact.bindings.rules[0].hash, /^[a-f0-9]{64}$/)
+  const body = await f.call({ operation: 'load_skill', skill_name: 'project:custom' })
+  assert.ok(body.includes(skill) && body.includes(rule))
+  const detailed = JSON.parse(await f.call({ operation: 'status', detail: true }))
+  assert.equal(detailed.bindings.rules[0].content, rule)
+})
+
+test('large command logs stay in persisted evidence and can be explicitly requested without rerunning a command', async () => {
+  const receipt = { command: 'node --test checks.mjs', exit_code: 0, timed_out: false, aborted: false,
+    started_at: '2026-10-28T00:00:00Z', finished_at: '2026-10-28T00:00:01Z',
+    stdout: 'FULL_TEST_OUTPUT'.repeat(10000), stderr: '', scope_hash: 'scope', test_summary: { count: 2 } }
+  const f = fixture('开发', { verification: { passed: true, evidence: [], receipt } })
+  const summary = JSON.parse(await f.call({ operation: 'status' }))
+  assert.equal(summary.verification.receipt.stdout, undefined)
+  assert.equal(summary.verification.receipt.output.stdout_characters, receipt.stdout.length)
+  assert.equal(summary.verification.receipt.test_summary.count, 2)
+  const detail = JSON.parse(await f.call({ operation: 'status', detail: true }))
+  assert.equal(detail.verification.receipt.stdout, receipt.stdout)
+  assert.equal(f.state().verification.receipt.stdout, receipt.stdout)
+  assert.equal(f.runs.length, 0)
+  const logs = JSON.parse(await f.call({ operation: 'status', detail: true, section: 'verification' }))
+  assert.equal(logs.verification.receipt.stdout, receipt.stdout)
+  assert.equal(logs.bindings, undefined)
+  await assert.rejects(f.call({ operation: 'status', detail: true, section: 'verification', verification_group: 'missing' }), /unknown verification group/)
+  const failure = receiptView({ ...receipt, exit_code: 1, stderr: 'important test failure' }, true)
+  assert.equal(failure.output.stderr_tail, 'important test failure')
+  assert.ok(failure.output.stdout_tail.length <= 1800)
+})
+
+test('review-stage recovery returns a complete legal revise action instead of an impossible review_item retry', async () => {
+  const f = fixture('代码审核', { items: [{ id: 'A', title: 'repair unit', status: 'done' }] })
+  let action
+  await assert.rejects(f.call({ operation: 'review_item', item_id: 'A', spec_outcome: 'pass', quality_outcome: 'pass' }), error => {
+    const match = /Recovery: call dev_task (\{[^\n]+\}) before/u.exec(error.message)
+    assert.ok(match)
+    action = JSON.parse(match[1])
+    assert.equal(action.target_stage, '开发')
+    assert.deepEqual(action.affected_items, ['A'])
+    return true
+  })
+  await f.call(action)
+  assert.equal(f.state().stage, '开发')
 })
 
 test('审查通过后更新状态并激活下一项，保留已完成项的审计', async () => {

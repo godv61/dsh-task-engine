@@ -1,3 +1,4 @@
+import { confirmedRequirement } from './scripts/fixtures/confirmed-requirement.mjs'
 /**
  * Batch-1 reproductions for the 2026-09-23 external assessment.
  *
@@ -46,9 +47,10 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
     requirement_confirmed: true, solution_confirmed: true, ...extra,
   })
   const records = new Map([
-    [join(cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state)],
+    [join(cwd, '.dsh/tasks/LIVE-1/task.json'), JSON.stringify(state)],
     [join(cwd, 'app.js'), 'source'],
   ])
+  confirmedRequirement(state,(p,c)=>records.set(join(cwd,p),c));records.set(join(cwd,'.dsh/tasks/LIVE-1/task.json'),JSON.stringify(state))
   const events = [], runs = []
   const session = { id: 'test-session', header: { cwd }, snapshotEvents: () => events }
   const policy = { mode: 'workspace-write', workspaceRoot: cwd, sessionId: session.id }
@@ -58,7 +60,7 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
   const fs = {
     resolve: async (path, options) => ({ targetKey: key(path, options) }),
     readText: async target => records.get(target.targetKey),
-    listDir: async () => [...records.keys()].filter(p => /task-.+\.json$/.test(p)).map(p => ({ name: p.split(/[\\/]/).at(-1) })),
+    listDir: async target => [...new Set([...records.keys()].filter(p => p.startsWith(target.targetKey + '/') || p.startsWith(target.targetKey + '\\')).map(p => p.slice(target.targetKey.length + 1).split(/[\\/]/)[0]))].map(name => ({ name })),
     lstat: async (path, options) => records.has(key(path, options)) ? { version: 'v' } : undefined,
     writeText: async (target, content) => { records.set(target.targetKey, content) },
   }
@@ -95,7 +97,7 @@ function fixture(preset = 'standard', stage, extra = {}, services = {}) {
   return {
     call: args => execute(JSON.parse(JSON.stringify({ task_id: 'LIVE-1', ...args })), exec),
     load, runs, policy, exec, records, cwd,
-    state: () => JSON.parse(records.get(join(cwd, '.dsh/task-LIVE-1.json'))),
+    state: () => JSON.parse(records.get(join(cwd, '.dsh/tasks/LIVE-1/task.json'))),
   }
 }
 
@@ -267,7 +269,7 @@ test('P2: a rule a skill declares but that resolves nowhere must be reported, no
       ],
     },
   }
-  f.records.set(join(f.cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state))
+  f.records.set(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status' }))
   const text = JSON.stringify(status)
   assert.match(
@@ -341,7 +343,7 @@ test('batch3: legacy stage-level rules stay in force and are named as unassigned
   const state = f.state()
   state.flow.config.stage_bindings = { 开发: { skills: [], legacy_rules: ['shared-rule'] } }
   f.records.set(join(f.cwd, '.dsh/rules/shared-rule.md'), '# shared legacy rule')
-  f.records.set(join(f.cwd, '.dsh/task-LIVE-1.json'), JSON.stringify(state))
+  f.records.set(join(f.cwd, '.dsh/tasks/LIVE-1/task.json'), JSON.stringify(state))
   const status = JSON.parse(await f.call({ operation: 'status' }))
   assert.ok(
     (status.unassigned_legacy_rules ?? []).includes('shared-rule'),

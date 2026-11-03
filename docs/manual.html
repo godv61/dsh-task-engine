@@ -16,6 +16,7 @@
   </style>
 </head>
 <body>
+<p>插件 0.40.0 支持 DSH 0.2.1-rc.3、rc.4、rc.5，以 rc.5 构建。旧宿主 0.2.0-rc.2 继续使用插件 0.34.1。新任务使用 .dsh/tasks/&lt;任务标识&gt;/，不自动扫描或迁移旧目录记录。</p>
   <header>
     <p>DeepSeek Harness · 当前使用手册</p>
     <h1>DSH Task Engine</h1>
@@ -61,7 +62,8 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="first-project">
         <h2>首次初始化项目</h2>
-        <p>生成期间可以切换工程任务内的其他菜单或暂时关闭工作台；刷新或关闭浏览器不会取消服务端生成作业，返回后恢复查看。作业结果保存在项目 <code>.dsh/init-jobs/</code>，草案和提示词编辑保存在当前浏览器。DSH 进程重启不能续接生成到一半的输出，未完成作业等待租约过期后可重试。运行中暂时不能切换工作区。某个可选候选长期失败时，可点击<strong>跳过当前候选</strong>继续其他步骤。</p>
+        <p>生成期间可以切换工程任务内的其他菜单或暂时关闭工作台；刷新或关闭浏览器不会取消服务端生成作业。后台作业仅保存在 DSH 进程内存中，不创建项目或本机磁盘缓存；已结束结果保留 30 分钟，总记录最多 100 条，自动淘汰已结束记录。草案和提示词编辑仍保存在当前浏览器。DSH 重启会清空后台作业，尚未取回的结果需要重新生成，浏览器已保存的草案仍可恢复。旧版 <code>.dsh/init-jobs/</code> 仅兼容读取。运行中暂时不能切换工作区。某个可选候选长期失败时，可点击<strong>跳过当前候选</strong>继续其他步骤。</p>
+        <p>单项生成预算默认 <strong>10 分钟</strong>，可选 5、10、20、30 分钟，查阅、模型思考、正文和重试共用此预算，后台和页面等待另留收尾空间。初始化继承默认模型及其思考等级，不在固定 110 秒提前结束查阅。大型项目可能耗时较长，可以点击<strong>复制当前项提示词（外部生成）</strong>，交给能够读取项目源码的模型自行生成；普通网页模型需要另行提供相关文件。审阅草案后，可在“技能”页新建或安装并挂载，无需先完成内置初始化。</p>
         <p>可以通过步骤选项直接切换查看和编辑；切换不跳过候选，也不改变完成进度，各步骤提示词分别保留。初始路径清单是建议查阅入口，不代表已读取。生成模型通过受限只读工具列目录、搜索并读取实际文件；完成后显示读取记录及可选 CodeGraph 查询记录。</p>
         <p>打开“工程任务 → 项目初始化”，选择项目根目录。页面先只读扫描目录与构建清单，显示候选 Skill 和已有资源。六个内置元技能已经负责需求分析、架构设计、任务编排、代码开发、测试和审核的基础方法；初始化不强制生成项目 Skill 或 Rule。项目地图、技术栈、业务能力、领域编码 Skill 均按仓库证据选做，不会为六个阶段机械生成同名 Skill，也不会凭语言或依赖自动生成编码 Rule。已有阶段 Skill 保留并继续挂载。通用规则与单项生成模板默认收起；当前步骤的专属证据单独列出来源文件和可编辑提示词。项目地图步骤使用整个仓库的模块清单和可选的 CodeGraph 索引；其它候选步骤只读取相应的有限源码。模板中的 <code>{{target}}</code>、<code>{{previous}}</code>、<code>{{meta_skills}}</code>、<code>{{limit}}</code> 按步骤填入。可选：点击“安装 CodeGraph 并建立索引”或“更新项目索引”。使用者可修改当前步骤提示词，再点击<strong>生成下一项</strong>，审阅并修改后继续；也可点击<strong>连续生成全部</strong>。每一步模型只生成一个资源，格式错误会自动重试；持续失败时停在当前步骤并保留已完成草案，检查提示词后点击<strong>继续连续生成</strong>。刷新后也可在当前浏览器恢复；点击“从头开始”可清除草案。全部生成后检查正文、简介和元技能挂载；编辑或移除建议后点击<strong>检查修改</strong>，最后点击<strong>确认写入项目</strong>。</p>
         <div class="scroll"><table><thead><tr><th>阶段</th><th>会发生什么</th><th>你要检查什么</th></tr></thead><tbody>
@@ -103,16 +105,26 @@ pnpm dsh web --no-open</code></pre>
           <tr><td>超高</td><td>完整新模块或大范围重构</td><td>需求分析 → 架构设计 → 任务编排 → 代码开发 → 测试 → 代码审核 → 完成</td></tr>
         </tbody></table></div>
         <p>需求分析交付目标、范围、非目标和可验证的验收条件；架构设计交付边界、影响与取舍；任务编排交付按实现先后排列的实施项 ID、依赖和交接产物；代码开发交付变更文件及逐项规格/质量审查；测试交付真实命令与覆盖说明；代码审核交付结论及可选 Sonar 报告。<strong>实施项是推进顺序，不是给团队成员派活。</strong>风险等级与复杂度独立判断。</p>
+        <p>删除或重命名文件时，在实施前用 <code>plan_execution.changes</code> 声明操作，旧路径和目标均保留在交付范围。独立审核须读完引擎保存的 Git/已有未提交文本快照以及现有交付文件；普通文件意外缺失仍会失败。快照只支持可校验的完整 UTF-8 文本（最多 256 KiB）。</p>
+        <p>风险升级通过 <code>set_risk high_risk</code> 按当前冻结流程检查能力，重新决定审核策略并打开已完成项；未变实现和有效测试保留，仍须重新审核。后续阶段会返回代码开发；风险降级需批准。提交登记可传唯一短 SHA，台账保存完整 OID；已有短记录重新运行 CI/上传式 Sonar 审核时核验并规范化，分析必须匹配完整提交。</p>
+        <p>初始化递归发现嵌套构建清单，并显示限定扫描范围与排除目录。权限错误、扫描预算耗尽或没有模块证据时，项目地图覆盖未获证实；可以跳过地图，继续其他有证据支持的可选 Skill。</p>
         <p>目前插件调用 CodeGraph 的位置是索引准备与项目地图生成；任务阶段没有自动图谱查询接口。若代理能调用已安装的 CodeGraph CLI，可按需辅助定位调用方和影响范围，并以源码复核；不可用时直接读源码。内置元技能不依赖 OpenSpec；团队已有经批准的外部规格时，可在任务产物中记录其路径和编号。<code>dev_task</code> 仍保存任务台账、阶段产物和测试，不自动安装或同步外部规格工具。</p>
       </section>
 
       <section id="task">
         <h2>执行一个任务</h2>
+        <p>先判断交付目标。只排查原因、解释调用链或给方案时，创建 <code>intent=analysis</code> 并写明 <code>intent_reason</code>，由主会话直接搜索与读取源码，再用 <code>submit_analysis</code> 一次提交结论、方案、未确认项和含文件、行段、原文的证据。分析不会进入代码实施或为取得回执写测试；运行时限制写入和终端工具。业务结论仍须主会话核对，源码匹配不等于语义正确。</p>
+        <p>需要只读委派时，用 <code>delegate</code> 说明问题、引用入口、依赖、明确收益与理由，默认最多两个同时运行。子代理返回与任务接受分别显示，失败前报告保持可见；清理不明时不得交付，原父会话经宿主确认停止后才能 <code>recover_analysis</code>。下面的实施步骤用于用户已要求修改代码的 <code>intent=implementation</code> 任务。</p>
+        <p>新建任务默认必须明确 <code>intent</code>；实施任务还必须提供 <code>complexity</code> 及理由。先查阅并澄清关键疑问，用 <code>record</code> 整理需求，再用 <code>prepare_requirement</code> 生成需求总结、<code>confirm_requirement expected_hash=...</code> 请用户确认该版本，确认前不能修改业务代码或执行项目命令。低复杂度使用精简总结；相同有效版本的重复确认复用原回执，文档精确恢复为原文后权限同步恢复。所有实施任务统一使用该流程，不提供兼容模式。缺少新版结构的未完成任务仅可查看，继续工作需新建任务并重新确认；历史记录和已有代码不会自动修改。</p>
+        <p>新实施契约支持 <code>plan</code> 原子登记完整计划，默认主会话；有明确 <code>delegation_benefit</code> 才自动委派。直接实现经真实验证后用 <code>accept_item</code> 原子审核并标完成；高风险项在宿主能力允许时要求独立审核，标准风险不会仅因复杂度或委派实施增加审核代理。不符合新版需求结构的未完成台账只读，不自动转换。</p>
+        <p>挂载 Skill 时可选“强制加载”或“按需加载”，同一 Skill 在不同节点可选不同方式。核心 Skill 始终强制；旧配置默认强制。按需项由模型按描述和使用时机选择，不因未读或未提供 Skill 完成凭证阻塞，也不要求填写跳过说明。必须始终遵守的团队规范应放在强制 Skill 下。读取复用不代替当前阶段的产物、测试和审核。</p>
+        <p>阶段提示和默认 <code>status</code> 只返回绑定索引、指纹及状态摘要；<code>load_skill</code> 首次返回选中 Skill 与其全部挂载 Rule 正文；同一任务、同一会话已成功读取的内容跨阶段复用，再次调用只返回复用提示，<code>detail=true</code> 可显式恢复全文。完整计划和命令日志通过 <code>status detail=true</code> 获取，可用 <code>section=items</code> 配合 <code>item_id</code>，或 <code>section=verification</code> 配合 <code>verification_group</code> 缩小读取范围，无需重跑测试。子代理与审核代理各自收到必要的强制约束；按需 Skill 只提供简介、使用时机和读取路径。</p>
+        <p>Sonar 阻断或审核证据过期时，先按工具返回的 <code>recovery</code> 回到实施阶段，再修复和验收。缺陷返工可复用计划与输入指纹均匹配的最新通过测试，受影响项的审核仍须重新接受；较新的失败、输入/计划/指令变化，以及需求、方案变化或未知影响，不得复用旧通过记录。</p>
         <ol>
           <li>新会话使用“工程化开发引擎”预设并描述需求。先调用 <code>dev_task status</code> 查当前工作区和分支是否已有任务；新需求用 <code>assess</code> 预览复杂度和技能，再用 <code>create</code> 创建任务。</li>
           <li>每阶段读取 <code>status</code> 给出的当前 Skill、Rule、必填产物和阻塞原因；用 <code>record</code> 填写当前阶段允许的字段。阶段流转使用 <code>advance</code>，不能手改任务 JSON 跳门禁。</li>
           <li>高、超高任务在任务计划中逐行列稳定实施项 ID，再用 <code>items</code> 登记。缺少计划项会被拒绝。<code>items</code> 默认按 ID 合并：只补 I5 不会删掉已有 I1–I4。明确要重排或删除未开始项目时才传 <code>items_mode=replace</code> 和完整目标列表；实施中、已完成或有审查记录的项仍受保护。</li>
-          <li>实施前用 <code>plan_execution</code> 为每项记录边界、文件、验收、依赖与理由；普通需求无需指定子代理。引擎根据实际宿主能力选择主会话或子代理，<code>dispatch</code> 按计划执行。需要独立审核时，在真实验证后调用 <code>review_dispatch</code>，再由主会话核对并 <code>review_item</code>、标记实施项完成。台账显示计划方式、实际方式、选择原因和审核结果。变更文件登记在任务 <code>files</code> 范围内；修改代码后旧测试和审核回执会失效。</li>
+          <li>实施前用 <code>plan</code> 或 <code>plan_execution</code> 记录边界、文件、验收、依赖与理由。新契约直接实施使用真实 <code>verify</code> 后的 <code>accept_item</code>；需要委派时才使用 <code>dispatch</code>，高风险项按计划先独立审核。台账显示计划方式、实际方式、选择原因和审核结果。变更文件登记在任务 <code>files</code> 范围内；修改代码后旧测试和审核回执会失效。</li>
           <li>测试阶段调用 <code>verify</code> 执行真实命令；代码审核阶段运行 <code>sonar_check</code>（若启用 Sonar），处理问题后记录 <code>review</code>。通过门禁后按 <code>status.commit</code> 的提示提交并完成任务。</li>
         </ol>
         <h3>给会话的第一条需求示例</h3>
@@ -127,10 +139,16 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="tests">
         <h2>测试和证据</h2>
-        <p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
-        <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。旧活动任务可以显式规划测试组升级，旧全局回执保留为历史，不直接认作分组通过；归档任务始终只读。</p>
+        <h3>最小 create 调用</h3>
+<p>新契约必填 <code>task_id</code>、<code>title</code>、<code>intent</code> 和 <code>intent_reason</code>；分支可由宿主读取。除 status/assess 外，针对单个任务的后续操作须携带 task_id。</p>
+<pre>{"operation":"create","task_id":"TRACE-1","title":"定位字段丢失原因","intent":"analysis","intent_reason":"仅查原因并给方案"}</pre>
+<p>读取源码后使用 submit_analysis 提交结论、方案、未确认项及 source_evidence 文件/行号；宿主保存完整行段，quote 仅作高亮。</p>
+<pre>{"operation":"create","task_id":"FIX-1","title":"修复字段转换并补回归","intent":"implementation","intent_reason":"用户要求实现修复","complexity":"low","complexity_reason":"边界明确的局部修复","files":["src/adapter.js","test/adapter.test.js"]}</pre>
+<p>实施按当前绑定技能、plan、真实 verify、accept_item 和后续阶段推进；完整参数示例见 README，不绕过项目提交及审核要求。</p>
+<p>新自适应任务先声明必要测试组：<code>plan_verification</code> 提供 <code>verification_group</code>、真实 <code>command</code>、生产代码/测试/相关配置的 <code>files</code> 与所属 <code>item_ids</code>，再用 <code>verify verification_group=...</code> 分别运行。每个实施项包含实现和完成前必需的测试，整体联调可声明为任务级检查。全部必要组有效才验证通过；同组最新失败优先于旧通过，回执历史保留。</p>
+        <p>同一轮缺陷返工可在 <code>revise revision_kind=defect</code> 中提供 <code>affected_items</code>。共享输入和下游依赖也会被重新核对；未受影响的回执与逐项审核保留。影响未知时省略范围完整返工，需求或方案变化仍完整失效。相同会话和相同内容的技能读取可复用，执行证据独立核对。不将历史全局回执直接认作当前分组通过；不符合新版结构的活动任务及归档记录均只读。</p>
         <p>开发阶段也支持原地缺陷返工。执行计划登记允许修改的交付文件，测试计划还登记只读配置等输入；共同配置未修改时不必列为共同交付。测试结果中的 <code>group_result</code> 表示本组状态，<code>task_verified</code> 和兼容字段 <code>ok</code> 表示任务整体状态，本组通过后可以先验收对应实施项。</p>
-        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
+        <p><code>dev_task verify</code> 保存命令、退出码、标准输出、标准错误和文件范围指纹。退出码 0 只是必要条件；Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Python 标准库 unittest、Go test、Cargo test 的常见输出，或本次 Gradle <code>test</code> 新生成的 JUnit XML，必须证明至少运行一个实际通过的测试。全部跳过、没有可识别证据，或只运行编译、<code>true</code> 等命令时不能算通过。验证命令不能串联、使用管道或重定向来掩盖失败。unittest 使用 <code>python -m unittest discover -s tests -v</code> 等原生调用，要求完整最终摘要，跳过和预期失败不算通过。Go 使用 <code>go test -json ./...</code>，只统计真实通过的测试用例；部分包无测试不影响其它包的有效结果，全跳过和只有包级成功不能通过。Maven 项目建议使用 <code>mvn -B test</code>；Gradle 项目默认使用 wrapper 的 <code>test --rerun-tasks</code>。旧回执缺少当前要求的测试证据或文件指纹时需重新验证。</p>
         <p>构建、单元测试、接口、数据库、页面和消息验证覆盖不同风险。缺测试账号或独立数据库时，应在交接中写清未覆盖场景，不能把编译或静态检查当成业务验收。真实命令在 DSH 会话沙箱中执行；权限被拒绝时按宿主审批提示处理，不要反复换命令绕过。</p>
       </section>
 
@@ -159,7 +177,7 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="findings">
         <h2>查看问题、处理误报与沉淀规则</h2>
-        <p>测试通过后，代码审核元技能会自动运行 <code>dev_task sonar_check</code>。任务台账可展开最近一次审核，查看原始结果、问题规则、严重程度、文件位置、分析器状态、人工复核状态与未解决数量。每次扫描在项目 <code>.dsh/reviews/&lt;任务 ID&gt;/</code> 生成一份 Markdown 报告；项目可将该报告目录加入 <code>.gitignore</code>。最近一次结构化结果保存在 <code>.dsh/task-&lt;任务 ID&gt;.json</code>；历次完整结果另存于 <code>.dsh/reviews/</code> 的 JSON 详情文件，主台账仅保留历史索引。</p>
+        <p>测试通过后，代码审核元技能会自动运行 <code>dev_task sonar_check</code>。任务台账可展开最近一次审核，查看原始结果、问题规则、严重程度、文件位置、分析器状态、人工复核状态与未解决数量。每次扫描在项目 <code>.dsh/tasks/&lt;任务 ID&gt;/reviews/</code> 生成一份 Markdown 报告；项目可将该报告目录加入 <code>.gitignore</code>。最近一次结构化结果保存在 <code>.dsh/tasks/&lt;任务 ID&gt;/task.json</code>；历次完整结果另存于 <code>.dsh/tasks/&lt;id&gt;/reviews/</code> 的 JSON 详情文件，主台账仅保留历史索引。</p>
         <p>真实问题：修复代码，重新验证并复扫。疑似本地规则误报：使用 <code>dev_task sonar_disposition</code> 指定当前报告中的 <code>issue_key</code>，说明具体原因并提供证据；DSH 请求人工逐条批准。批准记录写回本次任务与报告，原始规则结果仍显示原来的 <code>ERROR</code>，任务门禁另显示复核后的未解决数量。未批准、证据不足、代码变化或重新扫描后都不能沿用该处置。服务端 Quality Gate 仍按 SonarQube 中的团队流程处理。</p>
         <p>你可以直接对会话说：“请打开任务台账中这条 Sonar 告警，核对代码语义并给出理由和源码证据。确认是误报后发起逐项人工复核；未经我批准不要放行，也不要修改代码来藏掉告警。”审批请求会列出规则、文件、问题编号、理由和证据。多条告警需要分别审查；一条被批准不会自动豁免同规则的其他位置。</p>
         <p>真实且具有通用性的修复案例，可以先用 <code>learn_rule phase=propose</code> 预览项目 Rule，再用 <code>phase=apply</code> 挂到对应开发 Skill；会影响之后创建的任务。已确认误报不列为学习候选，不自动转成团队规范。发现服务器自定义规则本身过宽时，应把例子反馈给规则维护者修正其实现或适用范围。</p>
@@ -167,12 +185,15 @@ pnpm dsh web --no-open</code></pre>
 
       <section id="ledger">
         <h2>任务台账与项目文件</h2>
+        <p>每个任务归集到 <code>.dsh/tasks/&lt;id&gt;/</code>，台账 JSON 是唯一状态来源。左侧选择任务，右侧按概览、需求与方案、实施计划、文件范围、验证与审核查阅；也可切换文档阅读并下载 Markdown 副本。登记范围不等于实际 Git 变更，验证输入单独展示。导出不会改动任务状态或产生新的需求批准。</p>
         <p>“待开始”表示实施项还没执行；“实施中”表示已记录开始；“待审查”表示缺逐项规格或质量审查；“代码审核”是整个任务的后续阶段。它们是不同层级的状态，不代表已经把任务分派给团队成员。任务完成后调用 <code>dev_task complete</code> 即归档并只读；上线后的修复或新需求使用新任务 ID，可关联原任务。台账默认显示进行中和待归档任务，也可切换查看已归档记录。任务台账会显示当前阶段、实施项、验证回执、审核结果和可选 Sonar 明细。</p>
         <div class="scroll"><table><thead><tr><th>位置</th><th>用途</th><th>团队共享建议</th></tr></thead><tbody>
           <tr><td><code>.dsh/meta.json</code></td><td>项目元技能挂载与可选 Sonar 非秘密配置。</td><td>审阅后提交。</td></tr>
           <tr><td><code>.dsh/skills/</code>、<code>.dsh/rules/</code></td><td>项目 Skill、Rule 与各 Skill 的 <code>profile.json</code>。</td><td>审阅后提交。</td></tr>
-          <tr><td><code>.dsh/task-&lt;id&gt;.json</code></td><td>该任务的阶段、实施项、回执和审核状态。</td><td>按团队任务留痕政策决定。</td></tr>
-          <tr><td><code>.dsh/reviews/</code></td><td>逐次 Sonar Markdown 报告、结构化详情及误报处置。</td><td>可忽略，保留本机；不含 Token。</td></tr>
+          <tr><td><code>.dsh/tasks/&lt;id&gt;/task.json</code></td><td>该任务的阶段、实施项、回执和审核状态。</td><td>按团队任务留痕政策决定。</td></tr>
+          <tr><td><code>.dsh/tasks/&lt;id&gt;/requirement.md</code></td><td>新实施任务的需求总结；台账展示版本、用户确认及修改意见。确认前不能实施，需求变更后重新确认；同一有效版本复用回执，精确恢复原文后权限同步恢复。</td><td>可按团队要求提交；路径可在生成时指定，人工修改受保护。</td></tr>
+          <tr><td><code>.dsh/tasks/&lt;id&gt;/materials/</code></td><td>用 <code>write_requirement_material</code> 生成产品／技术确认等文本材料；支持已加载 Skill 的 HTML 模板 JSON 数据区渲染。无需开放终端，材料生成不代表需求获批。</td><td>台账登记版本与文本指纹；人工修改保留。材料变化后重新确认；旧稿用 <code>retire_requirement_material</code> 停用引用，文件保留。</td></tr>
+          <tr><td><code>.dsh/tasks/&lt;id&gt;/reviews/</code></td><td>逐次 Sonar Markdown 报告、结构化详情及误报处置。</td><td>可忽略，保留本机；不含 Token。</td></tr>
           <tr><td>本机 DSH 项目凭据</td><td>Sonar Token。</td><td>不提交、不回显。</td></tr>
         </tbody></table></div>
       </section>

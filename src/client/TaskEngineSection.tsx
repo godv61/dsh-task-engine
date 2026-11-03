@@ -12,7 +12,7 @@ import type { ResourceImportRequest, ResourcePreview } from '../resource-types.t
 import type { MetaSkill } from '../adaptive.ts'
 import type { InitGraphQueryRecord, InitReadRecord, InitResource, ProjectInventory } from '../project-init.ts'
 import type { SonarProjectRuleView } from '../sonar-rule-catalog.ts'
-import type { VerificationGroupView } from '../verification-state.ts'
+import type { TaskLedgerView } from '../task-ledger-types.ts'
 import { createElement, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Button, Pill, StateDot, DisclosureRow,
@@ -69,7 +69,7 @@ function resolvedConfig(flow: string, stageBindings: Record<string, StageBinding
 type RemoteResult<T> = { ok: true; value: T } | { ok: false; error?: unknown }
 
 export interface AdaptiveProjectConfig {
-  meta_bindings?: Partial<Record<MetaSkill, string[]>>
+  meta_bindings?: Partial<Record<MetaSkill, import('../skill-loading.ts').MetaSkillMount[]>>
   sonar?: { enabled?: boolean; host_url?: string; project_key?: string; mode?: 'branch' | 'pull-request'; token_env?: string;
     source?: 'ci' | 'local' | 'ide-local'; reference_branch?: string; scan_command?: string; include_paths?: string[] }
 }
@@ -97,6 +97,7 @@ interface EngConfigView {
 export interface SkillCatalogEntry {
   name: string
   description: string
+  whenToUse?: string
   source: string
   /** Source-qualified reference, so two same-named skills in different layers stay distinct. */
   ref: ResourceRef
@@ -140,68 +141,7 @@ export interface ReadRuleResult {
   error?: string
 }
 
-/** One implementation item's audit trail in the task ledger view. */
-export interface TaskLedgerItem {
-  id: string
-  title: string
-  status: string
-  execution_plan?: import('../execution-plan.ts').ExecutionPlan
-  independent_review?: import('../execution-plan.ts').IndependentReview
-  dispatch?: { description: string; at: string; provider?: string; execution?: string; run_id?: string; status?: string; output?: string; error?: string; finished_at?: string }
-  dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]
-  review?: {
-    independent_run_id?: string
-    spec: { outcome: 'pass' | 'fail'; notes?: string[] }
-    quality: { outcome: 'pass' | 'fail'; notes?: string[] }
-  }
-}
-
-/** One task's ledger projection: identity, stage, and per-item audit trail. */
-export interface TaskLedgerEntry {
-  evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
-  verification_groups?: VerificationGroupView[]
-  review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'
-  complexity?: string
-  risk_level?: string
-  updated_at?: string
-  lifecycle: "active" | "ready_to_close" | "archived"
-  completed_at?: string
-  related_task?: { id: string; kind: string }
-  items_done: number
-  next_action: string
-  verification_passed?: boolean
-  review_outcome?: string
-  sonar?: {
-    source: string
-    audit?: {
-      gate: string
-      review_gate?: string
-      checked_at: string
-      target: string
-      findings: { key: string; rule: string; message: string; severity: string; file: string; line?: number }[]
-      blocking_count: number
-      unresolved_count?: number
-      uncovered_files: string[]
-      dispositions?: { issue_key: string; kind: string; reason: string; evidence: string[]; approved_at: string }[]
-      report_path?: string
-      scanned_files?: string[]
-      profile_coverage?: { language: string; active_rules: number; analyzer: string }[]
-    }
-  }
-  task_id: string
-  title: string
-  stage: string
-  branch: string
-  items: TaskLedgerItem[]
-}
-
-/** `readTasks` result: every task record under the workspace's `.dsh/`. */
-export interface TaskLedgerView {
-  tasks: TaskLedgerEntry[]
-  errors?: { file: string; message: string }[]
-  next_cursor?: string
-  total_count?: number
-}
+export type { TaskLedgerItem, TaskLedgerEntry, TaskLedgerView } from '../task-ledger-types.ts'
 
 /** `readInit` result: the workspace's root `AGENTS.md`, or absent. */
 export interface InitView {
@@ -276,7 +216,7 @@ export interface CodeGraphState {
 /** The mounted `task-engine` Remote namespace. */
 export interface TaskEngineRemote {
   projectInitJob(request: { path: string; job_id?: string; generation?: {
-    target: string; prior_resources: InitResource[]; system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; generation_id?: string
+    target: string; prior_resources: InitResource[]; system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; generation_id?: string; timeout_minutes?: number
   } }): Promise<RemoteResult<InitJobView>>
   resourceRoots(request: { kind: 'skill' | 'rule'; path: string }): Promise<RemoteResult<{ project: string; user: string }>>
   previewResource(request: ResourceImportRequest): Promise<RemoteResult<ResourcePreview>>
@@ -317,7 +257,7 @@ export interface TaskEngineRemote {
   prepareCodeGraph(request: { path: string; install: boolean }): Promise<RemoteResult<CodeGraphState>>
   generateProjectInit(request: { path: string; system_prompt?: string; user_prompt?: string }): Promise<RemoteResult<ProjectInitPreview>>
   generateProjectInitStep(request: { path: string; target: string; prior_resources: InitResource[];
-    system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string }): Promise<RemoteResult<ProjectInitStepResult>>
+    system_prompt?: string; user_prompt?: string; step_prompt?: string; evidence_prompt?: string; timeout_minutes?: number }): Promise<RemoteResult<ProjectInitStepResult>>
   previewProjectInit(request: { path: string; resources: InitResource[] }): Promise<RemoteResult<ProjectInitPreview>>
   applyProjectInit(request: { path: string; resources: InitResource[]; expected_hash: string; existing_hash: string }): Promise<RemoteResult<{ ok: boolean; created: string[]; error?: string }>>
 }
@@ -661,6 +601,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
 }): ReturnType<typeof createElement> {
   const [stage, setStage] = useState(stages[0] ?? '')
   const [query, setQuery] = useState('')
+  const [loadingMode, setLoadingMode] = useState<'required' | 'on-demand'>('required')
   const currentStage = stages.includes(stage) ? stage : (stages[0] ?? '')
 
   const bindingFor = (name: string): StageBinding => stageBindings[name] ?? {}
@@ -676,7 +617,7 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
     const alreadyBound = current.some(entry => formatResourceRef(entry.skill) === raw)
     const next = alreadyBound
       ? current.filter(entry => formatResourceRef(entry.skill) !== raw)
-      : [...current, { skill: refFromText(raw), rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
+      : [...current, { skill: refFromText(raw), loading: refFromText(raw).source === 'bundled' ? 'required' as const : loadingMode, rules: profile?.rules ?? [], ...(profile?.evidence !== undefined ? { evidence: profile.evidence } : {}) }].sort((a, b) =>
         formatResourceRef(a.skill).localeCompare(formatResourceRef(b.skill)))
     if (!alreadyBound && profile === undefined) setSkillProfiles({ ...skillProfiles, [raw]: { rules: [] } })
     setSkills(currentStage, next)
@@ -717,6 +658,9 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
         <section className="te-transfer-pane" aria-label="可用技能">
           <div className="te-binding-heading"><h4>可用技能</h4><span className="te-binding-count">{skills.filter(entry => !boundKeys.has(formatResourceRef(entry.ref))).length} 项</span></div>
           <input className="te-input te-transfer-search" type="search" value={query} placeholder="搜索技能名称或说明" aria-label="搜索可用技能" onChange={event => setQuery(event.target.value)} />
+          <select className="te-input" aria-label="新绑定技能加载方式" value={loadingMode} onChange={event => setLoadingMode(event.target.value as 'required' | 'on-demand')}>
+            <option value="required">强制加载</option><option value="on-demand">按需加载</option>
+          </select>
           <div className="te-transfer-list" role="group" aria-label="可用技能列表">
             {skills.length === 0 ? <p className="te-binding-empty">暂无技能，请先在“技能”页添加。</p> : null}
             {skills.length > 0 && available.length === 0 ? <p className="te-binding-empty">没有可添加的技能。</p> : null}
@@ -738,6 +682,10 @@ function BindingEditor({ stages, stageBindings, setStageBindings, skillProfiles,
               return <div key={raw} className="te-transfer-row is-bound">
                 <span className="te-transfer-row-main"><strong>{entry.skill.name}</strong><small>{catalog?.sourceLabel ?? entry.skill.source} · {entry.rules.length} 条规则{catalog ? '' : ' · 资源未找到'}</small></span>
                 <span className="te-transfer-actions">
+                  <select className="te-input" aria-label={`${currentStage} ${entry.skill.name} 加载方式`} value={entry.loading ?? 'required'} disabled={entry.skill.source === 'bundled'}
+                    onChange={event => setSkills(currentStage, boundSkills.map(bound => formatResourceRef(bound.skill) === raw ? { ...bound, loading: event.target.value as 'required' | 'on-demand' } : bound))}>
+                    <option value="required">强制加载</option><option value="on-demand">按需加载</option>
+                  </select>
                   <button type="button" className="te-transfer-config" onClick={() => onConfigureSkill(entry.skill)}>配置规则</button>
                   <button type="button" className="te-transfer-remove" onClick={() => toggleSkill(raw)} aria-label={`移除技能 ${entry.skill.name}`}>×</button>
                 </span>

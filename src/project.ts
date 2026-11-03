@@ -21,6 +21,8 @@ export interface FileProbe {
   read(dir: string, relPath: string): Promise<string | undefined>
   /** Basenames of a directory's children; implementations without listing return `[]`. */
   list?(dir: string, relPath: string): Promise<string[]>
+  /** Optional typed listing avoids probing regular files as directories. Undefined means type metadata is unavailable. */
+  directories?(dir: string, relPath: string): Promise<string[] | undefined>
 }
 
 /** Directory part of a path without importing `node:path` (keeps the module browser-safe). */
@@ -46,7 +48,7 @@ export const DEFAULT_VERIFY_COMMANDS: Record<Exclude<ProjectType, 'unknown'>, st
   node: 'npm test',
   java: 'mvn -B test',
   python: 'python -m pytest',
-  go: 'go test ./...',
+  go: 'go test -json ./...',
   rust: 'cargo test',
 }
 
@@ -74,7 +76,7 @@ export interface RiskPolicy {
 }
 
 export const DEFAULT_RISK_POLICY: RiskPolicy = {
-  // `.dsh/task-*.json` and `.dsh/eng.json` are protected by the snapshot hash and
+  // `.dsh/tasks/*/task.json` and `.dsh/eng.json` are protected by the snapshot hash and
   // the engine-meta exemption, not by this list; `.dsh/rules` / `.dsh/skills`
   // hold regular project content and stay committable by normal tasks.
   sensitive_paths: ['.git', '.env', '.credentials.yaml', 'credentials', 'secrets'],
@@ -86,10 +88,11 @@ export function isSensitivePath(path: string): boolean {
   const normalized = path.replace(/\\/gu, '/').toLowerCase()
   const parts = normalized.split('/')
   if (DEFAULT_RISK_POLICY.sensitive_paths.some(prefix => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true
-  return parts.some(part => /^\.env(?:\..+)?$/u.test(part)
-    || /^credentials(?:\.[^.]+)?$/u.test(part)
+  return parts.some(part => /^\.env(?:\..+)?$|^\.envrc$/u.test(part)
+    || /^\.?credentials(?:\.[^.]+)?$/u.test(part)
+    || /^\.?secrets?(?:\.(?:json|ya?ml|toml|ini|properties))?$/u.test(part)
     || /\.(?:pem|p12|pfx|key)$/u.test(part)
-    || /^(?:id_rsa|id_ed25519)(?:\.pub)?$/u.test(part))
+    || /^(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:\.pub)?$/u.test(part))
 }
 
 /** All marker files across languages, for root discovery. */

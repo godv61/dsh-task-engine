@@ -1,7 +1,10 @@
 /** Task-item execution decisions and host capability checks, independent of model prose. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { ObjectJsonSchema, ToolRunContext } from '@deepseek-ai/dsh-tools'
+import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
+import type SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import type { TaskItem, TaskState } from './engine.ts'
+import { requiredReviewPaths, type DeliveryChange } from './delivery-changes.ts'
+import { REVIEW_PRESET, validReviewPolicy, type ReviewPolicyProof } from './reviewer-spec.ts'
 
 export type ExecutionMode = 'direct' | 'spawn' | 'fork'
 export interface ExecutionPlan {
@@ -10,7 +13,9 @@ export interface ExecutionPlan {
   reason: string
   boundary: 'local' | 'independent' | 'coupled'
   context: 'brief' | 'history'
+  delegation_benefit?: import('./delivery-contract.ts').DelegationBenefit
   files: string[]
+  changes?: DeliveryChange[]
   acceptance: string[]
   depends_on: string[]
   review: 'main' | 'independent'
@@ -24,6 +29,7 @@ export interface IndependentReview {
   parent_session: string
   run_id?: string
   finished_at?: string
+  metrics?: import('./delivery-contract.ts').RunMetrics
   error?: string
   output?: string
   scope_hash: string
@@ -36,6 +42,7 @@ export interface IndependentReview {
   read_files?: string[]
   read_coverage?: { file: string; lines: number }[]
   context_hash?: string
+  policy?: ReviewPolicyProof
 }
 /** In-process re-entry guard shared by all agent-scoped registrations; host FS CAS remains authoritative across processes. */
 const taskMutations = new Set<string>()
@@ -55,14 +62,7 @@ export function hasFullReadCoverage(review: IndependentReview | undefined, files
   return files.every(file => review?.read_coverage?.some(entry => entry.file === file && Number.isSafeInteger(entry.lines) && entry.lines >= 0))
 }
 /** Narrow structural API: DSH is supplied by the host, never installed as a second runtime. */
-export interface TaskSubagents {
-  getProvider?(name: string): { capabilities: { depthLimit?: boolean; toolFilter?: boolean; outputSchema?: boolean }; inheritsParentContext?: boolean } | undefined
-  start?(provider: string, request: { label: string; parent: NonNullable<ToolRunContext['agent']>;
-    prompt: { type: 'text'; text: string }[]; signal: AbortSignal; maxDepth: number; toolFilter?: { allow: string[] }; outputSchema?: ObjectJsonSchema }): Promise<{
-      id: string; localAgent?: { session: { snapshotEvents(): readonly { type: string; data: unknown }[] } };
-      result: Promise<{ stopReason: string; output: { type: string; text?: string }[]; structured?: unknown; diagnostic?: string }>; dispose(): Promise<void>
-    }>
-}
+export type TaskSubagents = Pick<SubagentRuntime, 'getProvider' | 'startActivation' | 'listDescendants'>
 /** Native capture schema; semantic checks still reject empty evidence after host validation. */
 export const REVIEW_OUTPUT_SCHEMA: ObjectJsonSchema = {
   type: 'object',
@@ -79,21 +79,29 @@ export function taskSubagents(ctx: Context): TaskSubagents | undefined {
 }
 export function executionCapabilities(ctx: Context, liveParent: boolean): ExecutionPlan['capabilities'] {
   const runtime = taskSubagents(ctx)
-  if (!liveParent || !runtime?.start || !runtime.getProvider) return { spawn: false, fork: false, reviewer: false }
+  if (!liveParent || !runtime?.startActivation || !runtime.getProvider) return { spawn: false, fork: false, reviewer: false }
   const spawn = runtime.getProvider('spawn')
   const fork = runtime.getProvider('fork')
   // Do not label an inheriting provider as an independent context/reviewer.
   return { spawn: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true,
     fork: !!fork && fork.inheritsParentContext === true && fork.capabilities.depthLimit === true,
-    reviewer: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true && spawn.capabilities.toolFilter === true }
+    reviewer: !!spawn && spawn.inheritsParentContext === false && spawn.capabilities.depthLimit === true && spawn.capabilities.agentPreset === true
+      && !!ctx.get('sessionQuery') && ctx.get('taskEngineReviewPolicy')?.preset === REVIEW_PRESET }
 }
 /** Exact serialized decision identity, kept separate from file content hashes. */
 export function executionPlanKey(plan: ExecutionPlan): string {
   return JSON.stringify(plan)
 }
+export function reviewStrategy(state: Pick<TaskState, 'execution_policy' | 'complexity' | 'risk_level' | 'delivery'>, mode: ExecutionMode, capabilities: ExecutionPlan['capabilities']): Pick<ExecutionPlan, 'review' | 'review_reason'> {
+  const independent = state.execution_policy !== 'main_only'
+    && (state.delivery ? state.risk_level === 'high_risk' : mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
+  return independent && capabilities.reviewer ? { review: 'independent', review_reason: state.delivery ? '高风险项，使用独立只读审核' : '旧任务策略：委派实现或高复杂度/高风险项，使用独立只读审核' }
+    : { review: 'main', review_reason: independent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '本项由主会话核对验收与代码质量，不额外派发审核代理' }
+}
 export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   execution?: string; execution_reason?: string; task_boundary?: string; context_need?: string;
   files?: string[]; acceptance?: string[]; depends_on?: string[];
+  delegation_benefit?: import('./delivery-contract.ts').DelegationBenefit;
 }, capabilities: ExecutionPlan['capabilities']): ExecutionPlan {
   if (!input.execution_reason?.trim()) throw new Error('plan_execution requires execution_reason with concrete task facts')
   if (!['local', 'independent', 'coupled'].includes(input.task_boundary ?? '')) throw new Error('plan_execution requires task_boundary: local|independent|coupled')
@@ -110,8 +118,9 @@ export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
   if (!['auto', 'direct', 'spawn', 'fork'].includes(requested)) throw new Error('invalid execution mode')
   if (input.context_need !== undefined && !['brief', 'history'].includes(input.context_need)) throw new Error('context_need must be brief|history')
   const context = input.context_need === 'history' ? 'history' : 'brief'
+  if (input.delegation_benefit !== undefined && !['parallel', 'context_isolation', 'independent_check'].includes(input.delegation_benefit)) throw new Error('invalid delegation_benefit')
   const desired = requested === 'auto'
-    ? state.execution_policy === 'main_only' || input.task_boundary !== 'independent' ? 'direct' : context === 'history' ? 'fork' : 'spawn'
+    ? state.execution_policy === 'main_only' || input.task_boundary !== 'independent' || (state.delivery && !input.delegation_benefit) ? 'direct' : context === 'history' ? 'fork' : 'spawn'
     : requested as ExecutionMode
   if (state.execution_policy === 'main_only' && desired !== 'direct') throw new Error('task execution_policy is main_only; child implementation is disabled')
   let mode = desired
@@ -121,13 +130,10 @@ export function makeExecutionPlan(state: TaskState, item: TaskItem, input: {
     reason += `；宿主 ${mode} 不可用，明确回退为主会话执行`
     mode = 'direct'
   }
-  const needsIndependent = state.execution_policy !== 'main_only'
-    && (mode !== 'direct' || ['high', 'ultra'].includes(state.complexity ?? '') || state.risk_level === 'high_risk')
-  const review = needsIndependent && capabilities.reviewer ? 'independent' : 'main'
   return { requested: requested as ExecutionPlan['requested'], mode, reason,
+    ...(input.delegation_benefit ? { delegation_benefit: input.delegation_benefit } : {}),
     boundary: input.task_boundary as ExecutionPlan['boundary'], context, files, acceptance, depends_on,
-    review, review_reason: review === 'independent' ? '委派实现或高复杂度/高风险项，使用独立只读审核'
-      : needsIndependent ? '宿主缺少独立只读审核能力，主会话核对并保留真实验证门禁' : '局部或紧密耦合工作，由主会话审核',
+    ...reviewStrategy(state, mode, capabilities),
     capabilities, at: new Date().toISOString() }
 }
 export function executionItemBlockers(state: TaskState, item: TaskItem): string[] {
@@ -135,7 +141,9 @@ export function executionItemBlockers(state: TaskState, item: TaskItem): string[
   const plan = item.execution_plan
   if (!plan) return [`item ${item.id}: call plan_execution before dispatch (record boundary, files, acceptance and reason)`]
   const blockers: string[] = []
-  if (!item.dispatch) blockers.push(`item ${item.id}: implementation has not been dispatched`)
+  if (!item.dispatch) blockers.push(plan.mode === 'direct'
+    ? `item ${item.id}: direct implementation is not accepted; run verify, ${plan.review === 'independent' ? 'review_dispatch, then ' : ''}accept_item (no implementation dispatch is required)`
+    : `item ${item.id}: implementation has not been dispatched`)
   if (item.dispatch?.status && item.dispatch.status !== 'completed') blockers.push(`item ${item.id}: implementation child is not completed`)
   if (item.review?.spec.outcome !== 'pass' || (state.flow?.config.review_depth !== 'single' && item.review.quality?.outcome !== 'pass'))
     blockers.push(`item ${item.id}: item review is missing or failed before done`)
@@ -143,7 +151,8 @@ export function executionItemBlockers(state: TaskState, item: TaskItem): string[
     const review = item.independent_review
     if (review?.status !== 'completed' || !review.run_id || review.spec !== 'pass' || review.quality !== 'pass'
       || review.plan_key !== executionPlanKey(plan) || review.dispatch_at !== item.dispatch?.at
-      || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, plan.files))
+      || !validReviewPolicy(review.policy, review.run_id)
+      || item.review?.independent_run_id !== review.run_id || !hasFullReadCoverage(review, requiredReviewPaths(plan)))
       blockers.push(`item ${item.id}: independent review is missing, failed or not accepted; run review_dispatch then review_item`)
   }
   return blockers
