@@ -18,6 +18,8 @@ whenToUse: 自适应任务进入代码开发元技能时。
 
 ## 验证与交付范围
 
+所有 files 逐个登记具体普通文件，不能填写目录或通配符；尚未创建的文件可以提前登记。路径后来变成目录、链接或无法读取时，查看 status.file_scope_problems，使用 scope、plan_execution 或 plan_verification 修正对应清单；保持原验证与审核记录，不跳过错误路径或手改台账放行。
+
 实施项应包含实现及其必要测试，不把本项必须的单测拆成依赖“本项 done”的下游项。用 `plan_verification` 登记测试组的稳定 `verification_group`、真实测试 `command`、全部输入 `files` 和 `item_ids`。只读构建配置放在测试输入，只有实际修改的文件才登记为交付；任务级集成检查可使用空 `item_ids`。
 
 `verify verification_group=...` 返回 `group_result` 与任务整体 `task_verified`。本组 passed、其它组待运行时可先验收本项，不重跑已通过且输入不变的组。编译成功不能冒充测试通过；测试失败、全跳过或输入改变必须重新验证。默认回执只有摘要，完整日志使用 `status detail=true`，不要为查看日志重复执行测试。

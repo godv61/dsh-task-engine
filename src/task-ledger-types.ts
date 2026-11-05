@@ -39,6 +39,7 @@ export interface TaskLedgerEntry {
   complexity?: string
   delivery?: DeliveryView
   evidence_status?: 'valid' | 'stale' | 'failed' | 'blocked' | 'missing' | 'historical' | 'unknown'
+  evidence_problems?: string[]
   verification_groups?: VerificationGroupView[]
   review_status?: 'valid' | 'stale' | 'missing' | 'blocked' | 'historical'
   risk_level?: string

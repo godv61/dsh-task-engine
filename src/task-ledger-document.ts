@@ -57,6 +57,8 @@ export function taskDocument(t: TaskLedgerEntry): string {
     `状态：${lifecycleLabel(t)} · 当前阶段：${t.stage} · ${intentLabel(t)}`,
     `分支：${t.branch || '未记录'}\n\n更新：${t.updated_at ? formatEastEightTime(t.updated_at) : '未记录'}\n\n下一步：${t.next_action}`,
   ]
+  if (t.evidence_problems?.length)
+    sections.push('## 文件范围或证据无法核验\n\n' + t.evidence_problems.map(problem => '- ' + problem).join('\n'))
   if (r) {
     sections.push(
       `## 需求确认\n\n${requirementLabels[r.status]}${r.version ? ` · v${r.version}` : ''}\n\n${r.path ?? '尚未生成需求总结'}`,

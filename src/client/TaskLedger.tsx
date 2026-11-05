@@ -372,6 +372,13 @@ export function TaskLedger({
                   </Button>
                 </div>
               </div>
+              {!!selected.evidence_problems?.length && (
+                <div className="tl-errors" role="alert">
+                  <strong>文件范围或证据无法核验</strong>
+                  <ul>{selected.evidence_problems.map((problem, i) => <li key={i}>{problem}</li>)}</ul>
+                  <p>{selected.next_action}</p>
+                </div>
+              )}
               {!!selected.content?.stages.length && (
                 <div className="tl-stages" aria-label="任务阶段">
                   {selected.content.stages.map((v, i) => (
