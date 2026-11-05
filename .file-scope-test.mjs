@@ -6,7 +6,6 @@ import { join, dirname, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { runInNewContext } from 'node:vm'
-import { createRequire } from 'node:module'
 import { registerDevTask, scopeFingerprint, verificationInputHashes } from './lib/dev-task.js'
 import { validateTaskFiles } from './lib/task-files.js'
 import Controller from './lib/controller.js'
@@ -137,8 +136,9 @@ test('future directory stays visible in status, ledger, transport and Markdown; 
 
   let registration, contribution
   runInNewContext(readFileSync('lib/client.js', 'utf8'), { window: { __ModuleLoader__: { load(value) { registration = value } } } })
-  const require = createRequire(import.meta.url)
-  const client = registration.factory(name => name === 'react' || name === 'react/jsx-runtime' ? require(name) : {})
+  // React is provided by the DSH browser host. Codec registration does not
+  // render components and must also run in a clean npm consumer without React.
+  const client = registration.factory(() => ({}))
   const stop = new Error('descriptors captured')
   await assert.rejects(client.apply({ remote: { $mount: async value => { contribution = value; throw stop } } }), error => error === stop)
   const method = contribution.descriptors.find(d => d.method === 'readTasks')
