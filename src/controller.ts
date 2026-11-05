@@ -38,7 +38,7 @@ import { lastLocalRuleUpdate, prepareLocalAnalyzer } from './sonarlint-local.ts'
 import { listSonarProjectRules, projectAnalyzedLanguages, type SonarProjectRuleView } from './sonar-rule-catalog.ts'
 import { reviewedProfileCoverage } from './sonar-report.ts'
 import { codeGraphEvidence, codeGraphInitHint, codeGraphStatus, prepareCodeGraph, type CodeGraphState } from './codegraph-init.ts'
-import { scopeFingerprint, verificationInputHashes } from './dev-task.ts'
+import { inspectTaskFiles } from './dev-task.ts'
 import { groupEvidenceBlockers, verificationGroupViews } from './verification-state.ts'
 import { initJob, type InitJobView } from './init-jobs.ts'
 import { INIT_ATTEMPT_TIMEOUT_MS, initTimeBudget, withInitTimeout } from './init-timeout.ts'
@@ -1014,18 +1014,28 @@ export default class TaskEngineController extends TypertRemoteService {
         if (!state || state.id !== id || ['id', 'title', 'stage', 'branch'].some(key => typeof (state as unknown as Record<string, unknown>)[key] !== 'string') || (state.items !== undefined && !Array.isArray(state.items))) throw new Error('任务记录格式无效或编号与目录不一致：' + taskPath(id))
         let evidenceStatus: TaskLedgerEntry['evidence_status'] = state.completed ? 'historical' : !state.verification?.receipt ? 'missing' : !state.verification.passed ? 'failed' : 'unknown'
         let currentScope: string | undefined
-          let groupHashes: Record<string, string> | undefined
-          if (!state.completed && (state.verification_version || state.verification?.passed || state.review?.outcome === 'pass')) {
+        let groupHashes: Record<string, string> | undefined
+        const evidenceProblems: string[] = []
+        let groupProblems: Record<string, string[]> = {}
+        if (!state.completed && state.delivery?.intent !== 'analysis') {
+          // Workspace authorization remains outside the recoverable evidence
+          // boundary: an unregistered task root must not be inspected.
           const evidenceRoot = await this.authorizedPath(state.root ?? path)
-          currentScope = await scopeFingerprint(fs, { ...state, root: evidenceRoot }, path)
-            if (state.verification_version) groupHashes = await verificationInputHashes(fs, { ...state, root: evidenceRoot }, path)
+          try {
+            const inspected = await inspectTaskFiles(fs, { ...state, root: evidenceRoot }, path)
+            currentScope = inspected.scope
+            groupHashes = inspected.hashes
+            groupProblems = inspected.groupProblems
+            evidenceProblems.push(...inspected.problems)
+          } catch (error) { evidenceProblems.push(error instanceof Error ? error.message : String(error)) }
         }
         if (!state.completed && state.verification?.passed && state.verification.receipt) {
             evidenceStatus = state.verification_version
               ? groupEvidenceBlockers(state, groupHashes).length ? 'stale' : 'valid'
               : state.verification.receipt.scope_hash === currentScope ? 'valid' : 'stale'
         }
-          const groupViews = verificationGroupViews(state, groupHashes)
+          const groupViews = verificationGroupViews(state, groupHashes).map(group => Object.hasOwn(groupProblems, group.id)
+            ? { ...group, status: 'blocked' as const, problems: [...group.problems, ...groupProblems[group.id]!] } : group)
           if (!state.completed && state.verification_version) {
             evidenceStatus = groupViews.some(group => group.status === 'blocked') ? 'blocked'
               : groupViews.some(group => group.status === 'failed') ? 'failed'
@@ -1033,7 +1043,8 @@ export default class TaskEngineController extends TypertRemoteService {
               : groupViews.some(group => group.status === 'missing') || !groupViews.length ? 'missing'
               : groupEvidenceBlockers(state).length ? 'stale' : 'valid'
           }
-        const reviewStatus: TaskLedgerEntry['review_status'] = state.completed ? 'historical' : state.review?.outcome === 'pass'
+        if (evidenceProblems.length) evidenceStatus = 'blocked'
+        const reviewStatus: TaskLedgerEntry['review_status'] = state.completed ? 'historical' : evidenceProblems.length ? 'blocked' : state.review?.outcome === 'pass'
             ? evidenceStatus !== 'valid' || reviewEvidenceBlockers(state, currentScope ?? '').length ? 'stale' : 'valid'
           : state.review?.outcome === 'blocked' ? 'blocked' : 'missing'
         const awaitingCommit = !state.completed && evidenceStatus === 'valid' && reviewStatus === 'valid'
@@ -1045,6 +1056,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(requirements ? { requirements } : {}),
           ...(state.delivery ? { delivery: deliveryView(state)! } : {}),
           evidence_status: evidenceStatus,
+          ...(evidenceProblems.length ? { evidence_problems: evidenceProblems } : {}),
             ...(groupViews.length ? { verification_groups: groupViews } : {}),
           review_status: reviewStatus,
           ...(state.complexity ? { complexity: state.complexity } : {}),
@@ -1054,7 +1066,7 @@ export default class TaskEngineController extends TypertRemoteService {
           ...(state.completed ? { completed_at: state.completed.at } : {}),
           ...(state.related_task ? { related_task: state.related_task } : {}),
           items_done: (state.items ?? []).filter(item => item.status === "done").length,
-          next_action: state.completed ? "已归档；后续改动请新建关联任务" : taskExecutionProblem(state) ?? (requirements && requirements.status !== 'confirmed' ? '澄清需求并生成总结；等待用户确认当前版本后再实施' : state.delivery?.intent === 'analysis' ? '主会话查证并及时交付结论；submit_analysis 接受证据与方案' : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接"),
+          next_action: evidenceProblems.length ? '文件范围无法核验；使用 scope 或 plan_verification 将错误路径改为具体文件，再核对并补验。' : state.completed ? "已归档；后续改动请新建关联任务" : taskExecutionProblem(state) ?? (requirements && requirements.status !== 'confirmed' ? '澄清需求并生成总结；等待用户确认当前版本后再实施' : state.delivery?.intent === 'analysis' ? '主会话查证并及时交付结论；submit_analysis 接受证据与方案' : awaitingCommit ? "等待 Git 提交登记（尚未归档）；请保留当前任务继续推进" : state.stage === (state.flow?.config.stages.at(-1) ?? "完成") ? "调用 complete 归档" : state.stage === "代码开发" ? (state.items.length > 0 && state.items.every(item => item.status === 'done') ? "实施项已完成；核对逐项审查和阶段门禁后继续推进" : "继续实施并完成任务项") : state.stage === "测试" ? "运行并记录测试结果" : state.stage === "代码审核" ? "完成代码审核" : "完成当前阶段产物与交接"),
           verification_passed: state.completed ? state.verification?.passed ?? false : evidenceStatus === 'valid',
           review_outcome: state.review?.outcome ?? 'pending',
           ...(state.sonar_policy ? { sonar: {

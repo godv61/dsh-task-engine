@@ -1,5 +1,6 @@
 import { readText, writeText, loadTask, writeTask, taskPath, listTaskIds, taskNamespace, type WriteFs } from './task-store.ts'
-import { isEngineMeta, isTaskLedgerPath, isTaskReviewPath } from './task-paths.ts'
+import { isEngineMeta, isTaskReviewPath } from './task-paths.ts'
+import { TaskFileError, validateTaskFiles } from './task-files.ts'
 /**
  * The model-facing `dev_task` tool: the hard engineering-delivery gate.
  *
@@ -1296,7 +1297,9 @@ function normalizeItems(items: { id?: string; title?: string; status?: 'todo' | 
 /** Hash declared deliverables through host FS; task bookkeeping is excluded to avoid self-invalidation. */
 export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, includeGovernance = false): Promise<string> {
   const entries = []
-  for (const path of [...new Set(state.files)].filter(path => includeGovernance || !isEngineMeta(path)).sort()) {
+  const paths = [...new Set(state.files)].filter(path => includeGovernance || !isEngineMeta(path)).sort()
+  await validateTaskFiles(fs, paths, state.root ?? cwd ?? '', 'fingerprint', 'fingerprint')
+  for (const path of paths) {
     assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
     const root = state.root ?? cwd
     const target = await fs.resolve(path, root === undefined ? undefined : { cwd: root })
@@ -1305,7 +1308,7 @@ export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, i
     try {
       const info = await fs.lstat(path, root === undefined ? undefined : { cwd: root })
       if (info !== undefined) {
-        if (info.type !== undefined && info.type !== 'file') throw new Error(`task scope contains a non-regular file: ${path}`)
+        if (info.type !== undefined && info.type !== 'file') throw new TaskFileError(path, 'fingerprint', 'non-regular file (' + info.type + ')')
         executable = false
         if (process.platform !== 'win32') {
           try { executable = (lstatSync(resolve(root ?? '', path)).mode & 0o111) !== 0 }
@@ -1317,7 +1320,8 @@ export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, i
           : Buffer.from(await reader.readText(target), 'utf8')
       }
     } catch (error) {
-      if (!['ENOENT', 'FS_NOT_FOUND'].includes((error as { code?: string }).code ?? '')) throw error
+      if (!['ENOENT', 'FS_NOT_FOUND'].includes((error as { code?: string }).code ?? ''))
+        throw error instanceof TaskFileError ? error : new TaskFileError(path, 'fingerprint', error instanceof Error ? error.message : String(error))
     }
     entries.push([path, content === undefined ? null : hashBytes(content), executable])
   }
@@ -1328,6 +1332,45 @@ export async function scopeFingerprint(fs: Fs, state: TaskState, cwd?: string, i
 export async function verificationInputHashes(fs: Fs, state: TaskState, cwd?: string): Promise<Record<string, string>> {
   return Object.fromEntries(await Promise.all(Object.values(state.verification_groups ?? {}).map(async group =>
     [group.id, await scopeFingerprint(fs, { ...state, files: groupInputs(state, group) }, cwd, true)])))
+}
+
+/** A read-only diagnostic projection. Missing hashes never constitute valid evidence. */
+export async function inspectTaskFiles(fs: Fs, state: TaskState, cwd?: string) {
+  const problems: string[] = [], hashes: Record<string, string> = Object.create(null),
+    groupProblems: Record<string, string[]> = Object.create(null)
+  let scope: string | undefined
+  const root = state.root ?? cwd ?? ''
+  const message = (owner: string, error: unknown) => owner + ': ' + (error instanceof Error ? error.message : String(error))
+  try {
+    await validateTaskFiles(fs, state.files, root, 'scope', 'delivery')
+    scope = await scopeFingerprint(fs, state, cwd)
+  } catch (error) { problems.push(message('scope', error)) }
+  for (const item of state.items) {
+    try { await validateTaskFiles(fs, item.execution_plan?.files ?? [], root, 'item ' + item.id, 'delivery') }
+    catch (error) { problems.push(message('item ' + item.id, error)) }
+  }
+  for (const group of Object.values(state.verification_groups ?? {})) {
+    try {
+      const files = groupInputs(state, group)
+      await validateTaskFiles(fs, files, root, 'verification group ' + group.id, 'verification')
+      hashes[group.id] = await scopeFingerprint(fs, { ...state, files }, cwd, true)
+    } catch (error) {
+      const problem = message('verification group ' + group.id, error)
+      groupProblems[group.id] = [problem]
+      problems.push(problem)
+    }
+  }
+  return { scope, hashes, problems, groupProblems }
+}
+
+/** Fail before launching any command or child, including for another invalid group. */
+async function assertTaskFileInputs(fs: Fs, state: TaskState, cwd?: string): Promise<void> {
+  const root = state.root ?? cwd ?? ''
+  await validateTaskFiles(fs, state.files, root, 'scope', 'delivery')
+  for (const item of state.items)
+    await validateTaskFiles(fs, item.execution_plan?.files ?? [], root, 'item ' + item.id, 'delivery')
+  for (const group of Object.values(state.verification_groups ?? {}))
+    await validateTaskFiles(fs, groupInputs(state, group), root, 'verification group ' + group.id, 'verification')
 }
 
 async function itemVerificationBlockers(fs: Fs, state: TaskState, id: string, cwd?: string): Promise<string[]> {
@@ -1693,7 +1736,7 @@ export function registerDevTask(ctx: Context): void {
       depends_on: { type: 'array', items: { type: 'string' }, description: 'plan_execution: earlier registered item IDs that must finish first.' },
       changes: { type: 'array', description: 'plan_execution: explicitly planned delete/rename operations. Keep old paths and rename destinations in files and task scope. The engine captures tracked Git and pre-change worktree text for readonly review.',
         items: { type: 'object', properties: { path: { type: 'string' }, kind: { type: 'string', enum: ['delete', 'rename'] }, to: { type: 'string' } }, additionalProperties: false } },
-      verification_group: { type: 'string', description: 'plan_verification/verify: stable test-group ID, for example backend or frontend. Plan each group with command, files including tests/configuration, and item_ids. Verify executes its declared command; no group is inferred from printed output.' },
+      verification_group: { type: 'string', description: 'plan_verification/verify: stable test-group ID, for example backend or frontend. Plan each group with command, item_ids, and concrete regular files (production, tests, relevant configuration), not directories or wildcards. Planned files may not exist yet. Verify executes its declared command; no group is inferred from printed output.' },
       item_ids: { type: 'array', items: { type: 'string' }, description: 'plan_verification: implementation items validated by this group. Each item includes its own implementation and tests, never a later test item depending on its completion.' },
       affected_items: { type: 'array', items: { type: 'string' }, description: 'revise(defect): explicit affected item IDs. Shared files and downstream consumers also reopen. Omit for unknown or task-wide impact. Requirements/solution revisions remain task-wide.' },
       dispatch_role: { type: 'string', enum: ['implementation', 'review'], description: 'recover_dispatch: which interrupted child to recover; default implementation.' },
@@ -1714,7 +1757,7 @@ export function registerDevTask(ctx: Context): void {
       files: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Repository-relative delivery paths to change (create/scope), or exact paths being committed (commit, required when file_scope is enabled). Read-only build/config inputs belong in plan_verification files. For commit hash recording, repeat the same files and message used for the actual Git commit.',
+        description: 'Concrete repository-relative regular file paths, not directories or wildcards. Planned new files may not exist yet. create/scope declare delivery paths; plan_verification declares production, tests and read-only build/config inputs. commit lists the exact changed files; for hash recording repeat the same files and message used for the actual Git commit.',
       },
       message: { type: 'string', description: 'Exact Git commit subject (commit). Use the same text when preparing the commit, executing Git and recording its hash; do not paraphrase it at the hash-recording step.' },
       revision_kind: { type: 'string', enum: ['requirement', 'solution', 'defect'], description: 'Why the task is going back (revise). Decides which conclusions are invalidated: requirement clears its confirmation and everything downstream; solution keeps the requirement agreed; defect clears only the evidence about the old implementation.' },
@@ -2072,7 +2115,7 @@ export function registerDevTask(ctx: Context): void {
           if (a.files?.length) state.delivery!.references = a.files
           state.execution_policy = a.execution_policy ?? 'auto'
         }
-        state.files = isAnalysis(state) ? [] : a.files ?? []
+        state.files = isAnalysis(state) ? [] : await validateTaskFiles(fs, a.files ?? [], root, 'create', 'delivery')
         let baselineNotice = ''
         if (flow.config.requirement_review) baselineNotice += '\nBusiness writes are blocked until the human confirms this requirement version. Read related source, clarify important gaps, record requirement fields, prepare_requirement, then confirm_requirement expected_hash. Low complexity uses a short summary in its initial stage.'
         if (sonarPolicy?.source === 'ide-local') {
@@ -2180,7 +2223,21 @@ export function registerDevTask(ctx: Context): void {
         const missingSkillFiles = await missingSkillRefs(binding, fs, cwd)
         const changedSkillFiles = await changedSkillRefs(binding, fs, cwd, state.flow?.resources)
         const missingSkills = skillBlockers(state, workflow, session)
-        const staleEvidence = await evidenceBlockers(fs, state, workflow, cwd)
+        const inspected = await inspectTaskFiles(fs, state, cwd)
+        const fileProblems = inspected.problems
+        let staleEvidence: string[]
+        try { staleEvidence = fileProblems.length ? [...fileProblems] : await evidenceBlockers(fs, state, workflow, cwd) }
+        catch (error) {
+          fileProblems.push('Evidence could not be checked: ' + (error instanceof Error ? error.message : String(error)))
+          staleEvidence = [...fileProblems]
+        }
+        let currentSonarBlockers: string[]
+        try { currentSonarBlockers = fileProblems.length ? [...fileProblems] : await sonarBlockers(fs, state, cwd) }
+        catch (error) {
+          fileProblems.push('Sonar evidence could not be checked: ' + (error instanceof Error ? error.message : String(error)))
+          currentSonarBlockers = [...fileProblems]
+          staleEvidence = [...new Set([...staleEvidence, ...fileProblems])]
+        }
         const checkpoint = commitCheckpoint(state, workflow)
         // The flow's verification requirement is reported separately from staleness:
         // one says the receipt no longer matches the tree, the other says the flow
@@ -2191,7 +2248,7 @@ export function registerDevTask(ctx: Context): void {
         const completionIssues = state.completed === undefined
           ? [...completionBlockers(state, workflow), ...missingSkills,
             ...skillResourceBlockers(missingSkillFiles, state.stage),
-            ...resourceBlockers(missingRules, state.stage), ...staleEvidence, ...await sonarBlockers(fs, state, cwd)]
+            ...resourceBlockers(missingRules, state.stage), ...staleEvidence, ...currentSonarBlockers]
           : []
         const planItemBlockers = taskPlanItemBlockers(state)
         const commitState = checkpoint.allowed && commitBlockers.length
@@ -2243,6 +2300,7 @@ export function registerDevTask(ctx: Context): void {
           }),
           skill_blockers: missingSkills,
           evidence_blockers: staleEvidence,
+          file_scope_problems: fileProblems,
           verification_blockers: verification,
           // Rules in force here, each named with the layer it came from, plus the
           // ones that could not be found and the legacy stage-level names still
@@ -2266,7 +2324,7 @@ export function registerDevTask(ctx: Context): void {
           sonar: state.sonar_policy === undefined ? { enabled: false } : {
             enabled: true, mode: state.sonar_policy.mode, project_key: state.sonar_policy.project_key,
             source: state.sonar_policy.source ?? 'ci', reference_branch: state.sonar_policy.reference_branch,
-            audit: state.sonar_audit ?? null, blockers: await sonarBlockers(fs, state, cwd),
+            audit: state.sonar_audit ?? null, blockers: currentSonarBlockers,
             prior_audits: state.sonar_history?.length ?? 0,
           },
           learned_rules: state.learned_rules ?? [],
@@ -2671,12 +2729,7 @@ export function registerDevTask(ctx: Context): void {
           if (!state.delivery || !['任务编排', '代码开发', '开发'].includes(state.stage)) throw new Error('plan requires a new implementation contract in orchestration or development')
           if (!a.plans?.length) throw new Error('plan requires complete plans')
           state.items = normalizeItems(a.plans.map(plan => ({ id: plan.id, title: plan.title })), state.items)
-          for (const plan of a.plans) for (const file of plan.files) {
-            assertInsideRoot(state.root!, state.root!, file)
-            if (isSensitivePath(file)) throw new Error(`sensitive delivery path: ${file}`)
-            const info = await fs.lstat(file, { cwd: state.root! })
-            if (info && info.type !== 'file') throw new Error(`plan contains a non-regular file: ${file}`)
-          }
+          for (const plan of a.plans) await validateTaskFiles(fs, plan.files, state.root ?? cwd ?? '', 'plan', 'delivery')
           state.files = [...new Set([...state.files, ...a.plans.flatMap(plan => plan.files)])]
           for (const input of a.plans) {
             const item = requireItem(state, input.id)
@@ -2711,18 +2764,15 @@ export function registerDevTask(ctx: Context): void {
           break
         }
         case 'scope':
-          state.files = a.files ?? []
+          state.files = await validateTaskFiles(fs, a.files ?? [], state.root ?? cwd ?? '', 'scope', 'delivery')
           note = `file scope set to ${state.files.length} files${state.files.length > 0 ? ': ' + state.files.join(', ') : ' (empty — commits are blocked until files are declared)'}`
           break
         case 'plan_verification': {
           if (!a.verification_group || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/u.test(a.verification_group)) throw new Error('plan_verification requires verification_group, e.g. backend')
-          if (!a.command?.trim() || !a.files?.length || !a.item_ids) throw new Error('plan_verification requires command, files (implementation + tests + relevant configuration), and item_ids (empty for task-level integration checks)')
+          if (!a.command?.trim() || !a.files?.length || !a.item_ids) throw new Error('plan_verification requires command, concrete regular files (not directories; planned new files may be missing), and item_ids (empty for task-level integration checks)')
           const problem = verificationPlanProblem(a.command)
           if (problem) throw new Error(problem)
-          for (const file of a.files) {
-            assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', file)
-            if (isTaskLedgerPath(file)) throw new Error('a test group cannot include its own changing task ledger')
-          }
+          await validateTaskFiles(fs, a.files, state.root ?? cwd ?? '', 'plan_verification ' + a.verification_group, 'verification')
           for (const id of a.item_ids) requireItem(state, id)
           if (state.items.some(item => ['running', 'starting'].includes(item.dispatch?.status ?? ''))) throw new Error('wait for active children before changing verification plans')
           const group = { id: a.verification_group, command: a.command.trim(), files: [...new Set(a.files)], item_ids: [...new Set(a.item_ids)], key: '', at: new Date().toISOString() }
@@ -2734,8 +2784,15 @@ export function registerDevTask(ctx: Context): void {
           state.verification_version = 1
           ;(state.verification_groups ??= {})[group.id] = group
           state.review = { outcome: 'pending' }
-          await refreshVerification(state, await verificationInputHashes(fs, state, cwd), await scopeFingerprint(fs, state, cwd))
-          note = JSON.stringify({ group, blockers: groupPlanningBlockers(state), next_action: `Implement this complete unit, then verify verification_group=${group.id}. verify itself executes the real command and captures its receipt; do not run the same registered suite in a native terminal first. Set timeout_ms to a realistic budget. A later test item must not depend on this unit being done.` })
+          const inspected = await inspectTaskFiles(fs, state, cwd)
+          if (inspected.problems.length) {
+            state.verification.passed = false
+            state.verification.problems = [...groupEvidenceBlockers(state, inspected.hashes), ...inspected.problems]
+            delete state.verification.scope_hash
+          } else refreshVerification(state, inspected.hashes, inspected.scope!)
+          note = JSON.stringify({ group, blockers: [...groupPlanningBlockers(state), ...inspected.problems], next_action: inspected.problems.length
+            ? 'Other file inputs are still invalid. Correct each named scope/item/group with scope, plan_execution or plan_verification; old evidence is retained but cannot authorize delivery.'
+            : `Implement this complete unit, then verify verification_group=${group.id}. verify itself executes the real command and captures its receipt; do not run the same registered suite in a native terminal first. Set timeout_ms to a realistic budget. A later test item must not depend on this unit being done.` })
           break
         }
         case 'items':
@@ -2756,7 +2813,7 @@ export function registerDevTask(ctx: Context): void {
           if (!['任务编排', '开发', '代码开发'].includes(state.stage)) throw new Error('plan_execution runs in orchestration or implementation stage')
           const item = requireItem(state, a.item_id)
           if (item.status !== 'todo') throw new Error('reopen the item as todo before replanning execution')
-          for (const path of a.files ?? []) assertInsideRoot(state.root ?? cwd ?? '', state.root ?? cwd ?? '', path)
+          await validateTaskFiles(fs, a.files ?? [], state.root ?? cwd ?? '', 'plan_execution', 'delivery')
           const plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
           validateDeliveryChanges(a.changes ?? [], plan.files)
           if (a.changes?.length) plan.changes = await captureDeliveryChanges(ctx, fs, state, a.changes, exec, await resolveWriteMode(ctx, a, exec))
@@ -2770,6 +2827,7 @@ export function registerDevTask(ctx: Context): void {
           break
         }
         case 'dispatch': {
+          await assertTaskFileInputs(fs, state, cwd)
           const item = requireItem(state, a.item_id)
           const plan = item.execution_plan
           if (state.delegation_version && !plan) throw new Error('call plan_execution before dispatch; record boundary, files, acceptance and reason')
@@ -3090,6 +3148,7 @@ ${structuredReview ? 'Finish by calling the host structured_output tool with' : 
           break
         }
         case 'verify': {
+          await assertTaskFileInputs(fs, state, cwd)
           if (a.timeout_ms !== undefined && (!Number.isSafeInteger(a.timeout_ms) || a.timeout_ms < 1000 || a.timeout_ms > VERIFY_TIMEOUT_MS))
             throw new Error(`verify timeout_ms must be an integer from 1000 to ${VERIFY_TIMEOUT_MS}`)
           const groups = Object.values(state.verification_groups ?? {})

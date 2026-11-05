@@ -45,7 +45,8 @@ export function statusView(value: Record<string, any>, state: TaskState, detail 
   selection?: { section?: 'items' | 'verification' | 'artifacts' | 'bindings' | 'sonar' | undefined; itemId?: string | undefined; groupId?: string | undefined }): Record<string, unknown> {
   if (detail && selection?.section) {
     const section = selection.section
-    const identity = { id: state.id, stage: state.stage, section }
+    const identity = { id: state.id, stage: state.stage, section,
+      ...(value.file_scope_problems?.length ? { file_scope_problems: value.file_scope_problems } : {}) }
     if (section === 'items') return { ...identity, items: selection.itemId ? state.items.filter(item => item.id === selection.itemId) : state.items }
     if (section === 'verification') return selection.groupId
       ? { ...identity, verification_group: selection.groupId, group: state.verification_groups?.[selection.groupId], latest_run: latestGroupRun(state, selection.groupId) }
