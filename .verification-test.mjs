@@ -284,7 +284,7 @@ test('a real GoogleTest binary reports the tests that actually ran', async t => 
   if (configure.status !== 0) {
     const output = `${configure.stdout}\n${configure.stderr}`
     // Only a genuinely absent package may skip; a broken configuration is a real failure.
-    const missing = /could not find a package configuration file provided by "gtest"|find_package\(gtest\)|no cmake_cxx_compiler could be found/iu.test(output)
+    const missing = /could not find gtest|could not find a package configuration file provided by "gtest"|find_package\(gtest\)|no cmake_cxx_compiler could be found/iu.test(output)
     if (missing && !requireReal) { t.skip('The GoogleTest development package is not installed; parser cases remain covered above'); return }
     assert.fail(`cmake configure failed:\n${output}`)
   }
