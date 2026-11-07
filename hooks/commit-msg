@@ -64,6 +64,71 @@ function commandName(word) {
   const parts = (word ?? "").replace(/\\/gu, "/").split("/");
   return parts[parts.length - 1].replace(/\.(?:exe|cmd|bat)$/iu, "").toLowerCase();
 }
+var shellPrograms = /* @__PURE__ */ new Set(["cmd", "sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+var pathLikeToken = (word) => /[\\/]/u.test(word) || /\.(?:exe|out|bin)$/iu.test(word);
+var assignment = (word) => /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word ?? "");
+function shellBody(shell, argv) {
+  const isBodyFlag = (word) => {
+    if (shell === "cmd") return /^[/-]c$/iu.test(word);
+    if (shell === "powershell" || shell === "pwsh") return /^-(?:c|command)$/iu.test(word);
+    return /^-[A-Za-z]*c[A-Za-z]*$/u.test(word);
+  };
+  const index = argv.findIndex(isBodyFlag);
+  if (index < 0) return void 0;
+  const body = argv.slice(index + 1);
+  return body.length ? body.join(" ") : void 0;
+}
+function resolve(words, depth) {
+  if (depth > 4) return void 0;
+  let index = 0;
+  for (; ; ) {
+    while (index < words.length && assignment(words[index])) index++;
+    const prefix = commandName(words[index]);
+    if (prefix === "env") {
+      index++;
+      while (index < words.length) {
+        if (assignment(words[index])) index++;
+        else if (["-i", "--ignore-environment", "-0", "--null", "-v", "--debug"].includes(words[index])) index++;
+        else if (words[index] === "-u" || words[index] === "--unset") index += 2;
+        else break;
+      }
+      continue;
+    }
+    if (prefix === "nice") {
+      index++;
+      if (words[index] === "-n") index += 2;
+      else if (/^-\d+$/u.test(words[index] ?? "")) index++;
+      continue;
+    }
+    if (prefix === "timeout") {
+      index++;
+      while (index < words.length && /^-/u.test(words[index])) index++;
+      index++;
+      continue;
+    }
+    if (["nohup", "command", "exec", "stdbuf"].includes(prefix)) {
+      index++;
+      while (index < words.length && /^-/u.test(words[index])) index++;
+      continue;
+    }
+    break;
+  }
+  const token = words[index];
+  if (token === void 0) return void 0;
+  const program = commandName(token);
+  if (shellPrograms.has(program)) {
+    const body = shellBody(program, words.slice(index + 1));
+    const nested = body === void 0 ? void 0 : commandWords(body);
+    if (!nested?.length) return void 0;
+    const inner = resolve(nested, depth + 1);
+    return inner ? { ...inner, shellDepth: inner.shellDepth + 1 } : void 0;
+  }
+  return { program, token, argv: words.slice(index + 1), pathLike: pathLikeToken(token), shellDepth: 0 };
+}
+function invokedProgram(command) {
+  const words = commandWords(command);
+  return words?.length ? resolve(words, 0) : void 0;
+}
 
 // src/go-test-evidence.ts
 function goTestEvidence(command, output) {
@@ -108,41 +173,6 @@ function goTestEvidence(command, output) {
 var literal = String.raw`(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[+-]?\d+(?:\.\d+)?|true|false|null|undefined|None|True|False)`;
 var literalOnly = new RegExp(`^${literal}$`, "u");
 var printingLiteral = new RegExp(`^(?:console\\.(?:log|info|warn|error)|print)\\(\\s*${literal}(?:\\s*,\\s*${literal})*\\s*\\)$`, "u");
-function obviousNoop(program) {
-  const body = program.trim();
-  return !body || literalOnly.test(body) || printingLiteral.test(body) || /^(?:process\.exit|sys\.exit|exit|quit)\(\s*0?\s*\)$/u.test(body) || /^__import__\(['"]sys['"]\)\.exit\(\s*0?\s*\)$/u.test(body) || /^void\s+0$/u.test(body);
-}
-function inspect(words, depth) {
-  if (depth > 4) return "\u6280\u80FD\u547D\u4EE4\u7684\u5916\u58F3\u8F6C\u53D1\u5D4C\u5957\u8FC7\u6DF1\uFF1B\u8BF7\u76F4\u63A5\u8FD0\u884C\u9879\u76EE\u68C0\u67E5\u547D\u4EE4";
-  const name = commandName(words[0]);
-  if (["echo", "printf", "true", ":", "exit", "write-output", "write-host"].includes(name)) return "\u6280\u80FD\u547D\u4EE4\u5FC5\u987B\u6267\u884C\u5B9E\u9645\u68C0\u67E5\uFF0C\u4E0D\u80FD\u53EA\u6253\u5370\u6587\u5B57\u6216\u76F4\u63A5\u6210\u529F\u9000\u51FA";
-  const shell = ["cmd", "sh", "bash", "powershell", "pwsh"].includes(name);
-  if (shell) {
-    const flag = words.findIndex((word, i) => i > 0 && (name === "cmd" ? /^\/[ck]$/iu : /^-(?:c|command)$/iu).test(word));
-    if (flag >= 0) {
-      const rest = words.slice(flag + 1);
-      if (rest.length === 1) {
-        const nested = commandWords(rest[0]);
-        return nested?.length ? inspect(nested, depth + 1) : "\u6280\u80FD\u5916\u58F3\u547D\u4EE4\u65E0\u6CD5\u89E3\u6790\uFF1B\u8BF7\u76F4\u63A5\u8FD0\u884C\u9879\u76EE\u68C0\u67E5\u811A\u672C";
-      }
-      return rest.length ? inspect(rest, depth + 1) : "\u6280\u80FD\u5916\u58F3\u547D\u4EE4\u7F3A\u5C11\u68C0\u67E5\u7A0B\u5E8F";
-    }
-  }
-  if (["node", "python", "python3"].includes(name)) {
-    for (let i = 1; i < words.length; i++) {
-      const word = words[i];
-      const inline = name === "node" ? /^--(?:eval|print)=(.*)$/su.exec(word)?.[1] : void 0;
-      const separate = name === "node" ? ["-e", "--eval", "-p", "--print"].includes(word) : word === "-c";
-      const program = inline ?? (separate ? words[i + 1] ?? "" : void 0);
-      if (program !== void 0 && obviousNoop(program)) return "\u6280\u80FD\u547D\u4EE4\u662F\u660E\u663E\u7684\u7A7A\u64CD\u4F5C\u6216\u56FA\u5B9A\u8F93\u51FA\uFF1B\u8BF7\u6267\u884C\u5B9E\u9645\u65AD\u8A00\u3001lint\u3001\u7C7B\u578B\u68C0\u67E5\u6216\u9879\u76EE\u68C0\u67E5\u811A\u672C";
-    }
-  }
-  return void 0;
-}
-function skillReceiptProblem(command) {
-  const words = commandWords(command);
-  return words?.length ? inspect(words, 0) : "\u6280\u80FD\u547D\u4EE4\u4E3A\u7A7A\u6216\u5F15\u53F7\u4E0D\u5B8C\u6574";
-}
 
 // src/verification-tests.ts
 function unittestTestEvidence(command, output) {
@@ -225,12 +255,50 @@ var runnerCommands = /* @__PURE__ */ new Set([
   "cmake",
   "msbuild"
 ]);
-function commandProgramName(command) {
-  const words = commandWords(command);
-  if (!words?.length) return void 0;
-  let index = 0;
-  while (index < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(words[index]) || words[index] === "env")) index++;
-  return index < words.length ? commandName(words[index]) : void 0;
+var readerCommands = /* @__PURE__ */ new Set([
+  "type",
+  "more",
+  "findstr",
+  "get-content",
+  "gc",
+  "select-string",
+  "sls",
+  "get-item",
+  "gi",
+  "dir",
+  "cp",
+  "copy",
+  "mv",
+  "move",
+  "del",
+  "erase",
+  "where",
+  "which",
+  "diff",
+  "cmp",
+  "jq"
+]);
+var scriptExtensions = /* @__PURE__ */ new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "ps1",
+  "cmd",
+  "bat",
+  "py",
+  "rb",
+  "pl",
+  "js",
+  "mjs",
+  "cjs",
+  "ts",
+  "jar"
+]);
+function isGoogleTestInvocation(inv) {
+  if (inv.shellDepth > 0 || !inv.pathLike) return false;
+  if (outputOnlyCommands.has(inv.program) || runnerCommands.has(inv.program) || readerCommands.has(inv.program)) return false;
+  const extension = inv.token.replace(/\\/gu, "/").split("/").pop()?.match(/\.([^./]+)$/u)?.[1]?.toLowerCase();
+  return extension === void 0 || !scriptExtensions.has(extension);
 }
 function ctestEvidence(output) {
   const text = output.replace(/\r\n/gu, "\n");
@@ -258,16 +326,17 @@ function gtestEvidence(output) {
   return { count: Number(passed[1]) };
 }
 function ctestOrGtestEvidence(command, output) {
-  const name = commandProgramName(command);
-  if (!name) return null;
-  if (name === "ctest") return ctestEvidence(output);
-  if (outputOnlyCommands.has(name) || runnerCommands.has(name) || skillReceiptProblem(command)) return null;
+  const inv = invokedProgram(command);
+  if (!inv) return null;
+  if (inv.program === "ctest" && inv.shellDepth === 0) return ctestEvidence(output);
+  if (!isGoogleTestInvocation(inv)) return null;
   return gtestEvidence(output);
 }
+var mavenTestGoal = /^(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:]+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:]+:)?(?:integration-test|verify))$/u;
 function mavenTestEvidence(command, output) {
-  const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
-  const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command);
-  if (!maven || !testGoal) return null;
+  const inv = invokedProgram(command);
+  if (!inv || inv.shellDepth > 0 || inv.program !== "mvn" && inv.program !== "mvnw") return null;
+  if (!inv.argv.some((word) => mavenTestGoal.test(word))) return null;
   const summaries = [...output.matchAll(/Tests run:\s*(\d+)\s*,\s*Failures:\s*(\d+)\s*,\s*Errors:\s*(\d+)\s*,\s*Skipped:\s*(\d+)/giu)];
   if (!summaries.length) return { count: null };
   if (summaries.some((match) => Number(match[2]) > 0 || Number(match[3]) > 0)) return { count: 0 };
@@ -279,11 +348,39 @@ function validationCommandProblem(command) {
   }
   return void 0;
 }
+var gradleTask = /^(?:[\w-]+:)*test$/u;
 function isGradleTestCommand(command) {
-  return /(?:^|\s)(?:\.\/[\w./-]*gradlew|[\w.\\/-]*gradlew(?:\.bat)?|gradle(?:\.bat)?)\s+(?:[^\r\n]*\s)?test(?:\s|$)/iu.test(command);
+  const inv = invokedProgram(command);
+  if (!inv || inv.shellDepth > 0) return false;
+  if (inv.program !== "gradle" && inv.program !== "gradlew") return false;
+  return inv.argv.some((word) => gradleTask.test(word));
+}
+var packageRunners = /* @__PURE__ */ new Set(["npm", "pnpm", "yarn", "bun"]);
+var testScript = /^test(?::[\w:.-]+)?$/u;
+var pythonProgram = /^python(?:\d+(?:\.\d+)*)?$/u;
+function isNodeTestInvocation(inv) {
+  if (inv.shellDepth > 0) return false;
+  if (packageRunners.has(inv.program)) {
+    const script = inv.argv[0] === "run" ? inv.argv[1] : inv.argv[0];
+    return testScript.test(script ?? "");
+  }
+  return inv.program === "node" && inv.argv.includes("--test");
+}
+function isPytestInvocation(inv) {
+  if (inv.shellDepth > 0) return false;
+  if (inv.program === "pytest") return true;
+  if (!pythonProgram.test(inv.program) && inv.program !== "py") return false;
+  const flag = inv.argv.indexOf("-m");
+  return flag >= 0 && inv.argv[flag + 1] === "pytest";
+}
+function isCargoTestInvocation(inv) {
+  if (inv.shellDepth > 0 || inv.program !== "cargo") return false;
+  return inv.argv.find((word) => !word.startsWith("-") && !word.startsWith("+")) === "test";
 }
 function testEvidence(command, output) {
   if (validationCommandProblem(command)) return { count: null };
+  const invocation = invokedProgram(command);
+  if (invocation && invocation.shellDepth > 0) return { count: null };
   if (/(?:^|\n)\s*#\s*fail\s+[1-9]\d*\b|(?:^|\n)\s*(?:Tests?|Test Suites?):\s*[^\r\n]*\b[1-9]\d*\s+failed\b|test result:\s*FAILED\b|(?:^|\n)FAIL\s+\S+/iu.test(output)) {
     return { count: 0 };
   }
@@ -303,17 +400,17 @@ function testEvidence(command, output) {
     return { count: Math.max(...summaries.map((entry) => Math.max(0, Number(entry[1]) - Number(entry[3] ?? 0)))) };
   }
   let match = null;
-  if (/(?:^|\s)(?:npm|pnpm|yarn|bun)(?:\.cmd)?\s+(?:run\s+)?test\b|(?:^|\s)node(?:\.exe)?\s+--test\b/iu.test(command)) {
+  if (invocation && isNodeTestInvocation(invocation)) {
     const passed = output.match(/(?:^|\n)\s*#\s*pass\s+(\d+)\b/iu);
     const total = output.match(/(?:^|\n)\s*#\s*tests\s+(\d+)\b/iu);
     match = passed ?? total ?? output.match(/(?:^|\n)\s*Tests?\s*:?\s*(\d+)\s+passed\b/iu) ?? output.match(/(?:^|\n)\s*Tests?\s*:\s*\d+\s+failed,\s*(\d+)\s+passed\b/iu);
     const skipped = output.match(/(?:^|\n)\s*#\s*skipped\s+(\d+)\b/iu);
     if (!passed && total && skipped) return { count: Math.max(0, Number(total[1]) - Number(skipped[1])) };
-  } else if (/(?:^|\s)(?:python(?:3)?(?:\.exe)?\s+-m\s+)?pytest\b|(?:^|\s)python(?:3)?(?:\.exe)?\s+-m\s+pytest\b/iu.test(command)) {
+  } else if (invocation && isPytestInvocation(invocation)) {
     if (/\b[1-9]\d*\s+(?:errors?|failed)\b/iu.test(output)) return { count: 0 };
     match = output.match(/(?:^|\s)(\d+)\s+passed\b/iu);
     if (!match && /no tests ran/iu.test(output)) return { count: 0 };
-  } else if (/(?:^|\s)cargo\s+test\b/iu.test(command)) {
+  } else if (invocation && isCargoTestInvocation(invocation)) {
     const counts = [...output.matchAll(/test result:\s*ok\.\s*(\d+)\s+passed/giu)].map((entry) => Number(entry[1]));
     return { count: counts.length ? Math.max(...counts) : null };
   }
