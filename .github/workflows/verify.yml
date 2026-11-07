@@ -31,6 +31,50 @@ jobs:
         run: npm run verify:preset
         if: matrix.os == 'ubuntu-latest' && matrix.node == 22
 
+  # The C++ evidence parser is only trustworthy if the same code is exercised
+  # against real tools. Linux pins Ninja (single-config); Windows deliberately
+  # keeps the default Visual Studio generator, because a multi-config cache
+  # needs `--config`/`-C` and previously reported every test as "***Not Run".
+  # REQUIRE_CPP_EVIDENCE=1 turns a missing toolchain or a skipped smoke test
+  # into a failure instead of a green run that proves nothing.
+  cpp-evidence:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - name: Install CMake, Ninja and GoogleTest
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libgtest-dev
+      - name: Install GoogleTest
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install gtest:x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install gtest failed with $LASTEXITCODE" }
+          $toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT 'scripts/buildsystems/vcpkg.cmake'
+          if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain not found at $toolchain" }
+      - name: Run real CTest and GoogleTest evidence tests (Linux, Ninja)
+        if: runner.os == 'Linux'
+        env:
+          REQUIRE_CPP_EVIDENCE: '1'
+          CMAKE_GENERATOR: Ninja
+        run: node --test .verification-test.mjs
+      - name: Run real CTest and GoogleTest evidence tests (Windows, default Visual Studio generator)
+        if: runner.os == 'Windows'
+        env:
+          REQUIRE_CPP_EVIDENCE: '1'
+          CMAKE_TOOLCHAIN_FILE: C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+        run: node --test .verification-test.mjs
+
   preset-compat:
     runs-on: ubuntu-latest
     strategy:
