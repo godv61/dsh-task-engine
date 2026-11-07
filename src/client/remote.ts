@@ -283,6 +283,7 @@ const taskLedgerViewSchema = z.object({
         hash: z.string(), bytes: z.number(), updated_at: z.string(), retired_at: z.string().optional(), template: z.object({ skill_name: z.string(), path: z.string(), hash: z.string(), data_id: z.string() }).optional() })).optional() }).optional(),
     delivery: deliveryViewSchema.optional(),
     evidence_status: z.enum(['valid', 'stale', 'failed', 'blocked', 'missing', 'historical', 'unknown']).optional(),
+    evidence_problems: z.array(z.string()).optional(),
     verification_groups: z.array(z.object({ id: z.string(), command: z.string(),
       status: z.enum(['passed', 'failed', 'blocked', 'stale', 'missing']), test_count: z.number().nullable(),
       checked_at: z.string().optional(), problems: z.array(z.string()) })).optional(),

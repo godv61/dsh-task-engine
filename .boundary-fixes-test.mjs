@@ -174,7 +174,10 @@ test('deletion plans reject untracked old content, directories and invalid renam
   assert.throws(() => validateDeliveryChanges([{ path: 'a', kind: 'rename', to: 'b' }], ['a']), /both rename paths/)
   assert.throws(() => validateDeliveryChanges([{ path: 'a', kind: 'delete' }, { path: 'a', kind: 'delete' }], ['a']), /unique old paths/)
   const directory = await fixture(); unlinkSync(join(directory.root, directory.old)); mkdirSync(join(directory.root, directory.old))
-  await assert.rejects(directory.plan([{ path: directory.old, kind: 'delete' }]), /not a regular file/)
+  const unchanged = directory.state()
+  await assert.rejects(directory.plan([{ path: directory.old, kind: 'delete' }]),
+    error => error.code === 'INVALID_FILE_SCOPE' && error.path === directory.old)
+  assert.deepEqual(directory.state(), unchanged)
 })
 test('baseline capture preserves UTF-8 text and rejects binary snapshots', async () => {
   for (const body of ['export const 名称 = "旧实现，包含中文"\n', 'binary\0content']) {
