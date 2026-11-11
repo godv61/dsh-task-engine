@@ -32,7 +32,7 @@ export function apply(ctx){
       const assembled=await agent.ctx.systemPrompt.assemble({scope:agent})
       if(process.env.TASK_ENGINE_PRESET_PTC==='true')assert.equal(assembled.tools.some(t=>t.name==='run_code'),target==='standard',`executor after switch to ${target}`)
       assert.equal(tools().includes('write'),target==='standard',`switch to ${target}: ${tools()}`)
-      assert.equal(tools().includes('dev_task'),target==='eng',`switch to ${target}: ${tools()}`)
+      assert.equal(tools().includes('dev_task'),target==='eng',JSON.stringify({target,tools:tools(),composition:ctx.agentPresets.inspectCompositions(agent.ctx)}))
     }
     let invocation=0
     const invoke=async(name,args)=>{

@@ -1,6 +1,6 @@
 /** Boot a declared supported host and this packed plugin through its public SDK profile, keylessly. */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, cpSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, cpSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -11,7 +11,9 @@ const hostVersion=process.env.TASK_ENGINE_DSH_VERSION??manifest.devDependencies[
 const supported=manifest.peerDependencies['@deepseek-ai/dsh-typert-protocol'].split('||').map(version=>version.trim())
 assert.ok(supported.includes(hostVersion)||hostVersion===manifest.devDependencies['@deepseek-ai/dsh-typert-protocol'],`DSH ${hostVersion} is neither supported nor the pinned development candidate`)
 
-const root=mkdtempSync(join(tmpdir(),'task-engine-preset-host-'))
+// Windows runners may expose TEMP through an 8.3 alias. Use one real path for
+// SDK file URLs and the child loader so scope registries share module identity.
+const root=mkdtempSync(join(realpathSync.native(tmpdir()),'task-engine-preset-host-'))
 // This exact directory was created by this invocation; never remove a caller-supplied path.
 process.on('exit',code=>{
   if(code===0)rmSync(root,{recursive:true,force:true})
