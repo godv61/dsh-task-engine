@@ -4,7 +4,7 @@
   "base_version": "0.40.1",
   "base_commit": "775a7489744e218f81cd741561f0dfac7b0174f3",
   "branch": "codex/harness-0.2.2-rc.1",
-  "status": "validated locally; unpublished",
+  "status": "pre-release validation record for 0.41.0; release state tracked by registry and GitHub",
   "platform": "Windows",
   "full_test": {
     "tests": 449,
@@ -259,5 +259,6 @@
     "medium": "45 real tests; 4 accepted items; planning documents before implementation; committed and archived",
     "analysis": "real managed read-only delegation; accepted evidence; archived"
   },
-  "pending_acceptance": ["Linux runtime and remote CI", "daily desktop profile plugin upgrade"]
+  "source_ci": { "commit": "b2223d088bdd949f3e44b87d33f4ba8fdc381dfe", "run": 42968914063, "conclusion": "success" },
+  "pending_acceptance": ["daily desktop profile plugin upgrade"]
 }

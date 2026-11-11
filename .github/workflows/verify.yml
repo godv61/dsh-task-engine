@@ -9,16 +9,29 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        node: [24]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          # The current host/build dependencies require Node 24. Legacy jobs
+          # switch to Node 22 only after building to test the older host runtime.
+          node-version: 24
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+        if: matrix.node == 24
       - run: npm run verify:package
+        if: matrix.node == 24
+      - uses: actions/setup-node@v4
+        if: matrix.node == 22
+        with:
+          node-version: 22
+      - name: Verify legacy DSH preset runtime on Node 22
+        if: matrix.node == 22
+        run: npm run verify:preset
+        env:
+          TASK_ENGINE_DSH_VERSION: 0.2.1-rc.5
       # Exercise the actual supported preset and real Go events in a required job.
       - uses: actions/setup-go@v5
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
