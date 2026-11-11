@@ -19,6 +19,17 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
+      - name: Prepare public legacy SDK dependencies on Node 24
+        if: runner.os == 'Windows' && matrix.node == 22
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $sdkCache = Join-Path $env:RUNNER_TEMP 'task-engine-legacy-sdk'
+          New-Item -ItemType Directory -Path $sdkCache -Force | Out-Null
+          '{"name":"task-engine-legacy-sdk","private":true,"type":"module"}' | Set-Content -LiteralPath (Join-Path $sdkCache 'package.json') -Encoding utf8
+          npm install --prefix $sdkCache --ignore-scripts --no-audit --no-fund --prefer-offline --fetch-retries=0 --registry=https://registry.npmjs.org/ @deepseek-ai/dsh@0.2.1-rc.5 @deepseek-ai/dsh-sdk-client@0.2.1-rc.5 @deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.5 @deepseek-ai/dsh-tool-subagent@0.2.1-rc.5
+          if ($LASTEXITCODE -ne 0) { throw "Legacy SDK dependency setup failed: $LASTEXITCODE" }
+          "TASK_ENGINE_PRESET_NODE_MODULES=$(Join-Path $sdkCache 'node_modules')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm test
         if: matrix.node == 24
       - run: npm run verify:package
