@@ -45,7 +45,8 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     `- 来源：${line(policy.source ?? 'ide-local')}`,
     `- 项目 Key：${line(policy.project_key)}`,
     `- 分析目标：${line(audit.target)}`,
-    `- 本次结论：${line(audit.gate)}`,
+    ...(audit.reference_commit ? [`- Git 审核基线：${line(audit.reference_commit)}`] : []),
+    `- 本次结论：${audit.gate === 'NO_CHANGES' ? '无待扫描变更' : line(audit.gate)}`,
     ...(audit.scm_revision ? [`- 服务端分析提交：${line(audit.scm_revision)}`] : []),
     ...(audit.rule_manifest_hash ? [`- 项目启用规则清单指纹：${line(audit.rule_manifest_hash)}`] : []),
     `- 问题：${audit.findings.length} 条；阻断：${audit.blocking.length} 条`,
@@ -57,7 +58,9 @@ export function renderSonarReport(taskId: string, policy: SonarPolicy, audit: So
     '',
     '## 本次分析的文件',
     '',
-    ...(audit.scanned_files?.length ? audit.scanned_files.map(file => `- ${line(file)}`) : ['- 由 CI 或服务端分析范围决定']),
+    ...(audit.scanned_files?.length ? audit.scanned_files.map(file => `- ${line(file)}`)
+      : policy.source === 'ide-local' ? ['- 实际分析 0 个文件']
+        : ['- 由 CI 或服务端分析范围决定']),
     '',
     '## 未覆盖的文件',
     '',

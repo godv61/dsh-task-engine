@@ -10,6 +10,7 @@ import type { LocalAuditBaseline, SonarAudit, SonarFinding, SonarPolicy } from '
 import { isBlockingFinding, isIncludedAuditPath } from './sonar.ts'
 import { resolveSonarLintEngine } from './sonarlint-install.ts'
 import { listSonarProjectRules } from './sonar-rule-catalog.ts'
+import { isFullOid } from './git-oid.ts'
 
 const run = promisify(execFile)
 const SUPPORTED_FILE = /\.(?:java|js|jsx|ts|tsx|vue|css|scss|html|jsp|xml|json|ya?ml|sql|properties|py|go|kt|kts|cs|c|cc|cpp|h|hpp|php|rb|sh|scala|groovy)$/iu
@@ -46,10 +47,17 @@ function serverLanguages(path: string): string[] {
   return extension ? (languages[extension] ?? []) : []
 }
 
-export function uncoveredLocalFiles(paths: string[], profiles: { language?: string; activeRuleCount?: number }[]): string[] {
-  const active = new Set(profiles.filter(profile => Number(profile.activeRuleCount) > 0)
-    .map(profile => profile.language?.toLowerCase()).filter((language): language is string => !!language))
-  return paths.filter(path => serverLanguages(path).some(language => active.has(language)))
+/** No successful scan of a nonempty candidate set may be reported as a pass. */
+export function localAuditCoverage(paths: string[], profiles: NonNullable<SonarAudit['profile_coverage']>) {
+  const active = new Map(profiles.filter(profile => profile.active_rules > 0)
+    .map(profile => [profile.language.toUpperCase(), profile.analyzer]))
+  const scanned = new Set(paths.filter(path => active.get(localLanguage(path) ?? '') === 'SYNCED'))
+  const uncovered = paths.filter(path => {
+    const language = localLanguage(path)
+    return language ? active.has(language) && !scanned.has(path)
+      : serverLanguages(path).some(value => active.has(value.toUpperCase()))
+  })
+  return { scanned, uncovered: scanned.size ? uncovered : paths }
 }
 
 /** A declared task scope must include every changed file selected for this project's local audit. */
@@ -80,17 +88,14 @@ function auditFileHash(root: string, path: string): string {
 /** Capture pre-existing dirty code before task execution, rather than adopting it as delivery. */
 export async function captureLocalAuditBaseline(root: string, reference: string): Promise<LocalAuditBaseline> {
   const commit = await referenceCommit(root, reference)
-  const files = (await changedLines(root, reference)).map(file => ({ path: file.path, hash: auditFileHash(root, file.path) }))
+  const files = (await changedLines(root, commit)).map(file => ({ path: file.path, hash: auditFileHash(root, file.path) }))
   if (await referenceCommit(root, reference) !== commit) throw new Error('Git reference changed while capturing the local audit baseline')
   return { reference, commit, files }
 }
 
 /** Only unchanged baseline files outside the declared task can be excluded. Legacy tasks stay strict. */
-export async function filterPreexistingAuditChanges(root: string, reference: string, changes: ChangedFile[],
-  taskPaths?: string[], baseline?: LocalAuditBaseline): Promise<{ changes: ChangedFile[]; excluded: string[] }> {
-  if (!baseline || !taskPaths || baseline.reference !== reference || await referenceCommit(root, reference) !== baseline.commit) {
-    return { changes, excluded: [] }
-  }
+function filterPreexistingAuditChanges(root: string, changes: ChangedFile[], taskPaths?: string[], baseline?: LocalAuditBaseline) {
+  if (!baseline || !taskPaths) return { changes, excluded: [] }
   const declared = new Set(taskPaths.map(auditPathKey))
   const original = new Map(baseline.files.map(file => [auditPathKey(file.path), file.hash]))
   const excluded: string[] = []
@@ -103,10 +108,19 @@ export async function filterPreexistingAuditChanges(root: string, reference: str
   return { changes: selected, excluded }
 }
 
+export async function selectLocalAuditChanges(root: string, policy: SonarPolicy, taskPaths?: string[], baseline?: LocalAuditBaseline) {
+  const reference = policy.reference_branch
+  if (!reference) throw new Error('本地规则审核需要新代码参考分支')
+  const snapshot = baseline?.reference === reference ? baseline : undefined
+  if (snapshot && !isFullOid(snapshot.commit)) throw new Error('任务的本地审核基线无效，请新建任务重新采集基线')
+  const commit = snapshot?.commit ?? await referenceCommit(root, reference)
+  const selected = filterPreexistingAuditChanges(root,
+    (await changedLines(root, commit)).filter(file => isIncludedAuditPath(file.path, policy.include_paths)), taskPaths, snapshot)
+  return { ...selected, commit, pinned: snapshot !== undefined || isFullOid(reference) }
+}
+
 async function localAuditChanges(root: string, policy: SonarPolicy, taskPaths?: string[], baseline?: LocalAuditBaseline) {
-  const selected = await filterPreexistingAuditChanges(root, policy.reference_branch!,
-    (await changedLines(root, policy.reference_branch!)).filter(file => isIncludedAuditPath(file.path, policy.include_paths)),
-    taskPaths, baseline)
+  const selected = await selectLocalAuditChanges(root, policy, taskPaths, baseline)
   if (taskPaths !== undefined) {
     const missing = missingLocalAuditScope(selected.changes.map(file => file.path), taskPaths)
     if (missing.length) throw new Error(`本地规则审核范围漏登 ${missing.length} 个新增代码文件；先用 dev_task scope 补齐后重试：${missing.join(', ')}`)
@@ -218,17 +232,21 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
   connectionId?: string, baseline?: LocalAuditBaseline): Promise<SonarAudit> {
   if (!token) throw new Error('本地规则审核需要当前项目 SonarQube Token')
   if (!policy.reference_branch) throw new Error('本地规则审核需要新代码参考分支')
-  const startingCommit = prepareOnly ? undefined : await referenceCommit(root, policy.reference_branch)
-  const selected = prepareOnly ? { changes: [], excluded: [] } : await localAuditChanges(root, policy, taskPaths, baseline)
-  const changes = selected.changes
-  const unsupported = changes.filter(file => !localLanguage(file.path))
+  const selected = prepareOnly ? undefined : await localAuditChanges(root, policy, taskPaths, baseline)
+  const changes = selected?.changes ?? []
+  if (selected && changes.length === 0) {
+    if (!selected.pinned) throw new Error('缺少固定的 Git 审核基线，当前零文件无法证明任务无待扫描变更；请在新任务中重新采集基线')
+    return { ce_task_id: 'local', analysis_id: randomUUID(), gate: 'NO_CHANGES',
+      checked_at: new Date().toISOString(), scope_hash: scopeHash, findings: [], blocking: [],
+      target: policy.reference_branch, reference_commit: selected.commit, scanned_files: [],
+      ...(selected.excluded.length ? { excluded_preexisting_files: selected.excluded } : {}) }
+  }
   const profilesUrl = new URL(`${policy.host_url.replace(/\/$/u, '')}/api/qualityprofiles/search`)
   profilesUrl.searchParams.set('project', policy.project_key)
   const profilesResponse = await fetch(profilesUrl, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) })
   if (!profilesResponse.ok) throw new Error(`SonarQube 项目规则配置查询失败（HTTP ${profilesResponse.status}）`)
   const profileData = await profilesResponse.json() as { profiles?: { language?: string; activeRuleCount?: number }[] }
   if (!Array.isArray(profileData.profiles)) throw new Error('SonarQube 未返回项目规则配置')
-  const uncovered = uncoveredLocalFiles(unsupported.map(file => file.path), profileData.profiles)
   const branchUrl = new URL(`${policy.host_url.replace(/\/$/u, '')}/api/project_branches/list`)
   branchUrl.searchParams.set('project', policy.project_key)
   const branchResponse = await fetch(branchUrl, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) })
@@ -364,17 +382,9 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
     const profileCoverage = profileData.profiles.filter(profile => profile.language && Number(profile.activeRuleCount) > 0)
       .map(profile => ({ language: profile.language!.toUpperCase(), active_rules: Number(profile.activeRuleCount),
         analyzer: analyzers.get(profile.language!.toUpperCase()) ?? 'UNAVAILABLE' }))
-    const activeLanguages = new Set(profileCoverage.map(profile => profile.language))
-    const unavailable = supported.filter(change => {
-      const language = localLanguage(change.path)
-      return language && activeLanguages.has(language) && analyzers.get(language) !== 'SYNCED'
-    })
-    const unavailablePaths = new Set(unavailable.map(change => change.path))
-    uncovered.push(...unavailable.map(change => change.path))
-    const scanned = files.filter(file => {
-      const language = localLanguage(file.ideRelativePath)
-      return !!language && activeLanguages.has(language) && !unavailablePaths.has(file.ideRelativePath)
-    })
+    const coverage = localAuditCoverage(changes.map(change => change.path), profileCoverage)
+    const uncovered = coverage.uncovered
+    const scanned = files.filter(file => coverage.scanned.has(file.ideRelativePath))
     const languages = new Set(scanned.map(file => localLanguage(file.ideRelativePath)))
     if (scanned.some(file => /\.(vue|html?)$/iu.test(file.ideRelativePath))) {
       for (const language of ['JS', 'TS', 'CSS', 'WEB']) languages.add(language)
@@ -416,18 +426,19 @@ export async function inspectLocalRules(policy: SonarPolicy, token: string, root
     assertActiveFindingRules(findings, activeRules)
     const blocking = findings.filter(isBlockingFinding)
     if (rulesHash !== localRulesFingerprint(policy, root, connectionId)) throw new Error('project rules changed during analysis; retry the audit')
-    if (!prepareOnly) {
-      if (await referenceCommit(root, policy.reference_branch) !== startingCommit) throw new Error('Git reference changed during analysis; retry the audit')
+    if (selected) {
       // Newly changed out-of-scope code must not slip in while the analyzer runs.
-      await localAuditChanges(root, policy, taskPaths, baseline)
+      const current = await localAuditChanges(root, policy, taskPaths, baseline)
+      if (current.commit !== selected.commit) throw new Error('Git reference changed during analysis; retry the audit')
     }
     return { ce_task_id: 'local', analysis_id: randomUUID(), gate: blocking.length || uncovered.length ? 'ERROR' : 'OK',
       checked_at: new Date().toISOString(), scope_hash: scopeHash, findings, blocking,
       ...(uncovered.length ? { uncovered_files: uncovered } : {}),
       target: policy.reference_branch, scanned_files: scanned.map(file => file.ideRelativePath), profile_coverage: profileCoverage,
+      ...(selected ? { reference_commit: selected.commit } : {}),
       ...(rulesHash ? { rules_hash: rulesHash } : {}),
       rule_manifest_hash: manifestHash,
-      ...(selected.excluded.length ? { excluded_preexisting_files: selected.excluded } : {}),
+      ...(selected?.excluded.length ? { excluded_preexisting_files: selected.excluded } : {}),
       ...(currentBinding(stateDir)?.updated_at ? { rules_updated_at: currentBinding(stateDir)!.updated_at } : {}) }
   } finally {
     settled = true

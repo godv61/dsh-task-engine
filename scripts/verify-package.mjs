@@ -88,7 +88,10 @@ const installDir = mkdtempSync(join(tmpdir(), 'dsh-pkg-install-'))
 import { writeFileSync } from 'node:fs'
 writeFileSync(join(installDir, 'package.json'), JSON.stringify({ name: 'probe', private: true, type: 'module' }))
 try {
-  execSync(`npm install "${tgzPath}" --no-audit --no-fund`, { cwd: installDir, encoding: 'utf8', stdio: 'pipe' })
+  // The current tool registry deliberately has no built-in executor. The
+  // standalone runtime tests need the same native provider the full host ships.
+  const nativeVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).devDependencies['@deepseek-ai/dsh-tool-executor-native']
+  execSync(`npm install "${tgzPath}" @deepseek-ai/dsh-tool-executor-native@${nativeVersion} --prefer-offline --no-audit --no-fund`, { cwd: installDir, encoding: 'utf8', stdio: 'pipe' })
   check('npm install tarball', true)
 } catch (error) {
   check('npm install tarball', false, String(error.stderr ?? error))

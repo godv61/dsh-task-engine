@@ -49,7 +49,7 @@
 
 ## 本地验证
 
-在插件源码根目录执行：
+使用 Node.js >=24.9.0 在插件源码根目录执行：
 
 ```sh
 npm install
@@ -59,7 +59,7 @@ npm test
 npm run verify:package
 ```
 
-`verify:package` 将当前 tarball 安装到隔离临时目录，检查可发布入口、客户端注册、包内测试和 CLI 语法。CI 在 Windows 与 Ubuntu 的 Node 22、24 上运行；DSH 契约作业还检查固定版本，最新主线为提示性信号。提交前检查 `git status`，确认没有本机凭据、临时审核文件或生成包进入版本控制。
+`verify:package` 将当前 tarball 安装到隔离临时目录，检查可发布入口、客户端注册、包内测试和 CLI 语法。CI 在 Windows 与 Ubuntu 的 Node 24 上构建和验证新宿主；旧宿主 rc.3/rc.4/rc.5 的类型与无密钥预设测试仍在 Node 22 上运行。DSH 契约作业检查全部四个固定标签，最新主线为提示性信号。提交前检查 `git status`，确认没有本机凭据、临时审核文件或生成包进入版本控制。
 
 ## 当前质量约束
 
@@ -102,7 +102,11 @@ Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺
 3. 在实际 DSH Web profile 安装刚发布的精确版本并重启，确认侧边栏入口、会话预设和 `dev_task` 能加载。项目 Token 保存在本机凭据中，升级不应把它写进仓库。
 # 2026-10-23 联机回归补充
 
-新建的 ide-local Sonar 任务保存 `sonar_baseline`：参考版本解析出的提交和创建前已修改代码文件的 SHA-256（不保存正文）。任务范围外、内容仍与该基线一致的既有改动不纳入本次任务审核，排除路径写入报告；开始后新增或再次修改的代码仍需登记。参考提交变化、旧任务没有基线或创建时无法读取 Git 时保留严格范围检查，不补造历史基线。分析结束前会再核对参考提交与范围，避免运行中漏入新代码。
+新建的 ide-local Sonar 任务保存 `sonar_baseline`：参考版本解析出的固定提交和创建前已修改代码文件的 SHA-256（不保存正文）。后续提交或 amend 不改变本任务的比较基线。任务范围外、内容仍与该基线一致的既有改动不纳入本次任务审核，排除路径写入报告；开始后新增或再次修改的代码仍需登记。没有匹配基线时保留严格范围检查，不补造历史基线。分析结束前再次核对比较基线与范围，避免运行中漏入新代码。
+
+零文件审核须有固定 Git 比较基线，记录为 `NO_CHANGES`（无待扫描变更），明确未运行分析器；不能把它展示为扫描通过。非空候选集合没有任何可执行分析器时记录覆盖不足并阻止审核通过。历史 `OK` 记录若明确扫描了零文件也不能放行。报告和工具返回包含比较提交及实际扫描文件。
+
+工程预设禁止经 `spawn_teammate`、原生 subagent 别名或 `send_message` 绕过台账委派。Agent 自有的 Teams 工具可能仍显示，执行守卫会拒绝副作用；只读 `list_agents` 保留。创建任务前检查主会话执行路径，要求提交的流程还须具备主会话终端；没有直接工具和受控执行路径的 Team Lead 会提前收到切换预设的提示。直接实施计划也重新核对能力。`delegate` 只用于活跃分析任务，实施任务明确指向 `plan_execution` / `dispatch`。不接管宿主 durable teammate 的名额与生命周期，不解除已归档任务的只读限制；文件还原等收尾须在归档前完成，新增工作创建关联任务。
 
 验证支持标准 Maven 生命周期以及 Surefire/Failsafe 的短目标和完整坐标目标；仍要求真实非零测试摘要，失败或全部跳过的测试不通过。
 
@@ -124,8 +128,10 @@ Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分�
 
 技能回执证明所记录命令实际执行并成功退出，不证明检查覆盖了 Skill 或需求。拒绝明显的固定输出/直接成功退出及常见外壳转发，保留内联断言、lint 与类型检查；任意脚本的有效性仍由可信项目定义和主会话核对，不宣称拒绝名单能证明程序语义。
 
-`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 默认安装与构建依赖一致的 `rc.5` 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性、需求确认和材料写入限制，零模型调用。设置 `TASK_ENGINE_DSH_VERSION=0.2.1-rc.3` 或 `0.2.1-rc.4` 可验证其他已声明支持的版本；未知版本在安装前拒绝。可用 `TASK_ENGINE_PRESET_NODE_MODULES` 复用版本一致的公开依赖，插件包、工作区和 DSH_HOME 仍每次新建，不复制凭据或用户数据。CI 分别执行三版宿主验证，旧 seeder 的可选实文件探针不代替当前宿主验收。
+`npm run verify:go` 运行离线临时 Go 项目；`npm run verify:preset` 默认安装与构建依赖一致的 `0.2.2-rc.1` 宿主和本地 tarball，经公开 SDK profile 加载实际声明式 eng/只读预设，验证工具可见性、需求确认和材料写入限制，零模型调用。设置 `TASK_ENGINE_DSH_VERSION=0.2.1-rc.3` 、`0.2.1-rc.4` 或 `0.2.1-rc.5` 可验证其他已声明支持的版本；未知版本在安装前拒绝。可用 `TASK_ENGINE_PRESET_NODE_MODULES` 复用版本一致的公开依赖，插件包、工作区和 DSH_HOME 仍每次新建，不复制凭据或用户数据。CI 分别执行四版宿主验证，旧 seeder 的可选实文件探针不代替当前宿主验收。
 
 ## 任务目录与台账投影
 
 任务读写、会话权限及提交钩子共用 `task-paths.ts`，工作区按 `.dsh/tasks/<id>/task.json` 查找直接任务目录。`task_directory` 记录相对源码根的命名空间，使子工作区的需求文档、材料、审核产物与其台账物理同目录。台账视图共用 `task-ledger-types.ts`，`task-ledger-content.ts` 只投影已记录产物与文件，`task-ledger-document.ts` 生成可读副本，不增加第二份状态或写接口。正文使用宿主 Markdown 渲染器；历史运行证据集中在 `TaskLedgerAudit.tsx`。见 `docs/testing/task-workspace.md`。
+
+新宿主使用 `tools.setExecutor` 和官方 `NativeToolExecutor`，执行器固定在工程/只读预设范围；不在 Agent 上临时注册后撤销（宿主会留下不可用选择）。预设切换恢复父级执行器，工程实施阶段仍为原生工具；宿主和其它预设可继续使用 PTC。旧宿主沿用 `presentAs` 的临时展示切换。每个 Agent 的 restrict/guard 及策略证明在切换/卸载时清理，首轮提示词组装结束即记录真实审核工具清单。参见 `docs/testing/dsh-rc22-compatibility.md`。

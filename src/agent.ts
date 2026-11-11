@@ -11,11 +11,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { registerDevTask } from './dev-task.ts'
 import { registerShippedSkills } from './shipped-skills.ts'
+import { installPresetExecutor } from './tool-executor-compat.ts'
 
 export const name = 'task-engine-agent'
 export const inject = ['tools', 'fs']
 
-export function apply(ctx: Context): void {
+export async function apply(ctx: Context): Promise<void> {
+  await installPresetExecutor(ctx)
   registerDevTask(ctx)
   registerShippedSkills(ctx)
 }

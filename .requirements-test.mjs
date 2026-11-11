@@ -23,7 +23,7 @@ function fixture({ child = false } = {}) {
     listDir: async target => [...new Set([...files.keys()].filter(path => path.startsWith(target.path + sep)).map(path => path.slice(target.path.length + 1).split(sep)[0]))].map(name => ({ name })) }
   let permissionCalls = 0
   const ctx = { fs, tools: { register(t) { execute = t.execute }, guard(fn) { guards.push(fn) } },
-    on(name, fn) { listeners.set(name, fn) },
+    on(name, fn) { listeners.set(name, fn) }, effect() {},
     get: name => name === 'userQuestions' ? { ask: async request => { asked.push(request); return answer(request) } }
       : name === 'approval' ? { request: async () => { permissionCalls++; return 'allowed-once' } }
         : name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'workspace-write', workspaceRoot: cwd }) } : undefined }

@@ -68,6 +68,24 @@ function fixture() {
   return {cwd,ctx,agent,guards,call,callRaw,state,children,confirmRequirement,set runtime(value){runtime=value}}
 }
 const claim={file:'chain.py',start_line:1,end_line:2,quote:'return {"batch": data["batch"]}'}
+test('a Team-only Lead cannot create a dead-end task and implementation gets a specific delegate error', async () => {
+  const f = fixture()
+  const tools = ['dev_task', 'spawn_teammate', 'send_message', 'list_agents']
+  f.ctx.tools.schemas = () => tools.map(name => ({ name }))
+  const create = { operation: 'create', title: 'Fixture', intent: 'implementation', intent_reason: 'Implement a local change',
+    complexity: 'low', complexity_reason: 'One file' }
+  await assert.rejects(f.call(create), /缺少直接实施工具和受控实施派发路径/)
+  await assert.rejects(f.call({ ...create, intent: 'analysis' }), /缺少源码读取工具和受控只读取证路径/)
+  tools.push('read', 'edit')
+  await assert.rejects(f.call(create), /缺少主会话终端/)
+  await assert.rejects(async () => f.state(), { code: 'ENOENT' })
+  tools.push('pwsh')
+  await f.call(create)
+  await f.confirmRequirement()
+  await assert.rejects(f.call({ operation: 'delegate' }), /只适用于活跃的 intent=analysis.*plan_execution.*dispatch/)
+  assert.equal(f.state().delivery.runs.length, 0)
+})
+
 test('create reports missing contract fields before writing a task and allows a corrected retry',async()=>{
   const f=fixture()
   await assert.rejects(()=>f.callRaw({operation:'create',intent:'analysis'}),error=>{

@@ -1,6 +1,6 @@
 /** Boot a declared supported host and this packed plugin through its public SDK profile, keylessly. */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, existsSync, rmSync, readdirSync, cpSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process'
 const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'))
 const hostVersion=process.env.TASK_ENGINE_DSH_VERSION??manifest.devDependencies['@deepseek-ai/dsh-typert-protocol']
 const supported=manifest.peerDependencies['@deepseek-ai/dsh-typert-protocol'].split('||').map(version=>version.trim())
-assert.ok(supported.includes(hostVersion),`DSH ${hostVersion} is not declared supported`)
+assert.ok(supported.includes(hostVersion)||hostVersion===manifest.devDependencies['@deepseek-ai/dsh-typert-protocol'],`DSH ${hostVersion} is neither supported nor the pinned development candidate`)
 
 const root=mkdtempSync(join(tmpdir(),'task-engine-preset-host-'))
 // This exact directory was created by this invocation; never remove a caller-supplied path.
@@ -45,21 +45,42 @@ if(cachedModules){
     assert.equal(JSON.parse(readFileSync(join(cache,'@deepseek-ai',name,'package.json'),'utf8')).version,hostVersion,`cached ${name} must match DSH ${hostVersion}`)
   mkdirSync(local)
   for(const entry of readdirSync(cache,{withFileTypes:true}).filter(e=>e.isDirectory()&&!e.name.startsWith('.')&&e.name!=='@godv61'))
-    symlinkSync(join(cache,entry.name),join(local,entry.name),process.platform==='win32'?'junction':'dir')
+    // Host-base module resolution follows real paths. Junctions could silently
+    // load a different task-engine from the cache instead of this packed copy.
+    cpSync(join(cache,entry.name),join(local,entry.name),{recursive:true,dereference:true})
   assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
   const plugin=join(local,'@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
   const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
   if(unpack.error)throw unpack.error
   assert.equal(unpack.status,0,unpack.stderr)
 }else{
-  command(['install','--ignore-scripts','--no-audit','--no-fund',
+  command(['install','--ignore-scripts','--no-audit','--no-fund','--prefer-offline','--fetch-retries=0',
     ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`),join(root,artifact.filename)])
 }
 const modules=join(root,'node_modules','@deepseek-ai')
+// Check our source against this exact host's public declarations as well as
+// running the packed build. Dependencies in the authoring worktree stay intact.
+const sourceRoot=resolve(import.meta.dirname,'..')
+if(existsSync(join(sourceRoot,'src'))){
+  for(const config of ['tsconfig.json','tsconfig.client.json']){
+    const target=join(root,`host-${config}`)
+    writeFileSync(target,JSON.stringify({extends:join(sourceRoot,config),compilerOptions:{
+      baseUrl:root,paths:{'@deepseek-ai/*':[join(modules,'*')]},
+      typeRoots:[join(sourceRoot,'node_modules','@types')],noEmit:true}}))
+    const checked=spawnSync(process.execPath,[join(sourceRoot,'node_modules','typescript','bin','tsc'),'-p',target],
+      {cwd:sourceRoot,env,encoding:'utf8',timeout:60000})
+    if(checked.error)throw checked.error
+    assert.equal(checked.status,0,checked.stdout+checked.stderr)
+  }
+}
 const probe=join(root,'probe.mjs'),proof=join(root,'proof.json')
 copyFileSync(new URL('./fixtures/preset-probe.mjs',import.meta.url),probe)
+copyFileSync(new URL('./fixtures/tool-runtime.mjs',import.meta.url),join(root,'tool-runtime.mjs'))
 const overlay=join(root,'probe.patch.yml')
-writeFileSync(overlay,`- insert:
+// Exercise a PTC deployment ancestor on the new host; the engine presets must
+// select native execution without changing the deployment or sibling Agents.
+const ptc=hostVersion==='0.2.2-rc.1'
+writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id: tool-executor-ptc\n  disabled: false\n':''}- insert:
     - id: preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config: { default: standard }
@@ -74,7 +95,7 @@ writeFileSync(overlay,`- insert:
 const {DeepSeekHarness}=await import(pathToFileURL(join(modules,'dsh-sdk-client','lib','index.js')).href)
 const harness=new DeepSeekHarness({profile:'sdk',dshBin:join(modules,'dsh','lib','bin.js'),dshHome:home,
   processCwd:root,cwd:project,provider:'preset-fixture',model:'offline',initializeTimeoutMs:60000,requestTimeoutMs:60000,
-  patches:[overlay,join(root,'node_modules','@godv61','dsh-task-engine','cordis.patch.yml')],env:{...env,TASK_ENGINE_PRESET_PROBE_RESULT:proof}})
+  patches:[overlay,join(root,'node_modules','@godv61','dsh-task-engine','cordis.patch.yml')],env:{...env,TASK_ENGINE_PRESET_PROBE_RESULT:proof,TASK_ENGINE_PRESET_PTC:String(ptc)}})
 try{
   await harness.session('preset-eng-fixture').getWorkingDirectory()
   await harness.session('preset-readonly-fixture').getWorkingDirectory()
