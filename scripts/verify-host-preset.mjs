@@ -26,8 +26,12 @@ env.npm_config_registry='https://registry.npmjs.org/'
 for(const key of Object.keys(env))if(/(?:TOKEN|API_KEY|SECRET|PASSWORD|AUTHORIZATION)/iu.test(key))delete env[key]
 function command(args,cwd=root){
   assert.ok(process.env.npm_execpath,'Run through npm run verify:preset so npm is invoked without a shell')
-  const result=spawnSync(process.execPath,[process.env.npm_execpath,...args],{cwd,env,encoding:'utf8',timeout:300000,maxBuffer:8*1024*1024})
-  if(result.error)throw result.error
+  // A cold Windows SDK dependency tree exceeded five minutes on the hosted
+  // runner. This setup budget does not extend the SDK or tool request timeouts.
+  const timeout=args[0]==='install'&&process.platform==='win32'?600000:300000
+  console.log(`Preparing preset fixture: npm ${args[0]} (timeout ${timeout/1000}s)`)
+  const result=spawnSync(process.execPath,[process.env.npm_execpath,...args],{cwd,env,encoding:'utf8',timeout,maxBuffer:8*1024*1024})
+  if(result.error)throw new Error(`Preset fixture npm ${args[0]} failed: ${result.error.message}\n${String(result.stderr??'').slice(-4000)}`,{cause:result.error})
   if(result.status!==0)throw new Error(result.stderr||result.stdout)
   return result.stdout
 }
