@@ -142,7 +142,8 @@ export function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createEleme
   if (!audit) return createElement('div', { style: metaLine }, 'SonarQube 已启用，尚未运行代码审核。')
   const source = ({ 'ide-local': '本地规则审核', local: '本机上传扫描', ci: 'CI 扫描' } as Record<string, string>)[task.sonar.source] ?? task.sonar.source
   const reviewGate = audit.review_gate ?? audit.gate
-  const outcome = reviewGate === 'OK' ? '通过' : '未通过'
+  const outcome = reviewGate === 'NO_CHANGES' ? '无待扫描变更' : reviewGate === 'OK' ? '通过'
+    : audit.uncovered_files.length ? '覆盖不足' : '未通过'
   const unresolved = audit.unresolved_count ?? audit.blocking_count
   return createElement('details', { style: { borderTop: '1px solid var(--dsw-alias-border-l2)', paddingTop: 8 } },
     createElement('summary', { style: { cursor: 'pointer', fontSize: 13 } },
@@ -152,7 +153,9 @@ export function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createEleme
     audit.report_path ? createElement('p', { style: metaLine }, `审核文件：${audit.report_path}`) : null,
     audit.scanned_files?.length ? createElement('details', null,
       createElement('summary', { style: { cursor: 'pointer', fontSize: 12 } }, `本次分析文件（${audit.scanned_files.length}）`),
-      ...audit.scanned_files.map(file => createElement('div', { key: file, style: metaLine }, file))) : null,
+      ...audit.scanned_files.map(file => createElement('div', { key: file, style: metaLine }, file)))
+      : task.sonar.source === 'ide-local' && audit.scanned_files?.length === 0
+        ? createElement('p', { style: metaLine }, '实际分析 0 个文件。') : null,
     audit.profile_coverage?.length ? createElement('details', null,
       createElement('summary', { style: { cursor: 'pointer', fontSize: 12 } }, '本次涉及语言的项目规则与本地分析器'),
       ...audit.profile_coverage.map(profile => createElement('div', { key: profile.language, style: metaLine },
@@ -163,7 +166,7 @@ export function sonarAudit(task: TaskLedgerEntry): ReturnType<typeof createEleme
     ...(audit.dispositions ?? []).map(entry => createElement('div', { key: `disposition-${entry.issue_key}`, style: metaLine },
       `人工确认误报：${entry.issue_key} · ${entry.reason} · ${timeText(entry.approved_at)}`)),
     audit.findings.length === 0
-      ? createElement('p', { style: metaLine }, '没有新增代码问题。')
+      ? (reviewGate === 'OK' ? createElement('p', { style: metaLine }, '没有新增代码问题。') : null)
       : createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
         ...audit.findings.map(finding => createElement('div', { key: finding.key, style: {
           ...itemRow, padding: '6px 0', fontSize: 12, overflowWrap: 'anywhere',

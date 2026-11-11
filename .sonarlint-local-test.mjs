@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { captureLocalAuditBaseline, changedLines, currentBinding, filterPreexistingAuditChanges, missingLocalAuditScope, saveBinding, uncoveredLocalFiles } from './lib/sonarlint-local.js'
-import { isIncludedAuditPath, validAuditIncludePaths } from './lib/sonar.js'
+import { captureLocalAuditBaseline, changedLines, currentBinding, inspectLocalRules, localAuditCoverage, missingLocalAuditScope, saveBinding, selectLocalAuditChanges } from './lib/sonarlint-local.js'
+import { isIncludedAuditPath, localReviewGate, sonarCommitBlockers, validAuditIncludePaths } from './lib/sonar.js'
 import { renderSonarReport, sonarReportPath } from './lib/sonar-report.js'
 import { formatEastEightTime } from './lib/time.js'
 
@@ -97,15 +97,19 @@ test('review report does not claim CSS coverage from a Vue file alone', () => {
 })
 
 test('unsupported files block only when the project has active rules for their language', () => {
-  const paths = ['migration.sql', 'settings.json', 'script.py']
+  const paths = ['Delivery.java', 'migration.sql', 'settings.json', 'script.py']
   const profiles = [
-    { language: 'java', activeRuleCount: 66 },
-    { language: 'json', activeRuleCount: 0 },
-    { language: 'py', activeRuleCount: 3 },
+    { language: 'JAVA', active_rules: 66, analyzer: 'SYNCED' },
+    { language: 'JSON', active_rules: 0, analyzer: 'UNSUPPORTED' },
+    { language: 'PY', active_rules: 3, analyzer: 'UNSUPPORTED' },
   ]
-  assert.deepEqual(uncoveredLocalFiles(paths, profiles), ['script.py'])
-  assert.deepEqual(uncoveredLocalFiles(paths, [...profiles, { language: 'plsql', activeRuleCount: 5 }]),
+  assert.deepEqual(localAuditCoverage(paths, profiles), { scanned: new Set(['Delivery.java']), uncovered: ['script.py'] })
+  assert.deepEqual(localAuditCoverage(paths, [...profiles, { language: 'PLSQL', active_rules: 5, analyzer: 'UNSUPPORTED' }]).uncovered,
     ['migration.sql', 'script.py'])
+  for (const incomplete of [[], [{ language: 'JAVA', active_rules: 66, analyzer: 'UNAVAILABLE' }]]) {
+    assert.deepEqual(localAuditCoverage(['Delivery.java'], incomplete),
+      { scanned: new Set(), uncovered: ['Delivery.java'] })
+  }
 })
 
 test('local audit detects changed backend files omitted from the task scope', () => {
@@ -136,7 +140,7 @@ test('local Sonar audit considers Git new code but excludes generated DSH record
   }
 })
 
-test('task creation baseline excludes only unchanged pre-existing code outside its declared scope', async () => {
+test('pinned audit survives commit and amend while still checking new or altered out-of-scope files', async () => {
   const root = mkdtempSync(join(tmpdir(), 'dsh-sonar-baseline-test-'))
   const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'pipe' })
   git('init', '--quiet')
@@ -149,8 +153,8 @@ test('task creation baseline excludes only unchanged pre-existing code outside i
   writeFileSync(join(root, 'Untracked.java'), 'class Untracked {}\n')
   const baseline = await captureLocalAuditBaseline(root, 'HEAD')
   assert.equal(baseline.files.length, 3)
-  const select = async (paths = ['Delivery.java'], snapshot = baseline) => filterPreexistingAuditChanges(root, 'HEAD',
-    await changedLines(root, 'HEAD'), paths, snapshot)
+  const policy = { source: 'ide-local', project_key: 'fixture', reference_branch: 'HEAD' }
+  const select = (paths = ['Delivery.java'], snapshot = baseline) => selectLocalAuditChanges(root, policy, paths, snapshot)
   writeFileSync(join(root, 'Delivery.java'), 'class Delivery {}\n')
   let selected = await select()
   assert.deepEqual(selected.excluded.sort(), ['Existing.java', 'Staged.java', 'Untracked.java'])
@@ -159,17 +163,61 @@ test('task creation baseline excludes only unchanged pre-existing code outside i
   // Existing files explicitly adopted into this task are still analyzed.
   selected = await select(['Delivery.java', 'Existing.java'])
   assert.ok(selected.changes.some(file => file.path === 'Existing.java'))
+  const commit = (...args) => git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'core.hooksPath=NUL',
+    'commit', '--quiet', ...args, '--only', '--', 'Delivery.java')
+  for (const args of [['-m', 'feature'], ['--amend', '-m', 'amended feature']]) {
+    commit(...args)
+    assert.notEqual(git('rev-parse', 'HEAD').toString().trim(), baseline.commit)
+    selected = await select()
+    assert.equal(selected.commit, baseline.commit)
+    assert.deepEqual(selected.changes.map(file => file.path), ['Delivery.java'])
+    assert.deepEqual(selected.excluded.sort(), ['Existing.java', 'Staged.java', 'Untracked.java'])
+  }
   writeFileSync(join(root, 'Existing.java'), 'class ChangedAfterStart {}\n')
   writeFileSync(join(root, 'Late.java'), 'class Late {}\n')
   selected = await select()
   assert.deepEqual(missingLocalAuditScope(selected.changes.map(file => file.path), ['Delivery.java']).sort(), ['Existing.java', 'Late.java'])
-  const legacy = await filterPreexistingAuditChanges(root, 'HEAD', await changedLines(root, 'HEAD'), ['Delivery.java'])
+  await assert.rejects(inspectLocalRules(policy, 'unused', root, 'scope', undefined, ['Delivery.java'], false, undefined, baseline),
+    /范围漏登 2 个新增代码文件/)
+  const legacy = await selectLocalAuditChanges(root, policy, ['Delivery.java'])
   assert.equal(legacy.excluded.length, 0)
-  const movedReference = await select(['Delivery.java'], { ...baseline, commit: '0'.repeat(40) })
-  assert.equal(movedReference.excluded.length, 0)
+  await assert.rejects(select(['Delivery.java'], { ...baseline, commit: 'HEAD' }), /审核基线无效/)
   const report = renderSonarReport('BASELINE', { source: 'ide-local', project_key: 'fixture' }, {
     analysis_id: 'baseline', checked_at: '2026-10-23T00:00:00Z', target: 'HEAD', gate: 'OK',
     findings: [], blocking: [], excluded_preexisting_files: selected.excluded })
   assert.match(report, /未纳入本任务的既有改动/)
   console.log('preserved local audit baseline fixture:', root)
+})
+
+test('zero-file audit distinguishes verified no changes from a missing baseline or coverage', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-sonar-no-change-'))
+  const git = (...args) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+    '-c', 'core.hooksPath=NUL', ...args], { cwd: root, stdio: 'pipe' })
+  try {
+    git('init', '--quiet')
+    writeFileSync(join(root, 'Delivery.java'), 'class Delivery {}\n')
+    mkdirSync(join(root, '.dsh'))
+    writeFileSync(join(root, '.dsh', 'notes.md'), 'Local task notes\n')
+    git('add', 'Delivery.java', '.dsh/notes.md')
+    git('commit', '--quiet', '-m', 'baseline')
+    writeFileSync(join(root, 'old.sql'), 'SELECT 1;\n')
+    const baseline = await captureLocalAuditBaseline(root, 'HEAD')
+    git('rm', '--cached', '--quiet', '.dsh/notes.md')
+    git('commit', '--quiet', '--amend', '--no-edit')
+    const policy = { source: 'ide-local', project_key: 'fixture', reference_branch: 'HEAD' }
+    const audit = await inspectLocalRules(policy, 'unused', root, 'scope', undefined, ['Delivery.java'], false, undefined, baseline)
+    assert.equal(audit.gate, 'NO_CHANGES')
+    assert.equal(audit.reference_commit, baseline.commit)
+    assert.deepEqual(audit.scanned_files, [])
+    assert.deepEqual(audit.excluded_preexisting_files, ['old.sql'])
+    assert.equal(localReviewGate(audit), 'NO_CHANGES')
+    assert.deepEqual(sonarCommitBlockers(policy, audit, 'scope'), [])
+    assert.match(sonarCommitBlockers(policy, audit, 'changed scope')[0], /stale/)
+    assert.match(renderSonarReport('NO-CHANGE', policy, audit), /无待扫描变更[\s\S]*实际分析 0 个文件/)
+    assert.match(sonarCommitBlockers(policy, { ...audit, gate: 'OK' }, 'scope')[0], /未扫描任何文件/)
+    assert.ok(sonarCommitBlockers(policy, { ...audit, gate: 'ERROR', uncovered_files: ['Delivery.java'] }, 'scope').length)
+    await assert.rejects(inspectLocalRules(policy, 'unused', root, 'scope', undefined, ['Delivery.java']), /范围漏登 1 个新增代码文件/)
+    await assert.rejects(inspectLocalRules({ ...policy, include_paths: ['Delivery.java'] }, 'unused', root, 'scope', undefined, ['Delivery.java']),
+      /缺少固定的 Git 审核基线/)
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

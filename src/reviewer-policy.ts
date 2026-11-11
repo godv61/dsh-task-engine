@@ -6,6 +6,7 @@ export interface ReviewPolicyService {
   readonly preset: string
   record(proof: ReviewPolicyProof): void
   proof(childId: string): ReviewPolicyProof | undefined
+  forget(childId: string): void
 }
 declare module '@deepseek-ai/cordis' { interface Context { taskEngineReviewPolicy: ReviewPolicyService } }
 
@@ -23,4 +24,5 @@ export default class ReviewerPolicy extends Service implements ReviewPolicyServi
     const proof = this.proofs.get(childId)
     return proof ? { ...proof, tools: [...proof.tools] } : undefined
   }
+  forget(childId: string): void { this.proofs.delete(childId) }
 }

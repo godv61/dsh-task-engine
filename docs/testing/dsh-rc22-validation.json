@@ -1,0 +1,264 @@
+{
+  "date": "2026-11-06",
+  "timezone": "Asia/Shanghai",
+  "base_version": "0.40.1",
+  "base_commit": "775a7489744e218f81cd741561f0dfac7b0174f3",
+  "branch": "codex/harness-0.2.2-rc.1",
+  "status": "pre-release validation record for 0.41.0; release state tracked by registry and GitHub",
+  "platform": "Windows",
+  "full_test": {
+    "tests": 449,
+    "passed": 442,
+    "skipped": 7,
+    "failed": 0,
+    "p0_checks": 143
+  },
+  "targeted": {
+    "tests": 52,
+    "passed": 52
+  },
+  "package_blackbox": "passed",
+  "original_workspace": {
+    "existing_modified_and_untracked_file_hashes_checked": 786,
+    "changes": 0
+  },
+  "hosts": [
+    {
+      "node": "v22.22.3",
+      "host_typechecks": [
+        "server",
+        "client"
+      ],
+      "sdk": {
+        "host": "0.2.1-rc.3",
+        "model_calls": 0,
+        "observations": [
+          {
+            "preset": "eng",
+            "tools": [
+              "working_directory",
+              "glob",
+              "grep",
+              "skill",
+              "read",
+              "list_agents",
+              "dev_task",
+              "ask_user_question"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false,
+            "requirement_questions": 1,
+            "requirement_materials": true,
+            "bound_template_rendered": true,
+            "material_change_revokes_writes": true,
+            "removed_opt_out_rejected": true,
+            "old_task_readonly": true,
+            "history_readonly": true,
+            "new_task_after_history": true,
+            "registered_tests_routed": true
+          },
+          {
+            "preset": "task-engine-review",
+            "tools": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false
+          }
+        ]
+      },
+      "contract_log": "contract-rc3.log"
+    },
+    {
+      "node": "v22.22.3",
+      "host_typechecks": [
+        "server",
+        "client"
+      ],
+      "sdk": {
+        "host": "0.2.1-rc.4",
+        "model_calls": 0,
+        "observations": [
+          {
+            "preset": "eng",
+            "tools": [
+              "working_directory",
+              "glob",
+              "grep",
+              "skill",
+              "read",
+              "list_agents",
+              "dev_task",
+              "ask_user_question"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false,
+            "requirement_questions": 1,
+            "requirement_materials": true,
+            "bound_template_rendered": true,
+            "material_change_revokes_writes": true,
+            "removed_opt_out_rejected": true,
+            "old_task_readonly": true,
+            "history_readonly": true,
+            "new_task_after_history": true,
+            "registered_tests_routed": true
+          },
+          {
+            "preset": "task-engine-review",
+            "tools": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false
+          }
+        ]
+      },
+      "contract_log": "contract-rc4.log"
+    },
+    {
+      "node": "v22.22.3",
+      "host_typechecks": [
+        "server",
+        "client"
+      ],
+      "sdk": {
+        "host": "0.2.1-rc.5",
+        "model_calls": 0,
+        "observations": [
+          {
+            "preset": "eng",
+            "tools": [
+              "working_directory",
+              "glob",
+              "grep",
+              "skill",
+              "read",
+              "list_agents",
+              "dev_task",
+              "ask_user_question"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false,
+            "requirement_questions": 1,
+            "requirement_materials": true,
+            "bound_template_rendered": true,
+            "material_change_revokes_writes": true,
+            "removed_opt_out_rejected": true,
+            "old_task_readonly": true,
+            "history_readonly": true,
+            "new_task_after_history": true,
+            "registered_tests_routed": true
+          },
+          {
+            "preset": "task-engine-review",
+            "tools": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": false
+          }
+        ]
+      },
+      "contract_log": "contract-rc5.log"
+    },
+    {
+      "node": "v24.9.0",
+      "host_typechecks": [
+        "server",
+        "client"
+      ],
+      "sdk": {
+        "host": "0.2.2-rc.1",
+        "model_calls": 0,
+        "observations": [
+          {
+            "preset": "eng",
+            "tools": [
+              "ask_user_question",
+              "skill",
+              "glob",
+              "grep",
+              "working_directory",
+              "read",
+              "list_agents",
+              "dev_task"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": true,
+            "requirement_questions": 1,
+            "requirement_materials": true,
+            "bound_template_rendered": true,
+            "material_change_revokes_writes": true,
+            "removed_opt_out_rejected": true,
+            "old_task_readonly": true,
+            "history_readonly": true,
+            "new_task_after_history": true,
+            "registered_tests_routed": true
+          },
+          {
+            "preset": "task-engine-review",
+            "tools": [
+              "glob",
+              "grep",
+              "read"
+            ],
+            "read_succeeded": true,
+            "write_denied": true,
+            "preset_roundtrip": true,
+            "delegation_aliases_denied": true,
+            "inherited_ptc": true
+          }
+        ]
+      },
+      "contract_log": "contract-rc22.log"
+    }
+  ],
+  "latest_candidate_validation": {
+    "date": "2026-11-11",
+    "scope": "host adaptation plus delegation and local Sonar audit fixes",
+    "build": "passed",
+    "typecheck": "passed (server and client)",
+    "full_test": { "tests": 451, "passed": 444, "skipped": 7, "failed": 0, "p0_checks": 143 },
+    "targeted": { "tests": 38, "passed": 38, "failed": 0 },
+    "sdk_hosts": ["0.2.1-rc.3", "0.2.2-rc.1"],
+    "sdk_model_calls": 0,
+    "package_blackbox": "passed",
+    "report": "docs/testing/delegation-sonar-fixes.md"
+  },
+  "live_source_acceptance": {
+    "dates": "2026-11-06 through 2026-11-09",
+    "scope": "adaptation candidate before the subsequent defect fixes",
+    "low": "5 real tests; committed and archived",
+    "medium": "45 real tests; 4 accepted items; planning documents before implementation; committed and archived",
+    "analysis": "real managed read-only delegation; accepted evidence; archived"
+  },
+  "source_ci": { "commit": "b2223d088bdd949f3e44b87d33f4ba8fdc381dfe", "run": 42968914063, "conclusion": "success" },
+  "pending_acceptance": ["daily desktop profile plugin upgrade"]
+}

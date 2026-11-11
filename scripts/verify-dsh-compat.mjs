@@ -17,7 +17,7 @@
  * @module dsh-task-engine/scripts/verify-dsh-compat
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -114,6 +114,39 @@ check('preset uses managed directory context and activation configuration', !/\{
 check('preset declares the guarded readonly reviewer', patchText.includes('id: task-engine-review') && patchText.includes('@godv61/dsh-task-engine/reviewer'))
 const subagentTypePath = join(dshRoot, 'packages', 'subagent', 'subagent', 'src', 'index.ts')
 if (existsSync(subagentTypePath)) check('host exposes managed startActivation', /startActivation\(/u.test(readFileSync(subagentTypePath, 'utf8')))
+
+// Validate public preset subpaths; startActivation alone cannot detect a
+// removed plugin export such as tool-subagent-control/list-agents.
+const packages = new Map()
+function collectPackages(path) {
+  if (!existsSync(path)) return
+  const manifest = join(path, 'package.json')
+  if (existsSync(manifest)) {
+    const pkg = JSON.parse(readFileSync(manifest, 'utf8'))
+    if (pkg.name?.startsWith('@deepseek-ai/')) packages.set(pkg.name, { pkg, path })
+  }
+  for (const entry of readdirSync(path, { withFileTypes: true }))
+    if (entry.isDirectory() && !['node_modules', 'src', 'lib', 'tests', 'test', '.git'].includes(entry.name)) collectPackages(join(path, entry.name))
+}
+collectPackages(join(dshRoot, 'packages'))
+if (!packages.size) collectPackages(join(dshRoot, 'node_modules', '@deepseek-ai'))
+for (const specifier of new Set([...patchText.matchAll(/name:\s*'(@deepseek-ai\/[^']+)'/gu)].map(match => match[1]))) {
+  const parts = specifier.split('/'), name = parts.slice(0, 2).join('/'), subpath = parts.slice(2).join('/')
+  const host = packages.get(name)?.pkg
+  const exported = !subpath || host?.exports?.[`./${subpath}`] !== undefined
+  check(`preset public entry ${specifier}`, host !== undefined && exported)
+}
+const hostTools = packages.get('@deepseek-ai/dsh-tools')
+const toolTypes = hostTools && [join(hostTools.path, 'src', 'index.ts'), join(hostTools.path, 'lib', 'types', 'index.d.ts')].find(existsSync)
+const api = toolTypes ? readFileSync(toolTypes, 'utf8') : ''
+check('host has scoped restrictions and execution guards', /\brestrict\(/u.test(api) && /\bguard\(/u.test(api))
+check('host exposes a supported executor API', /\bpresentAs\(/u.test(api) || /\bsetExecutor\(/u.test(api))
+if (!/\bpresentAs\(/u.test(api)) check('host ships the public native executor', packages.has('@deepseek-ai/dsh-tool-executor-native'))
+if (!/\bpresentAs\(/u.test(api)) for (const file of ['delivery-access', 'reviewer']) {
+  const implementation = readFileSync(join(pluginRoot, 'lib', `${file}.js`), 'utf8')
+  check(`${file} uses the executor compatibility layer`, !/\.presentAs\(/u.test(implementation))
+}
+console.log('     Full preset behavior: npm run verify:preset (separate runtime check)')
 
 // 3. The peer range must actually admit the installed DSH version, because npm
 //    semver will not match a prerelease the range does not name. Implemented

@@ -108,10 +108,7 @@
               workflowEngine: true
             config:
               - id: tool-subagent-control
-                disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent-control'
-              - id: tool-subagent-list-agents
-                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
               - id: tool-subagent
                 disabled: true # Task-engine dispatch owns tracked execution.
                 name: '@deepseek-ai/dsh-tool-subagent'

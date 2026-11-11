@@ -29,6 +29,7 @@ import {
   bindingsForStage,
   checkFileScope,
   commitCheckpoint,
+  commitRequired,
   applyRevision,
   completionBlockers,
   formatResourceRef,
@@ -72,7 +73,7 @@ import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type Dele
 import { executeAnalysisCommand } from './analysis-commands.ts'
 import { assertInsideRoot } from './path-guard.ts'
 import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
-import { bindTaskDelivery, installDeliveryAccess } from './delivery-access.ts'
+import { bindTaskDelivery, executionPathProblem, installDeliveryAccess } from './delivery-access.ts'
 import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, taskExecutionProblem, type ClarificationQuestion } from './requirements.ts'
 import { executeRequirementCommand, requirementDocumentProblem, REQUIREMENT_OPERATIONS } from './requirement-commands.ts'
 import { MATERIAL_MAX_BYTES, type MaterialArgs, type MaterialTemplate } from './requirement-materials.ts'
@@ -1463,7 +1464,7 @@ async function sonarBlockers(fs: Fs, state: TaskState, cwd?: string): Promise<st
   const current = await scopeFingerprint(fs, state, cwd)
   const commit = state.commits.findLast(entry => entry.hash !== undefined)?.hash
   const blockers = sonarCommitBlockers(state.sonar_policy, state.sonar_audit, current, commit)
-  if (state.sonar_policy.source === 'ide-local' && state.sonar_audit && state.root) {
+  if (state.sonar_policy.source === 'ide-local' && state.sonar_audit && state.sonar_audit.gate !== 'NO_CHANGES' && state.root) {
     const updated = lastLocalRuleUpdate(state.sonar_policy, state.root)
     if (updated && updated !== state.sonar_audit.rules_updated_at) blockers.push('project rules were updated; rerun sonar_check and review')
     const rulesHash = localRulesFingerprint(state.sonar_policy, state.root)
@@ -2061,6 +2062,11 @@ export function registerDevTask(ctx: Context): void {
         if (sonarPolicy?.source === 'ide-local' && resolved.config.stages.includes('代码审核')) {
           resolved.config.commit = { ...resolved.config.commit, checkpoints: ['代码审核'] }
         }
+        const pathProblem = executionPathProblem(ctx, exec.agent, a.intent, {
+          mainOnly: a.execution_policy === 'main_only',
+          needsCommit: a.intent === 'implementation' && commitRequired(resolved.config),
+        })
+        if (pathProblem) throw new Error(pathProblem)
           // Freeze the resolved skill and rule bodies now. A name alone cannot keep an
           // in-flight task stable: editing a rule the task uses would otherwise change
           // what the task is doing without the task saying so.
@@ -2141,6 +2147,9 @@ export function registerDevTask(ctx: Context): void {
       }
       if (state.completed !== undefined && a.operation !== 'status') {
         throw new Error('task is archived and read-only; create a new task_id and link it with related_task_id for follow-up work')
+      }
+      if (a.operation === 'delegate' && !isAnalysis(state)) {
+        throw new Error('dev_task delegate 只适用于活跃的 intent=analysis 任务。实施委派请在开发阶段使用 plan_execution 和 dispatch；其他阶段用 status 核对可用操作。')
       }
 
       if ((REQUIREMENT_OPERATIONS as readonly string[]).includes(a.operation)) {
@@ -2407,11 +2416,14 @@ export function registerDevTask(ctx: Context): void {
           await writeSonarReport(fs, state, audit, cwd, mode)
           await writeTask(fs, state, cwd, mode)
           return JSON.stringify({ gate: audit.gate, blocking: audit.blocking, findings: audit.findings,
+            reference_commit: audit.reference_commit, scanned_files: audit.scanned_files,
             uncovered_files: audit.uncovered_files ?? [], report_path: audit.report_path,
             rule_learning_candidates: ruleLearningCandidates(state),
-            ...(audit.gate !== 'OK' ? { recovery: implementationRecovery(state, workflow,
+            ...(audit.gate === 'ERROR' && audit.blocking.length ? { recovery: implementationRecovery(state, workflow,
               state.items.filter(item => item.execution_plan?.files.some(file => audit.blocking.some(finding => finding.file === file))).map(item => item.id)) } : {}),
-            next_action: audit.gate === 'OK' ? '继续代码审核；检查历史阻断问题是否有可复用的修复经验，再决定是否通过 learn_rule 提议项目 Rule。误报或一次性问题不要沉淀。'
+            next_action: audit.gate === 'NO_CHANGES' ? '本次无待扫描变更，未运行本地分析器。继续完成代码审核。'
+              : audit.uncovered_files?.length ? '本地分析覆盖不足。请先核对未覆盖文件对应的项目规则、分析器和审核范围，再运行 sonar_check；覆盖不足时不能通过审核。'
+              : audit.gate === 'OK' ? '继续代码审核；检查历史阻断问题是否有可复用的修复经验，再决定是否通过 learn_rule 提议项目 Rule。误报或一次性问题不要沉淀。'
               : '先按 recovery 回到代码开发，再修复、验证和逐项验收，之后返回代码审核运行 sonar_check。先使用本次问题消息中的格式、位置和报告；仍不明确时定点查询规则说明，不扫描 DSH 安装目录、app.asar 或整个用户运行目录。' }, null, 2)
         }
         let ceTaskId = a.ce_task_id
@@ -2734,7 +2746,12 @@ export function registerDevTask(ctx: Context): void {
           for (const input of a.plans) {
             const item = requireItem(state, input.id)
             if (item.dispatch || item.review) throw new Error('plan cannot replace started work; revise/replan the affected item explicitly')
-            item.execution_plan = makeExecutionPlan(state, item, input, executionCapabilities(ctx, !!exec.agent))
+            const plan = makeExecutionPlan(state, item, input, executionCapabilities(ctx, !!exec.agent))
+            if (plan.mode === 'direct') {
+              const problem = executionPathProblem(ctx, exec.agent, 'implementation', { mainOnly: true })
+              if (problem) throw new Error(problem)
+            }
+            item.execution_plan = plan
           }
           note = JSON.stringify({ items: state.items.map(item => ({ id: item.id, plan: item.execution_plan })), next_action: 'Declare necessary verification groups, record the required task-plan artifact if in orchestration, then advance. Direct items need no implementation dispatch: implement, verify, review_dispatch when independent review is required, then accept_item to record the verdict and done atomically.' })
           break
@@ -2815,6 +2832,10 @@ export function registerDevTask(ctx: Context): void {
           if (item.status !== 'todo') throw new Error('reopen the item as todo before replanning execution')
           await validateTaskFiles(fs, a.files ?? [], state.root ?? cwd ?? '', 'plan_execution', 'delivery')
           const plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          if (plan.mode === 'direct') {
+            const problem = executionPathProblem(ctx, exec.agent, 'implementation', { mainOnly: true })
+            if (problem) throw new Error(problem)
+          }
           validateDeliveryChanges(a.changes ?? [], plan.files)
           if (a.changes?.length) plan.changes = await captureDeliveryChanges(ctx, fs, state, a.changes, exec, await resolveWriteMode(ctx, a, exec))
           item.execution_plan = plan

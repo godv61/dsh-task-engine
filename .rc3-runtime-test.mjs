@@ -1,5 +1,6 @@
 // Installed DSH tool registry, scope and prompt assembly; controlled activation/query lifecycle adapters.
 import test from 'node:test'
+import { executeTool, installTestExecutor } from './scripts/fixtures/tool-runtime.mjs'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
@@ -10,24 +11,59 @@ import ReviewerPolicy from './lib/reviewer-policy.js'
 import { apply as reviewer } from './lib/reviewer.js'
 import { reviewerEvents, reviewerProof, ownActivation } from './lib/subagent-runtime.js'
 import { executionCapabilities } from './lib/execution-plan.js'
-import { bindDeliveryIntent, installDeliveryAccess } from './lib/delivery-access.js'
+import { bindDeliveryIntent, executionPathProblem, installDeliveryAccess } from './lib/delivery-access.js'
+import { installPresetExecutor, presentNativeTools } from './lib/tool-executor-compat.js'
 
 function tool(name, execute = async () => 'ok') { return defineTool({ name, description: name, parameters: {},
   output: { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: value }] }, execute }) }
-async function guarded(search = false) {
-  const root = new Context(); await root.plugin(SystemPrompt); await root.plugin(ToolRuntime); await root.plugin(ReviewerPolicy)
+async function guarded(search = false, announce = true) {
+  const root = new Context(); await root.plugin(SystemPrompt); await root.plugin(ToolRuntime); await installTestExecutor(root); await root.plugin(ReviewerPolicy)
   let ctx
   await root.plugin({name:'review-test-owner',inject:['tools','systemPrompt','taskEngineReviewPolicy'],apply(c){ctx=c}})
   ctx.tools.register(tool('subagent_codex')); ctx.tools.register(tool('shell')); ctx.tools.register(tool('write'))
   if (search) { ctx.tools.register(tool('glob')); ctx.tools.register(tool('grep')) }
   const presetKey={}, preset = createScope(ctx, presetKey)
-  preset.ctx.tools.register(tool('read')); reviewer(preset.ctx)
+  preset.ctx.tools.register(tool('read')); await reviewer(preset.ctx)
   const agent = { id: 'review-child', session: { header: { cwd: process.cwd() } } }, scope = createScope(preset.ctx, agent, { parent: presetKey })
   agent.ctx=scope.ctx
   scope.ctx.tools.register(tool('structured_output'))
-  await root.serial(scopeTarget(agent,agent),'agent/created',{agent})
+  if (announce) await root.serial(scopeTarget(agent,agent),'agent/created',{agent})
   return { root, ctx, scope, agent, dispose: async () => { await scope.dispose(); await preset.dispose(); await root.fiber.dispose() } }
 }
+
+test('the first assembly after joining a reviewer preset records its policy without agent/created', async () => {
+  const f = await guarded(true, false)
+  try {
+    assert.equal(f.ctx.taskEngineReviewPolicy.proof(f.agent.id), undefined)
+    await f.ctx.systemPrompt.assemble({scope:f.agent})
+    assert.deepEqual(reviewerProof(f.ctx,f.agent.id,true).tools.sort(),['glob','grep','read','structured_output'])
+  } finally { await f.dispose() }
+})
+
+test('unknown executor APIs fail closed and legacy presentation still has an exact disposer', async () => {
+  assert.throws(()=>presentNativeTools({tools:{}}),/Unsupported Harness/)
+  await assert.rejects(installPresetExecutor({tools:{}}),/Unsupported Harness/)
+  let mounted=0,disposed=0
+  const ctx={tools:{presentAs(mode){assert.equal(mode,'native');mounted++;return()=>disposed++}}}
+  await installPresetExecutor(ctx)
+  const undo=presentNativeTools(ctx);undo()
+  assert.equal(mounted,1);assert.equal(disposed,1)
+})
+
+test('an allowed read cannot use a nested invocation to bypass the reviewer guard', async () => {
+  const f=await guarded();let writes=0
+  try {
+    f.scope.ctx.tools.register(tool('unexpected_write',async()=>{writes++;return 'bad'}))
+    f.scope.ctx.tools.register(tool('read',async(_args,exec)=>{
+      const result=await executeTool(f.ctx,{name:'unexpected_write',arguments:{},agent:exec.agent,
+        signal:exec.signal,callId:'nested-write',parent:exec})
+      assert.equal(result.isError,true)
+      return 'nested write denied'
+    }))
+    const result=await executeTool(f.ctx,{name:'read',arguments:{},agent:f.agent,signal:new AbortController().signal,callId:'outer-read'})
+    assert.equal(result.isError,false);assert.equal(writes,0)
+  } finally { await f.dispose() }
+})
 test('reviewer preset hides inherited global tools while leaving parent tools intact', async () => {
   const f = await guarded()
   try {
@@ -44,7 +80,7 @@ test('reviewer preset hides inherited global tools while leaving parent tools in
     } finally { await siblingScope.dispose() }
     await f.ctx.systemPrompt.assemble({ scope: f.agent })
     assert.deepEqual(reviewerProof(f.ctx, f.agent.id, true).tools.sort(), ['read', 'structured_output'])
-    const out = await f.ctx.tools.execute({ name: 'read', arguments: {}, agent: f.agent, signal: new AbortController().signal, callId: 'read' })
+    const out = await executeTool(f.ctx,{ name: 'read', arguments: {}, agent: f.agent, signal: new AbortController().signal, callId: 'read' })
     assert.equal(out.isError, false)
   } finally { await f.dispose() }
 })
@@ -52,7 +88,7 @@ test('reviewer blocks newly registered local mutation tools and refuses a contam
   const f = await guarded(); let mutated = false
   try {
     f.scope.ctx.tools.register(tool('unexpected_write', async () => { mutated = true; return 'bad' }))
-    const out = await f.ctx.tools.execute({ name: 'unexpected_write', arguments: {}, agent: f.agent, signal: new AbortController().signal, callId: 'bad' })
+    const out = await executeTool(f.ctx,{ name: 'unexpected_write', arguments: {}, agent: f.agent, signal: new AbortController().signal, callId: 'bad' })
     assert.equal(out.isError, true); assert.equal(mutated, false)
     await assert.rejects(f.ctx.systemPrompt.assemble({ scope: f.agent }), /invalid reviewer tool policy/)
     assert.throws(() => reviewerProof(f.ctx, f.agent.id, true), /policy is missing or invalid/)
@@ -64,7 +100,7 @@ test('read-only reviewer can discover actual paths with native glob/grep and sti
   try {
     await f.ctx.systemPrompt.assemble({ scope: f.agent })
     assert.deepEqual(f.ctx.tools.schemas(f.agent).map(t => t.name).sort(), ['glob','grep','read','structured_output'])
-    const invoke = name => f.ctx.tools.execute({name,arguments:{},agent:f.agent,signal:new AbortController().signal,callId:name})
+    const invoke = name => executeTool(f.ctx,{name,arguments:{},agent:f.agent,signal:new AbortController().signal,callId:name})
     assert.equal((await invoke('grep')).isError,false)
     assert.equal((await invoke('glob')).isError,false)
     assert.equal((await invoke('shell')).isError,true)
@@ -93,24 +129,35 @@ test('activation cancellation after publication disposes that exact activation o
 })
 
 test('analysis hides inherited command tools, blocks execution, and restores the implementation surface per agent', async () => {
-  const root=new Context();await root.plugin(SystemPrompt);await root.plugin(ToolRuntime)
+  const root=new Context();await root.plugin(SystemPrompt);await root.plugin(ToolRuntime); await installTestExecutor(root)
   let ctx
   await root.plugin({name:'delivery-test-owner',inject:['tools','systemPrompt'],apply(c){ctx=c}})
   let writes=0
   for(const name of ['read','glob','grep','shell','subagent'])ctx.tools.register(tool(name,async()=>{if(name==='shell')writes++;return 'ok'}))
   const agent={id:'analysis-parent',session:{id:'analysis-parent',header:{cwd:process.cwd()}}},scope=createScope(ctx,agent)
   agent.ctx=scope.ctx;installDeliveryAccess(scope.ctx,async()=>undefined)
+  let delegated = 0
+  for (const name of ['spawn_teammate', 'send_message']) scope.ctx.tools.register(tool(name, async () => { delegated++; return 'sent' }))
+  scope.ctx.tools.register(tool('list_agents'))
   try{
     bindDeliveryIntent(agent,'pending')
-    assert.equal(ctx.tools.schemas(agent).length,0)
+    assert.ok(!ctx.tools.schemas(agent).some(t => t.name === 'read' || t.name === 'shell'))
+    assert.equal(executionPathProblem(scope.ctx, agent, 'implementation', { needsCommit: true }), undefined)
     bindDeliveryIntent(agent,'analysis')
-    assert.deepEqual(ctx.tools.schemas(agent).map(t=>t.name).sort(),['glob','grep','read'])
+    assert.ok(ctx.tools.schemas(agent).some(t => t.name === 'list_agents'))
+    assert.ok(!ctx.tools.schemas(agent).some(t => t.name === 'shell'))
     assert.ok(ctx.tools.schemas().some(t=>t.name==='shell'))
-    const invoke=name=>ctx.tools.execute({name,arguments:{},agent,signal:new AbortController().signal,callId:name})
+    const invoke=name=>executeTool(ctx,{name,arguments:{},agent,signal:new AbortController().signal,callId:name})
     assert.equal((await invoke('shell')).isError,true);assert.equal(writes,0)
     bindDeliveryIntent(agent,'implementation');assert.ok(ctx.tools.schemas(agent).some(t=>t.name==='shell'))
     assert.equal((await invoke('shell')).isError,false);assert.equal(writes,1)
     assert.equal((await invoke('subagent')).isError,true)
+    for (const name of ['spawn_teammate', 'send_message']) {
+      assert.ok(ctx.tools.schemas(agent).some(t => t.name === name))
+      assert.equal((await invoke(name)).isError, true)
+    }
+    assert.equal(delegated, 0)
+    assert.equal((await invoke('list_agents')).isError, false)
   }finally{await scope.dispose();await root.fiber.dispose()}
 })
 test('activation cleanup failure is retained for the final owner and successful completion preserves native structured output', async () => {
@@ -143,7 +190,7 @@ test('shipped preset removes removed rc.2 options and declares the guarded read-
   assert.match(patch, /@godv61\/dsh-task-engine\/reviewer/)
   const investigator=patch.slice(patch.indexOf('id: preset-task-engine-review'))
   assert.match(investigator,/dsh-tool-fs-search/)
-  for(const id of ['tool-subagent','tool-subagent-control','tool-subagent-fork','tool-workflow']) {
+  for(const id of ['tool-subagent','tool-subagent-fork','tool-workflow']) {
     assert.match(patch,new RegExp(`- id: ${id}\\r?\\n\\s+disabled: true`),id)
   }
 })

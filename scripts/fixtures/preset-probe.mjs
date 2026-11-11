@@ -4,6 +4,7 @@ import { writeFileSync, readFileSync, unlinkSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { LlmAdapter, ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
+import { executeTool } from './tool-runtime.mjs'
 
 export const name='task-engine-keyless-preset-probe'
 export const inject=['llm','agentPresets','tools','systemPrompt']
@@ -25,6 +26,14 @@ export function apply(ctx){
     await ctx.agentPresets.select(agent,preset)
     await agent.ctx.systemPrompt.assemble({scope:agent})
     const tools=()=>agent.ctx.tools.schemas(agent).map(t=>t.name)
+    // All switches happen before a turn starts, through the public registry.
+    for(const target of ['standard','eng','task-engine-review','standard',preset]){
+      await ctx.agentPresets.select(agent,target)
+      const assembled=await agent.ctx.systemPrompt.assemble({scope:agent})
+      if(process.env.TASK_ENGINE_PRESET_PTC==='true')assert.equal(assembled.tools.some(t=>t.name==='run_code'),target==='standard',`executor after switch to ${target}`)
+      assert.equal(tools().includes('write'),target==='standard',`switch to ${target}: ${tools()}`)
+      assert.equal(tools().includes('dev_task'),target==='eng',JSON.stringify({target,tools:tools(),composition:ctx.agentPresets.inspectCompositions(agent.ctx)}))
+    }
     let invocation=0
     const invoke=async(name,args)=>{
       const callId=ToolCallId(`probe-${name}-${invocation++}`)
@@ -32,13 +41,13 @@ export function apply(ctx){
       // call/result through the public session API; never fabricate a success.
       const logged=name==='dev_task'&&args.operation==='load_skill'
       const call=logged?agent.session.append('tool/call',{turn:1,step:1,callId,name,arguments:JSON.stringify(args)}):undefined
-      const result=await agent.ctx.tools.execute({name,arguments:args,agent,signal:new AbortController().signal,callId})
+      const result=await executeTool(agent.ctx,{name,arguments:args,agent,signal:new AbortController().signal,callId})
       if(call)agent.session.append('tool/result',{turn:1,step:1,message:createToolResultMessage({callId,content:result.content,isError:result.isError})},
         {surfaceOp:'append',sourceEventSeqs:[call.seq]})
       return result
     }
     if(preset==='eng'){
-      assert.ok(tools().includes('dev_task'))
+      assert.ok(tools().includes('dev_task'),JSON.stringify({tools:tools(),presets:await ctx.agentPresets.list(),composition:ctx.agentPresets.inspectCompositions(agent.ctx)}))
       assert.ok(!tools().includes('read'),'repository work must select a contract first')
       const result=await invoke('dev_task',{operation:'create',task_id:'PRESET-PROBE',title:'Read-only preset fixture',intent:'analysis',intent_reason:'Keyless composition check'})
       assert.equal(result.isError,false,JSON.stringify(result))
@@ -127,13 +136,17 @@ export function apply(ctx){
       assert.equal((await invoke('write',{file_path:'forbidden.txt',content:'history must remain read-only'})).isError,true)
       const fresh=await invoke('dev_task',{operation:'create',task_id:'CURRENT-AFTER-HISTORY',title:'current task',intent:'implementation',intent_reason:'fixture',complexity:'low',complexity_reason:'fixture'})
       assert.equal(fresh.isError,false,JSON.stringify(fresh))
-    }else for(const name of ['read','glob','grep'])assert.ok(tools().includes(name),name)
-    for(const name of ['write','edit','pwsh','bash','subagent','subagent_fork','workflow'])assert.ok(!tools().includes(name),`${preset}: ${name}`)
+    }else {
+      for(const name of ['read','glob','grep'])assert.ok(tools().includes(name),name)
+      assert.ok(ctx.get('taskEngineReviewPolicy').proof(agent.id),'reviewer must record an actual tool policy')
+    }
+    for(const name of ['write','edit','pwsh','bash','subagent','subagent_fork','workflow','send_message','interrupt_agent'])assert.ok(!tools().includes(name),`${preset}: ${name}`)
+    for(const name of ['subagent','subagent_fork','send_message','interrupt_agent'])assert.equal((await invoke(name,{})).isError,true,name)
     const denied=await invoke('write',{file_path:'forbidden.txt',content:'must not be written'})
     assert.equal(denied.isError,true)
     const read=await invoke('read',{file_path:'proof.txt'})
     assert.equal(read.isError,false,JSON.stringify(read))
-    observations.push({preset,tools:tools(),read_succeeded:true,write_denied:true,
+    observations.push({preset,tools:tools(),read_succeeded:true,write_denied:true,preset_roundtrip:true,delegation_aliases_denied:true,inherited_ptc:process.env.TASK_ENGINE_PRESET_PTC==='true',
       ...(preset==='eng'?{requirement_questions:requirementQuestions,requirement_materials:true,bound_template_rendered:true,material_change_revokes_writes:true,removed_opt_out_rejected:true,old_task_readonly:true,history_readonly:true,new_task_after_history:true,registered_tests_routed:true}: {})})
     assert.equal(modelCalls,0)
     writeFileSync(process.env.TASK_ENGINE_PRESET_PROBE_RESULT,JSON.stringify({model_calls:modelCalls,observations},null,2))

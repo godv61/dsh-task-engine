@@ -64,6 +64,8 @@ export interface SonarAudit {
   uncovered_files?: string[]
   /** Branch or merge request used for new-code findings. */
   target: string
+  /** Resolved Git comparison base for a local review, including no-change checks. */
+  reference_commit?: string
   /** Project-relative Markdown report written for this audit run. */
   report_path?: string
   /** Changed task files actually analyzed by the local engine. */
@@ -159,8 +161,14 @@ export function unresolvedBlockingFindings(audit: Pick<SonarAudit, 'blocking' | 
   return audit.blocking.filter(finding => !approved.has(finding.key))
 }
 
-export function localReviewGate(audit: SonarAudit): 'OK' | 'ERROR' {
-  return unresolvedBlockingFindings(audit).length === 0 && !(audit.uncovered_files?.length) ? 'OK' : 'ERROR'
+export function localReviewGate(audit: SonarAudit): 'OK' | 'ERROR' | 'NO_CHANGES' {
+  if (unresolvedBlockingFindings(audit).length || audit.uncovered_files?.length) return 'ERROR'
+  if (audit.gate === 'NO_CHANGES') {
+    return audit.reference_commit && isFullOid(audit.reference_commit) && audit.scanned_files?.length === 0
+      && audit.findings.length === 0 ? 'NO_CHANGES' : 'ERROR'
+  }
+  // A historical zero-file OK cannot prove that there were no files to scan.
+  return audit.scanned_files?.length === 0 ? 'ERROR' : 'OK'
 }
 
 /** One review decision for both dev_task and the installed Git hook. */
@@ -170,7 +178,9 @@ export function sonarCommitBlockers(policy: SonarPolicy, audit: SonarAudit | und
   const problems: string[] = []
   if (audit.scope_hash !== currentScopeHash) problems.push('SonarQube audit is stale after file changes; rerun the scan and sonar_check')
   if (policy.source === 'ide-local') {
-    if (localReviewGate(audit) !== 'OK') problems.push('本地规则审核尚有未解决问题或未覆盖文件')
+    if (localReviewGate(audit) === 'ERROR') problems.push(audit.scanned_files?.length === 0 && !audit.uncovered_files?.length
+      ? '本地规则审核未扫描任何文件，且缺少有效的无待扫描变更结论；请重新运行 sonar_check'
+      : '本地规则审核尚有未解决问题或未覆盖文件')
     const unresolved = unresolvedBlockingFindings(audit)
     if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`)
   } else {

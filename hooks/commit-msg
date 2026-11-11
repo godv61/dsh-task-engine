@@ -566,20 +566,27 @@ function isSensitivePath(path2) {
 }
 var ALL_MARKERS = Object.values(TYPE_MARKERS).flat();
 
+// src/git-oid.ts
+var isFullOid = (value) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/iu.test(value);
+
 // src/sonar.ts
 function unresolvedBlockingFindings(audit) {
   const approved = new Set((audit.dispositions ?? []).filter((entry) => entry.kind === "false_positive").map((entry) => entry.issue_key));
   return audit.blocking.filter((finding) => !approved.has(finding.key));
 }
 function localReviewGate(audit) {
-  return unresolvedBlockingFindings(audit).length === 0 && !audit.uncovered_files?.length ? "OK" : "ERROR";
+  if (unresolvedBlockingFindings(audit).length || audit.uncovered_files?.length) return "ERROR";
+  if (audit.gate === "NO_CHANGES") {
+    return audit.reference_commit && isFullOid(audit.reference_commit) && audit.scanned_files?.length === 0 && audit.findings.length === 0 ? "NO_CHANGES" : "ERROR";
+  }
+  return audit.scanned_files?.length === 0 ? "ERROR" : "OK";
 }
 function sonarCommitBlockers(policy, audit, currentScopeHash, latestCommitHash) {
   if (!audit) return ["SonarQube audit is enabled but has not been run; call sonar_check in code review"];
   const problems = [];
   if (audit.scope_hash !== currentScopeHash) problems.push("SonarQube audit is stale after file changes; rerun the scan and sonar_check");
   if (policy.source === "ide-local") {
-    if (localReviewGate(audit) !== "OK") problems.push("\u672C\u5730\u89C4\u5219\u5BA1\u6838\u5C1A\u6709\u672A\u89E3\u51B3\u95EE\u9898\u6216\u672A\u8986\u76D6\u6587\u4EF6");
+    if (localReviewGate(audit) === "ERROR") problems.push(audit.scanned_files?.length === 0 && !audit.uncovered_files?.length ? "\u672C\u5730\u89C4\u5219\u5BA1\u6838\u672A\u626B\u63CF\u4EFB\u4F55\u6587\u4EF6\uFF0C\u4E14\u7F3A\u5C11\u6709\u6548\u7684\u65E0\u5F85\u626B\u63CF\u53D8\u66F4\u7ED3\u8BBA\uFF1B\u8BF7\u91CD\u65B0\u8FD0\u884C sonar_check" : "\u672C\u5730\u89C4\u5219\u5BA1\u6838\u5C1A\u6709\u672A\u89E3\u51B3\u95EE\u9898\u6216\u672A\u8986\u76D6\u6587\u4EF6");
     const unresolved = unresolvedBlockingFindings(audit);
     if (unresolved.length) problems.push(`${unresolved.length} medium/high SonarQube new-code findings remain`);
   } else {
