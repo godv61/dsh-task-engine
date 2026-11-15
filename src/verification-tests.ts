@@ -1,6 +1,6 @@
 import { goTestEvidence } from './go-test-evidence.ts'
 import { skillReceiptProblem } from './skill-command.ts'
-import { commandName, commandWords } from './command-words.ts'
+import { commandName, commandWords, invokedProgram, programFamily } from './command-words.ts'
 
 /** Python's standard-library runner, with a completed final summary on stderr. */
 export function unittestTestEvidence(command: string, output: string): { count: number | null } | undefined {
@@ -47,6 +47,49 @@ export function ctestTestEvidence(command: string, output: string): { count: num
   const skipped = (normalized.match(/\*\*\*Skipped\b/gu) ?? []).length
   const notRun = (normalized.match(/\*\*\*Not Run(?! \(Disabled\))/gu) ?? []).length
   return { count: Math.max(0, total - skipped - notRun) }
+}
+
+/**
+ * Programs that run something else. `python3.11 fake.py`, `perl fake.pl` and `node suite_tests` all name
+ * a test suite in their arguments while the invoked program only interprets a script, so none of them
+ * may offer GoogleTest evidence.
+ */
+const gtestOtherPrograms = new Set([
+  'node', 'nodejs', 'deno', 'bun', 'npm', 'pnpm', 'yarn', 'npx', 'pnpx', 'bunx', 'pytest',
+  'python', 'py', 'perl', 'ruby', 'php', 'lua', 'tclsh', 'wish', 'rscript', 'julia', 'groovy',
+  'java', 'dotnet', 'mono', 'cmd', 'powershell', 'pwsh', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish',
+  'ctest', 'cmake', 'make', 'ninja', 'cat', 'type', 'more', 'findstr', 'get-content', 'echo',
+])
+/** A script is a script wherever it appears: as the program or as the first argument of an interpreter. */
+const gtestScriptExtension = /\.(?:sh|bash|zsh|ps1|psm1|bat|cmd|pl|pm|py|rb|php|js|mjs|cjs|ts|lua|tcl|jar|class)$/iu
+
+/** A GoogleTest suite is the invoked binary itself: not a shell, an interpreter, a script or another runner. */
+export function isGoogleTestInvocation(command: string): boolean {
+  const invocation = invokedProgram(command)
+  if (!invocation) return false
+  // A bare `suite_tests` came from PATH and a script is not the compiled suite.
+  if (!/[\\/]/u.test(invocation.program) || gtestScriptExtension.test(invocation.program)) return false
+  const name = commandName(invocation.program)
+  if (gtestOtherPrograms.has(name) || gtestOtherPrograms.has(programFamily(name))) return false
+  return !invocation.argv.some(word => !word.startsWith('-') && gtestScriptExtension.test(word))
+}
+
+/**
+ * A completed GoogleTest run. Skipped cases stay out of `[  PASSED  ]`, so that count is already the
+ * passing evidence; any failing case, an all-skipped suite and a missing summary are zero or unknown.
+ */
+export function gtestTestEvidence(command: string, output: string): { count: number | null } | null {
+  if (!isGoogleTestInvocation(command)) return null
+  const normalized = output.replace(/\r\n/gu, '\n')
+  const ran = [...normalized.matchAll(/\[==========\]\s+(\d+)\s+tests?\s+from\s+\d+\s+test suites?\s+ran\./giu)].pop()
+  // No GoogleTest summary in the output: this is not GoogleTest evidence, and a later parser may claim it.
+  if (!ran) return null
+  if (/\[  FAILED  \]/iu.test(normalized)) return { count: 0 }
+  const passed = normalized.match(/\[  PASSED  \]\s+(\d+)\s+tests?\./iu)
+  const total = Number(ran[1])
+  if (!passed || !Number.isSafeInteger(total)) return { count: null }
+  const skipped = Number(normalized.match(/\[  SKIPPED \]\s+(\d+)\s+tests?/iu)?.[1] ?? 0)
+  return { count: skipped >= total ? 0 : Number(passed[1]) }
 }
 
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
@@ -105,6 +148,8 @@ export function testEvidence(command: string, output: string): { count: number |
   if (unittest) return unittest
   const ctest = ctestTestEvidence(command, output)
   if (ctest) return ctest
+  const gtest = gtestTestEvidence(command, output)
+  if (gtest) return gtest
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]

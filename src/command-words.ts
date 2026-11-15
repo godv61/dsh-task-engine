@@ -21,3 +21,17 @@ export function commandName(word: string | undefined): string {
   const parts = (word ?? '').replace(/\\/gu, '/').split('/')
   return parts[parts.length - 1]!.replace(/\.(?:exe|cmd|bat)$/iu, '').toLowerCase()
 }
+
+/** The program a command actually invokes. A shell wrapper is not unwrapped: its first word is the shell. */
+export interface Invocation { program: string; argv: string[] }
+
+export function invokedProgram(command: string): Invocation | undefined {
+  const words = commandWords(command)
+  if (!words?.length) return undefined
+  return { program: words[0]!, argv: words.slice(1) }
+}
+
+/** Strip trailing version digits so `python3.11`, `python` and `php8` compare as the same family. */
+export function programFamily(name: string): string {
+  return name.replace(/\d+(?:\.\d+)*$/u, '')
+}
