@@ -27,6 +27,24 @@ export function unittestTestEvidence(command: string, output: string): { count: 
   return { count: Number.isSafeInteger(total) && Number.isSafeInteger(excluded) && excluded <= total ? total - excluded : null }
 }
 
+/**
+ * A completed CTest run. CTest keeps reporting 100% when cases are skipped, so `***Skipped` cases are
+ * subtracted; a failed case, `out of 0` and `No tests were found` are all zero passing evidence.
+ */
+export function ctestTestEvidence(command: string, output: string): { count: number | null } | null {
+  const words = commandWords(command)
+  if (!words || commandName(words[0]) !== 'ctest') return null
+  const normalized = output.replace(/\r\n/gu, '\n')
+  if (/(?:^|\n)\s*No tests were found/iu.test(normalized)) return { count: 0 }
+  const summary = [...normalized.matchAll(/(\d+)%\s+tests?\s+passed(?:,\s*(\d+)\s+tests?\s+failed)?\s+out\s+of\s*(\d+)/giu)].pop()
+  if (!summary) return { count: null }
+  const failed = Number(summary[2] ?? 0)
+  const total = Number(summary[3])
+  if (!Number.isSafeInteger(total) || failed > 0) return { count: 0 }
+  const skipped = (normalized.match(/\*\*\*Skipped\b/gu) ?? []).length
+  return { count: Math.max(0, total - skipped) }
+}
+
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
 export function mavenTestEvidence(command: string, output: string): { count: number | null } | null {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command)
@@ -81,6 +99,8 @@ export function testEvidence(command: string, output: string): { count: number |
   if (go) return go
   const unittest = unittestTestEvidence(command, output)
   if (unittest) return unittest
+  const ctest = ctestTestEvidence(command, output)
+  if (ctest) return ctest
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 }
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)]

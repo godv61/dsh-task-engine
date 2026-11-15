@@ -132,6 +132,19 @@ function unittestTestEvidence(command, output) {
   }
   return { count: Number.isSafeInteger(total) && Number.isSafeInteger(excluded) && excluded <= total ? total - excluded : null };
 }
+function ctestTestEvidence(command, output) {
+  const words = commandWords(command);
+  if (!words || commandName(words[0]) !== "ctest") return null;
+  const normalized = output.replace(/\r\n/gu, "\n");
+  if (/(?:^|\n)\s*No tests were found/iu.test(normalized)) return { count: 0 };
+  const summary = [...normalized.matchAll(/(\d+)%\s+tests?\s+passed(?:,\s*(\d+)\s+tests?\s+failed)?\s+out\s+of\s*(\d+)/giu)].pop();
+  if (!summary) return { count: null };
+  const failed = Number(summary[2] ?? 0);
+  const total = Number(summary[3]);
+  if (!Number.isSafeInteger(total) || failed > 0) return { count: 0 };
+  const skipped = (normalized.match(/\*\*\*Skipped\b/gu) ?? []).length;
+  return { count: Math.max(0, total - skipped) };
+}
 function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
   const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command);
@@ -161,6 +174,8 @@ function testEvidence(command, output) {
   if (go) return go;
   const unittest = unittestTestEvidence(command, output);
   if (unittest) return unittest;
+  const ctest = ctestTestEvidence(command, output);
+  if (ctest) return ctest;
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];
