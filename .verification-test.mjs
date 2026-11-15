@@ -215,6 +215,12 @@ test('a GoogleTest run reports the cases that actually ran', () => {
       '[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 2 tests.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] Suite.B', 2],
     ['./build/all_skipped_tests',
       '[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 0 tests.\n[  SKIPPED ] 2 tests, listed below:\n[  SKIPPED ] S.A\n[  SKIPPED ] S.B', 0],
+    // `--gtest_repeat` prints one summary per repetition; the last run is the one that counts, so the
+    // total and the passing count must be read from the same repetition.
+    ['./build/suite_tests',
+      '[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 2 tests.\n[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 3 tests.', 3],
+    ['./build/suite_tests',
+      '[==========] 4 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 4 tests.\n[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 1 test.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] S.B', 1],
     // Printers, readers and other runners cannot forge the summary.
     ['echo "[==========] 5 tests from 2 test suites ran. [  PASSED  ] 5 tests."', 'fake', null],
     ['cat gtest-output.txt', passed, null],

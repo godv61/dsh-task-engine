@@ -215,10 +215,10 @@ function gtestTestEvidence(command, output) {
   const ran = [...normalized.matchAll(/\[==========\]\s+(\d+)\s+tests?\s+from\s+\d+\s+test suites?\s+ran\./giu)].pop();
   if (!ran) return null;
   if (/\[  FAILED  \]/iu.test(normalized)) return { count: 0 };
-  const passed = normalized.match(/\[  PASSED  \]\s+(\d+)\s+tests?\./iu);
+  const passed = [...normalized.matchAll(/\[  PASSED  \]\s+(\d+)\s+tests?\./giu)].pop();
   const total = Number(ran[1]);
   if (!passed || !Number.isSafeInteger(total)) return { count: null };
-  const skipped = Number(normalized.match(/\[  SKIPPED \]\s+(\d+)\s+tests?/iu)?.[1] ?? 0);
+  const skipped = Number([...normalized.matchAll(/\[  SKIPPED \]\s+(\d+)\s+tests?/giu)].pop()?.[1] ?? 0);
   return { count: skipped >= total ? 0 : Number(passed[1]) };
 }
 function mavenTestEvidence(command, output) {

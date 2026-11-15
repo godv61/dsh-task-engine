@@ -85,10 +85,12 @@ export function gtestTestEvidence(command: string, output: string): { count: num
   // No GoogleTest summary in the output: this is not GoogleTest evidence, and a later parser may claim it.
   if (!ran) return null
   if (/\[  FAILED  \]/iu.test(normalized)) return { count: 0 }
-  const passed = normalized.match(/\[  PASSED  \]\s+(\d+)\s+tests?\./iu)
+  // `--gtest_repeat` prints one summary per repetition; the last run is the one whose count stands,
+  // so `ran` and `passed` must come from the same repetition.
+  const passed = [...normalized.matchAll(/\[  PASSED  \]\s+(\d+)\s+tests?\./giu)].pop()
   const total = Number(ran[1])
   if (!passed || !Number.isSafeInteger(total)) return { count: null }
-  const skipped = Number(normalized.match(/\[  SKIPPED \]\s+(\d+)\s+tests?/iu)?.[1] ?? 0)
+  const skipped = Number([...normalized.matchAll(/\[  SKIPPED \]\s+(\d+)\s+tests?/giu)].pop()?.[1] ?? 0)
   return { count: skipped >= total ? 0 : Number(passed[1]) }
 }
 
