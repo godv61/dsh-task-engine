@@ -107,6 +107,15 @@ test('a CTest run reports the cases that actually ran', () => {
       '1/2 Test #1: a .......***Skipped\n2/2 Test #2: b .......   Passed\n\n100% tests passed out of 2', 1],
     ['ctest --test-dir build',
       '1/1 Test #1: only .......***Skipped\n\n100% tests passed out of 1', 0],
+    // A multi-config generator without -C prints "***Not Run" for every case: it never launched, so
+    // the 100% summary is not passing evidence.
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......***Not Run\n2/2 Test #2: b .......***Not Run\n\n100% tests passed, 0 tests failed out of 2', 0],
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......   Passed\n2/2 Test #2: b .......***Not Run\n\n100% tests passed out of 2', 1],
+    // A disabled case also prints "***Not Run" but is already left out of the reported total.
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......   Passed\n2/2 Test #2: b .......***Not Run (Disabled)\n\n100% tests passed out of 1', 1],
     ['ctest --test-dir build',
       '1/2 Test #1: a .......***Failed\n2/2 Test #2: b .......***Skipped\n\n50% tests passed, 1 tests failed out of 2', 0],
     // Only the program that ran the suite may offer a CTest summary.
@@ -174,4 +183,17 @@ test('a real CTest run reports passing cases and rejects an all-skipped suite', 
   const failingRun = run(failing)
   assert.notEqual(failingRun.status, 0)
   assert.equal(testEvidence(`ctest --test-dir "${failing}"`, failingRun.output).count, 0, failingRun.output)
+  // A multi-config generator without `-C` reports every case as "***Not Run"; that is not evidence.
+  writeFileSync(join(root, 'CMakeLists.txt'), `${head}add_test(NAME pass COMMAND \${CMAKE_COMMAND} -E true)\n`)
+  const multi = join(root, 'multi-config')
+  const multiConfigure = spawnSync(cmake, ['-S', root, '-B', multi, `-DNODE=${process.execPath}`, '-G', 'Ninja Multi-Config'], { encoding: 'utf8' })
+  if (multiConfigure.status === 0) {
+    const multiRun = spawnSync(ctest, ['--test-dir', multi, '--output-on-failure'], { encoding: 'utf8' })
+    const multiOutput = `${multiRun.stdout}\n${multiRun.stderr}`
+    assert.match(multiOutput, /\*\*\*Not Run/u, multiOutput)
+    assert.equal(testEvidence(`ctest --test-dir "${multi}"`, multiOutput).count, 0, multiOutput)
+  } else if (requireReal && process.platform !== 'win32') {
+    // Windows keeps its default Visual Studio generator here; Linux must have Ninja to prove this case.
+    assert.fail(`Ninja Multi-Config must be available when REQUIRE_CPP_EVIDENCE=1: ${multiConfigure.stdout}${multiConfigure.stderr}`)
+  }
 })

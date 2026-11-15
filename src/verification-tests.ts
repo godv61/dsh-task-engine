@@ -29,7 +29,10 @@ export function unittestTestEvidence(command: string, output: string): { count: 
 
 /**
  * A completed CTest run. CTest keeps reporting 100% when cases are skipped, so `***Skipped` cases are
- * subtracted; a failed case, `out of 0` and `No tests were found` are all zero passing evidence.
+ * subtracted. A case that never launched (`***Not Run`, what a multi-config generator prints without
+ * `-C`) is not passing evidence either, but a disabled case prints `***Not Run (Disabled)` and is
+ * already left out of the reported total. A failed case, `out of 0` and `No tests were found` are
+ * all zero passing evidence.
  */
 export function ctestTestEvidence(command: string, output: string): { count: number | null } | null {
   const words = commandWords(command)
@@ -42,7 +45,8 @@ export function ctestTestEvidence(command: string, output: string): { count: num
   const total = Number(summary[3])
   if (!Number.isSafeInteger(total) || failed > 0) return { count: 0 }
   const skipped = (normalized.match(/\*\*\*Skipped\b/gu) ?? []).length
-  return { count: Math.max(0, total - skipped) }
+  const notRun = (normalized.match(/\*\*\*Not Run(?! \(Disabled\))/gu) ?? []).length
+  return { count: Math.max(0, total - skipped - notRun) }
 }
 
 /** Detect whether a Maven verification actually ran at least one Surefire/Failsafe test. */
