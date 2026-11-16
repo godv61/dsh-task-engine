@@ -54,15 +54,18 @@ if(cachedModules){
     // Host-base module resolution follows real paths. Junctions could silently
     // load a different task-engine from the cache instead of this packed copy.
     cpSync(join(cache,entry.name),join(local,entry.name),{recursive:true,dereference:true})
-  assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
-  const plugin=join(local,'@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
-  const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
-  if(unpack.error)throw unpack.error
-  assert.equal(unpack.status,0,unpack.stderr)
 }else{
+  // Resolve the exact public host on its own. Including this multi-version
+  // peer plugin in that solve exceeded ten minutes on Windows runners. Both
+  // paths below load the same fresh tarball, never a cached plugin copy.
   command(['install','--ignore-scripts','--no-audit','--no-fund','--prefer-offline','--fetch-retries=0',
-    ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`),join(root,artifact.filename)])
+    ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`)])
 }
+assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
+const plugin=join(root,'node_modules','@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
+const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
+if(unpack.error)throw unpack.error
+assert.equal(unpack.status,0,unpack.stderr)
 const modules=join(root,'node_modules','@deepseek-ai')
 // Check our source against this exact host's public declarations as well as
 // running the packed build. Dependencies in the authoring worktree stay intact.
