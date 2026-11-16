@@ -9,7 +9,7 @@ import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import { createScope, scopeTarget } from '@deepseek-ai/dsh-scope'
 import ReviewerPolicy from './lib/reviewer-policy.js'
 import { apply as reviewer } from './lib/reviewer.js'
-import { reviewerEvents, reviewerProof, ownActivation } from './lib/subagent-runtime.js'
+import { startTaskActivation, reviewerEvents, reviewerProof, ownActivation } from './lib/subagent-runtime.js'
 import { executionCapabilities } from './lib/execution-plan.js'
 import { bindDeliveryIntent, executionPathProblem, installDeliveryAccess } from './lib/delivery-access.js'
 import { installPresetExecutor, presentNativeTools } from './lib/tool-executor-compat.js'
@@ -121,6 +121,34 @@ test('the actual declarative eng preset uses the same delivery-intent guidance a
   assert.match(actual,/intent=analysis/);assert.match(actual,/delegation_benefit/)
   assert.doesNotMatch(actual,/\{\{cwd\}\}/)
 })
+for (const named of [false, true]) test(`${named ? 'named' : 'legacy'} activation preserves parent, schema, reserved id and lifecycle options`, async () => {
+  const signal=new AbortController().signal, parent={id:'parent'}, schema={type:'object',properties:{}}
+  const request={parent,cwd:process.cwd(),agentPreset:'task-engine-review',maxDepth:1,outputSchema:schema,prompt:[{type:'text',text:'question'}]}
+  const handle={childId:'stable-session-id',...(named?{name:'agent-1'}:{}),messageId:'accepted-message',
+    result:Promise.resolve({stopReason:'completed',output:[]}),dispose:async()=>{}}
+  let calls=0
+  const runtime={...(named?{namesOf(){throw new Error('feature probe must not call namesOf')}}:{}),async startActivation(spec){
+    assert.equal(this,runtime);calls++
+    assert.equal(spec.provider,'spawn');assert.equal(spec.signal,signal);assert.equal(spec.childId,'reserved-child');assert.equal(spec.delivery,'caller')
+    if(named){assert.equal(spec.request,undefined);for(const key of Object.keys(request))assert.equal(spec[key],request[key])}
+    else{assert.equal(spec.parent,undefined);assert.deepEqual(spec.request,request)}
+    return handle
+  }}
+  const run=await startTaskActivation(runtime,{provider:'spawn',label:'test',childId:'reserved-child',delivery:'caller',signal,...request})
+  assert.equal(run,handle);assert.equal(calls,1)
+  const owned=ownActivation(run,signal)
+  assert.equal(owned.childId,'stable-session-id');assert.equal(owned.messageId,'accepted-message');assert.equal(owned.name,named?'agent-1':undefined)
+  assert.equal(await owned.result,await handle.result);await owned.dispose()
+})
+
+test('failed named startup is not retried using a different contract', async () => {
+  let calls=0
+  const failure=new Error('start failed after admission')
+  const runtime={namesOf(){},async startActivation(){calls++;throw failure}}
+  await assert.rejects(startTaskActivation(runtime,{provider:'spawn',label:'test',parent:{id:'p'},prompt:[],signal:new AbortController().signal,delivery:'caller'}),error=>error===failure)
+  assert.equal(calls,1)
+})
+
 test('activation cancellation after publication disposes that exact activation once', async () => {
   const controller = new AbortController(); let disposed = 0
   const run = ownActivation({ childId: 'child', result: new Promise(() => {}), dispose: async () => { disposed++ } }, controller.signal)

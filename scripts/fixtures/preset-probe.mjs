@@ -9,7 +9,7 @@ import { executeTool } from './tool-runtime.mjs'
 export const name='task-engine-keyless-preset-probe'
 export const inject=['llm','agentPresets','tools','systemPrompt']
 export function apply(ctx){
-  let modelCalls=0,created=0,requirementQuestions=0
+  let modelCalls=0,requirementQuestions=0
   const observations=[]
   class OfflineAdapter extends LlmAdapter{
     async *generate(){modelCalls++;throw new Error('Keyless preset test must not call a model')}
@@ -22,7 +22,8 @@ export function apply(ctx){
     return {answers:request.questions.map(q=>({id:q.id,selected:['确认无误，继续']}))}
   })
   ctx.on('agent/created',async({agent})=>{
-    const preset=created++===0?'eng':'task-engine-review'
+    if (!['preset-eng-fixture','preset-readonly-fixture'].includes(agent.id)) return
+    const preset=agent.id==='preset-eng-fixture'?'eng':'task-engine-review'
     await ctx.agentPresets.select(agent,preset)
     await agent.ctx.systemPrompt.assemble({scope:agent})
     const tools=()=>agent.ctx.tools.schemas(agent).map(t=>t.name)

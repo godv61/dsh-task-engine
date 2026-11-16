@@ -169,11 +169,12 @@ test('bulk plan validation is atomic; directories and bad dependencies leave no 
   await assert.rejects(()=>f.call({operation:'plan',plans:[{id:'I1',title:'bad',files:['a.mjs'],acceptance:['works'],depends_on:['I1'],task_boundary:'local',execution_reason:'test'}]}),/dependencies/)
   assert.deepEqual(f.state(),before)
 })
-test('native investigation batches overlap, preserve reports and refuse duplicate completed questions',async()=>{
+for (const named of [false,true]) test(`${named?'named':'legacy'} native investigation batches overlap, preserve reports and refuse duplicate completed questions`,async()=>{
   const f=fixture();await f.call({operation:'create',title:'trace field',branch:'test',intent:'analysis',intent_reason:'diagnosis only'})
   let active=0,peak=0,disposed=0
-  f.runtime={getProvider:n=>({inheritsParentContext:n==='fork',capabilities:{depthLimit:true,agentPreset:true}}),startActivation:async spec=>{
-    assert.equal(spec.request.agentPreset,'task-engine-review');assert.match(spec.request.prompt[0].text,/read-only investigator/)
+  f.runtime={...(named?{namesOf(){}}:{}),getProvider:n=>({inheritsParentContext:n==='fork',capabilities:{depthLimit:true,agentPreset:true}}),startActivation:async spec=>{
+    const request=named?spec:spec.request
+    assert.equal(request.agentPreset,'task-engine-review');assert.match(request.prompt[0].text,/read-only investigator/)
     active++;peak=Math.max(peak,active);f.children.set(spec.childId,{events:[]})
     return {childId:spec.childId,result:new Promise(resolve=>setTimeout(()=>{active--;resolve({stopReason:'completed',output:[{type:'text',text:JSON.stringify({status:'complete',summary:'conversion omits model',evidence:[claim],limitations:[]})}]})},15)),dispose:async()=>{disposed++}}
   },listDescendants:async()=>[]}

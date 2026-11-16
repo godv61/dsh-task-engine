@@ -12,7 +12,7 @@ import { todosBlockers } from './lib/engine.js'
 const all = { spawn: true, fork: true, reviewer: true }
 const none = { spawn: false, fork: false, reviewer: false }
 const planInput = { delegation_benefit: 'context_isolation', execution_reason: '明确的文件范围、接口和可独立验证的交付', task_boundary: 'independent', files: ['a.mjs','check.test.mjs'], acceptance: ['value() 返回 2'] }
-async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk' } = {}) {
+async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk', named = false } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), 'task-execution-policy-'))
   mkdirSync(join(cwd, '.dsh'), { recursive: true })
   writeFileSync(join(cwd, 'a.mjs'), 'export const value = () => 2\n')
@@ -61,10 +61,12 @@ async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk
   const state = () => JSON.parse(readFileSync(taskPath,'utf8'))
   const save = s => writeFileSync(taskPath,JSON.stringify(s))
   let verdict = {spec:'pass',quality:'pass',notes:['a.mjs:1 returns 2; check.test.mjs:1 pins acceptance']}, disposed=0, calls=[]
-  runtime = { getProvider: name => ({inheritsParentContext:name==='fork',capabilities:{depthLimit:true,agentPreset:true}}),
+  runtime = { ...(named ? { namesOf() { throw new Error('Capability detection must not query child names') } } : {}),
+    getProvider: name => ({inheritsParentContext:name==='fork',capabilities:{depthLimit:true,agentPreset:true}}),
     startActivation: async spec => {
-      const provider=spec.provider, request={...spec.request,label:spec.label,signal:spec.signal}
-      assert.equal(spec.delivery,'caller');assert.equal(spec.request.cwd,cwd)
+      const provider=spec.provider, request=named?spec:{...spec.request,label:spec.label,signal:spec.signal}
+      assert.equal(spec.delivery,'caller');assert.equal(request.cwd,cwd)
+      assert.equal(Object.hasOwn(spec,'request'),!named)
       const reviewer = request.label.endsWith('/review')
       calls.push({provider,reviewer,request,spec})
       assert.match(request.prompt[0].text, /current skill instructions for this task/)
@@ -81,8 +83,8 @@ async function fixture({ policy = 'auto', loadingPolicy = false, risk='high_risk
     }, listDescendants:async()=>[{id:'review-child',kind:'child',parentId:'parent',depth:1,activity:'inactive'}] }
   return {cwd,fs,ctx,call,state,save,calls,query,children,get runtime(){return runtime},set runtime(v){runtime=v},set verdict(v){verdict=v},get disposed(){return disposed}}
 }
-test('worker and reviewer receive their own required context once; on-demand bodies and Rules stay deferred', async () => {
-  const f = await fixture({ loadingPolicy: true })
+for (const named of [false, true]) test(`${named ? 'named' : 'legacy'} worker and reviewer receive their own required context once; on-demand bodies and Rules stay deferred`, async () => {
+  const f = await fixture({ loadingPolicy: true, named })
   await f.call({ operation: 'load_skill', skill_name: 'project:shared-map' })
   await f.call({ operation: 'plan_execution', item_id: 'I1', ...planInput, execution: 'spawn' })
   await f.call({ operation: 'dispatch', item_id: 'I1', description: 'Implement backend only' })

@@ -53,14 +53,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
       - name: Verify current DSH preset runtime
         run: npm run verify:preset
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.node == 24
 
   preset-compat:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        dsh: [0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5]
+        dsh: [0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5, 0.2.2-rc.1]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,7 +69,7 @@ jobs:
       - run: npm ci
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ startsWith(matrix.dsh, '0.2.2-') && '24' || '22' }}
       - run: npm run verify:preset
         env:
           TASK_ENGINE_DSH_VERSION: ${{ matrix.dsh }}
@@ -91,7 +91,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         # `master` catches a breaking change as soon as DSH makes it; the pinned
         # release candidate keeps the supported 0.2 baseline pinned.
-        dsh: [master, dsh-v0.2.1-rc.3, dsh-v0.2.1-rc.4, dsh-v0.2.1-rc.5, dsh-v0.2.2-rc.1]
+        dsh: [master, dsh-v0.2.1-rc.3, dsh-v0.2.1-rc.4, dsh-v0.2.1-rc.5, dsh-v0.2.2-rc.1, dsh-v0.2.2-rc.3]
     continue-on-error: ${{ matrix.dsh == 'master' }}
     steps:
       - uses: actions/checkout@v4
