@@ -68,7 +68,7 @@ import { resolveSonarToken, type SonarCredentialProvider } from './sonar-credent
 import { projectMapCoverageGaps, projectMapCoveragePaths, projectMetaSkillTargets, scanProject, validateInitResources, renderInitSkill, type InitResource } from './project-init.ts'
 import { hashBytes, hashConfig, hashText } from './snapshot.ts'
 import { acquireTaskMutation, executionCapabilities, executionCoverageBlockers, executionItemBlockers, executionPlanKey, fullReadCoverage, hasFullReadCoverage, makeExecutionPlan, parseIndependentReview, reviewStrategy, REVIEW_OUTPUT_SCHEMA, taskSubagents, validateIndependentReview } from './execution-plan.ts'
-import { ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
+import { startTaskActivation, ownActivation, reviewerEvents, reviewerProof, type TaskActivation } from './subagent-runtime.ts'
 import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type DelegationBenefit, type DeliveryIntent, type InvestigationQuestion } from './delivery-contract.ts'
 import { executeAnalysisCommand } from './analysis-commands.ts'
 import { assertInsideRoot } from './path-guard.ts'
@@ -2884,8 +2884,8 @@ export function registerDevTask(ctx: Context): void {
             const prompt = `You are the implementation worker, not the workflow controller. Do not call dev_task or delegate further.\nTask ${state.id}: ${state.title}\nItem ${item.id}: ${item.title}\n${a.description ?? ''}\nExecution brief:\n${JSON.stringify(plan ?? {})}\nAllowed delivery paths: ${(plan?.files ?? state.files).join(', ')}\nWork in ${state.root ?? cwd}. Preserve existing worktree changes. Follow the parent task instructions below. Do not change the parent task ledger, commit or archive. Return changed files, actual checks and remaining issues; report BLOCKED if context is insufficient.\nTask artifacts and acceptance context:\n${JSON.stringify(state.artifacts)}\n${await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, true)}`
             let run: TaskActivation | undefined
             try {
-              run = ownActivation(await runtime.startActivation({ provider: execution, label: `${state.id}/${item.id}`, delivery: 'caller', signal: exec.signal,
-                request: { parent: exec.agent, cwd: state.root ?? cwd!, prompt: [{ type: 'text', text: prompt }], maxDepth: 3 } }), exec.signal)
+              run = ownActivation(await startTaskActivation(runtime, { provider: execution, label: `${state.id}/${item.id}`, delivery: 'caller', signal: exec.signal,
+                parent: exec.agent, cwd: state.root ?? cwd!, prompt: [{ type: 'text', text: prompt }], maxDepth: 3 }), exec.signal)
               item.dispatch.run_id = run.childId
               item.dispatch.status = 'running'
               await writeTask(fs, state, cwd, mode)
@@ -2958,8 +2958,8 @@ export function registerDevTask(ctx: Context): void {
           }) : receiptView(state.verification.receipt)
           let run: TaskActivation | undefined
           try {
-            run = ownActivation(await runtime.startActivation({ provider: 'spawn', label: `${state.id}/${item.id}/review`, delivery: 'caller', signal: exec.signal,
-              request: { parent: exec.agent, cwd: state.root ?? cwd!, agentPreset: REVIEW_PRESET,
+            run = ownActivation(await startTaskActivation(runtime, { provider: 'spawn', label: `${state.id}/${item.id}/review`, delivery: 'caller', signal: exec.signal,
+              parent: exec.agent, cwd: state.root ?? cwd!, agentPreset: REVIEW_PRESET,
               ...structuredReview ? { outputSchema: REVIEW_OUTPUT_SCHEMA } : {},
               maxDepth: 3, prompt: [{ type: 'text', text:
                 `You are the independent task reviewer. Your work capability is read; do not edit, run commands, delegate or call dev_task.
@@ -2972,7 +2972,7 @@ Applicable project Skills and Rules (apply their code constraints; workflow acti
 ${reviewConstraints}
 Implementer report (unverified): ${item.dispatch.output ?? item.dispatch.description}
 Actual parent test receipts (host-captured summary; complete command output remains in the parent ledger): ${JSON.stringify(testReceipts)}
-${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. State blocking findings first; keep notes concise and cite concrete evidence rather than narrating the entire implementation. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] } }), exec.signal)
+${structuredReview ? 'Finish by calling the host structured_output tool with' : 'Return ONLY JSON'} {"spec":"pass"|"fail","quality":"pass"|"fail","notes":["file:line evidence and findings"]}. State blocking findings first; keep notes concise and cite concrete evidence rather than narrating the entire implementation. Return fail if required evidence cannot be read. Do not claim to run tests; the parent owns command verification.` }] }), exec.signal)
             review.run_id = run.childId
             review.status = 'running'
             await writeTask(fs, state, cwd, mode)

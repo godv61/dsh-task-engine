@@ -54,15 +54,18 @@ if(cachedModules){
     // Host-base module resolution follows real paths. Junctions could silently
     // load a different task-engine from the cache instead of this packed copy.
     cpSync(join(cache,entry.name),join(local,entry.name),{recursive:true,dereference:true})
-  assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
-  const plugin=join(local,'@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
-  const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
-  if(unpack.error)throw unpack.error
-  assert.equal(unpack.status,0,unpack.stderr)
 }else{
+  // Resolve the exact public host on its own. Both paths below load the same
+  // fresh tarball, never a cached plugin copy. Host admission still validates
+  // its peers; verify:package separately covers actual npm plugin installation.
   command(['install','--ignore-scripts','--no-audit','--no-fund','--prefer-offline','--fetch-retries=0',
-    ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`),join(root,artifact.filename)])
+    ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`)])
 }
+assert.ok(artifact.files.every(file=>!file.path.startsWith('/')&&!file.path.split('/').includes('..')))
+const plugin=join(root,'node_modules','@godv61','dsh-task-engine');mkdirSync(plugin,{recursive:true})
+const unpack=spawnSync('tar',['-xzf',join(root,artifact.filename),'--strip-components=1','-C',plugin],{encoding:'utf8'})
+if(unpack.error)throw unpack.error
+assert.equal(unpack.status,0,unpack.stderr)
 const modules=join(root,'node_modules','@deepseek-ai')
 // Check our source against this exact host's public declarations as well as
 // running the packed build. Dependencies in the authoring worktree stay intact.
@@ -82,11 +85,13 @@ if(existsSync(join(sourceRoot,'src'))){
 const probe=join(root,'probe.mjs'),proof=join(root,'proof.json')
 copyFileSync(new URL('./fixtures/preset-probe.mjs',import.meta.url),probe)
 copyFileSync(new URL('./fixtures/tool-runtime.mjs',import.meta.url),join(root,'tool-runtime.mjs'))
+const activation=['0.2.2-rc.1','0.2.2-rc.3'].includes(hostVersion)
+if(activation)copyFileSync(new URL('./fixtures/activation-probe.mjs',import.meta.url),join(root,'activation-probe.mjs'))
 const overlay=join(root,'probe.patch.yml')
 // Exercise a PTC deployment ancestor on the new host; the engine presets must
 // select native execution without changing the deployment or sibling Agents.
-const ptc=hostVersion==='0.2.2-rc.1'
-writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id: tool-executor-ptc\n  disabled: false\n':''}- insert:
+const ptc=['0.2.2-rc.1','0.2.2-rc.3'].includes(hostVersion)
+writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id: tool-executor-ptc\n  disabled: false\n':''}${activation?'- id: agent-default-model\n  config: { provider: activation-fixture, model: offline }\n':''}- insert:
     - id: preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config: { default: standard }
@@ -97,16 +102,20 @@ writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id
       name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
     - id: preset-probe
       name: '${pathToFileURL(probe).href}'
+${activation?`    - id: activation-probe\n      name: '${pathToFileURL(join(root,'activation-probe.mjs')).href}'\n`:''}
 `)
 const {DeepSeekHarness}=await import(pathToFileURL(join(modules,'dsh-sdk-client','lib','index.js')).href)
 const harness=new DeepSeekHarness({profile:'sdk',dshBin:join(modules,'dsh','lib','bin.js'),dshHome:home,
-  processCwd:root,cwd:project,provider:'preset-fixture',model:'offline',initializeTimeoutMs:60000,requestTimeoutMs:60000,
-  patches:[overlay,join(root,'node_modules','@godv61','dsh-task-engine','cordis.patch.yml')],env:{...env,TASK_ENGINE_PRESET_PROBE_RESULT:proof,TASK_ENGINE_PRESET_PTC:String(ptc)}})
+  processCwd:root,cwd:project,provider:activation?'activation-fixture':'preset-fixture',model:'offline',initializeTimeoutMs:60000,requestTimeoutMs:60000,
+  patches:[overlay,join(root,'node_modules','@godv61','dsh-task-engine','cordis.patch.yml')],env:{...env,TASK_ENGINE_PRESET_PROBE_RESULT:proof,TASK_ENGINE_PRESET_PTC:String(ptc),
+    TASK_ENGINE_ACTIVATION_PROBE_RESULT:join(root,'activation-proof.json')}})
 try{
   await harness.session('preset-eng-fixture').getWorkingDirectory()
   await harness.session('preset-readonly-fixture').getWorkingDirectory()
   const result=JSON.parse(readFileSync(proof,'utf8'))
   assert.equal(result.model_calls,0);assert.equal(result.observations.length,2)
   assert.ok(!existsSync(join(project,'forbidden.txt')))
-  console.log(JSON.stringify({host:hostVersion,...result},null,2))
+  if(activation)await harness.session('preset-activation-fixture').getWorkingDirectory()
+  const childResult=activation?JSON.parse(readFileSync(join(root,'activation-proof.json'),'utf8')):undefined
+  console.log(JSON.stringify({host:hostVersion,...result,...(childResult?{managed_activation:childResult}:{})},null,2))
 }finally{await harness.close()}

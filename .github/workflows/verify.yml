@@ -19,16 +19,17 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
-      - name: Prepare public legacy SDK dependencies on Node 24
-        if: runner.os == 'Windows' && matrix.node == 22
+      - name: Prepare public SDK dependencies on Node 24
+        if: runner.os == 'Windows'
         timeout-minutes: 10
         shell: pwsh
         run: |
-          $sdkCache = Join-Path $env:RUNNER_TEMP 'task-engine-legacy-sdk'
+          $sdkVersion = if ('${{ matrix.node }}' -eq '22') { '0.2.1-rc.5' } else { (Get-Content -LiteralPath 'package.json' -Raw | ConvertFrom-Json).devDependencies.'@deepseek-ai/dsh-typert-protocol' }
+          $sdkCache = Join-Path $env:RUNNER_TEMP ('task-engine-sdk-' + $sdkVersion)
           New-Item -ItemType Directory -Path $sdkCache -Force | Out-Null
-          '{"name":"task-engine-legacy-sdk","private":true,"type":"module"}' | Set-Content -LiteralPath (Join-Path $sdkCache 'package.json') -Encoding utf8
-          npm install --prefix $sdkCache --ignore-scripts --no-audit --no-fund --prefer-offline --fetch-retries=0 --registry=https://registry.npmjs.org/ @deepseek-ai/dsh@0.2.1-rc.5 @deepseek-ai/dsh-sdk-client@0.2.1-rc.5 @deepseek-ai/dsh-agent-preset-registry@0.2.1-rc.5 @deepseek-ai/dsh-tool-subagent@0.2.1-rc.5
-          if ($LASTEXITCODE -ne 0) { throw "Legacy SDK dependency setup failed: $LASTEXITCODE" }
+          '{"name":"task-engine-public-sdk","private":true,"type":"module"}' | Set-Content -LiteralPath (Join-Path $sdkCache 'package.json') -Encoding utf8
+          npm install --prefix $sdkCache --ignore-scripts --no-audit --no-fund --prefer-offline --fetch-retries=0 --loglevel=info --registry=https://registry.npmjs.org/ "@deepseek-ai/dsh@$sdkVersion" "@deepseek-ai/dsh-sdk-client@$sdkVersion" "@deepseek-ai/dsh-agent-preset-registry@$sdkVersion" "@deepseek-ai/dsh-tool-subagent@$sdkVersion"
+          if ($LASTEXITCODE -ne 0) { throw "SDK $sdkVersion dependency setup failed: $LASTEXITCODE" }
           "TASK_ENGINE_PRESET_NODE_MODULES=$(Join-Path $sdkCache 'node_modules')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - run: npm test
         if: matrix.node == 24
@@ -53,14 +54,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.node == 24
       - name: Verify current DSH preset runtime
         run: npm run verify:preset
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 24
+        if: matrix.node == 24
 
   preset-compat:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        dsh: [0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5]
+        dsh: [0.2.1-rc.3, 0.2.1-rc.4, 0.2.1-rc.5, 0.2.2-rc.1]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -69,7 +70,7 @@ jobs:
       - run: npm ci
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ startsWith(matrix.dsh, '0.2.2-') && '24' || '22' }}
       - run: npm run verify:preset
         env:
           TASK_ENGINE_DSH_VERSION: ${{ matrix.dsh }}
@@ -91,7 +92,7 @@ jobs:
         os: [windows-latest, ubuntu-latest]
         # `master` catches a breaking change as soon as DSH makes it; the pinned
         # release candidate keeps the supported 0.2 baseline pinned.
-        dsh: [master, dsh-v0.2.1-rc.3, dsh-v0.2.1-rc.4, dsh-v0.2.1-rc.5, dsh-v0.2.2-rc.1]
+        dsh: [master, dsh-v0.2.1-rc.3, dsh-v0.2.1-rc.4, dsh-v0.2.1-rc.5, dsh-v0.2.2-rc.1, dsh-v0.2.2-rc.3]
     continue-on-error: ${{ matrix.dsh == 'master' }}
     steps:
       - uses: actions/checkout@v4

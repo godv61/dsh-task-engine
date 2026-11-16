@@ -6,7 +6,7 @@ import type { ObjectJsonSchema } from '@deepseek-ai/dsh-tools'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { TaskState } from './engine.ts'
 import { executionCapabilities, taskSubagents } from './execution-plan.ts'
-import { ownActivation, reviewerEvents, reviewerProof } from './subagent-runtime.ts'
+import { startTaskActivation, ownActivation, reviewerEvents, reviewerProof } from './subagent-runtime.ts'
 import { READONLY_PRESET } from './reviewer-spec.ts'
 import { parseInvestigationReport, validateInvestigationReport, validateQuestions, type InvestigationQuestion, type InvestigationRun, type RunMetrics } from './delivery-contract.ts'
 export { runMetrics } from './run-observation.ts'
@@ -57,10 +57,10 @@ export async function investigate(ctx: Context, exec: ToolRunContext, store: Inv
       await update(attempt.id, entry => { entry.status = 'starting'; entry.started_at = new Date().toISOString() })
       const current = await store.read()
       const dependencies = current.delivery!.runs.filter(r => question.depends_on?.includes(r.question.id) && r.status === 'returned').map(r => ({ question: r.question.question, report: r.report }))
-      run = ownActivation(await runtime.startActivation({ provider: 'spawn', label: `${current.id}/analysis/${question.id}`, childId: SessionId(attempt.id),
-        delivery: 'caller', signal: exec.signal, request: { parent: exec.agent!, cwd: current.root!, agentPreset: READONLY_PRESET, maxDepth: 1,
+      run = ownActivation(await startTaskActivation(runtime, { provider: 'spawn', label: `${current.id}/analysis/${question.id}`, childId: SessionId(attempt.id),
+        delivery: 'caller', signal: exec.signal, parent: exec.agent!, cwd: current.root!, agentPreset: READONLY_PRESET, maxDepth: 1,
           ...(structured ? { outputSchema: REPORT_SCHEMA } : {}),
-          prompt: [{ type: 'text', text: `You are a read-only investigator, not an implementer or workflow controller. Answer exactly this question. Do not edit, run commands, delegate or change task records. Use glob/grep to discover paths; do not repeatedly guess missing filenames. Read only relevant source windows; follow project constraints. Return useful partial findings when context is missing.\nTask goal: ${current.title}\nUser-requested delivery: ${current.delivery!.reason}\nQuestion: ${JSON.stringify(question)}\nDependency reports (unverified): ${JSON.stringify(dependencies)}\nFinish with structured_output if offered; otherwise return ONLY JSON {"status":"complete"|"partial"|"blocked","summary":"findings and reasoning","evidence":[{"file":"repo-relative path","start_line":1,"end_line":2,"quote":"exact source text in this window"}],"limitations":["unknowns"]}. A run finishing does not imply parent acceptance. Cite evidence, not confidence scores. Report the central finding first and avoid pasting complete files.` }] } }), exec.signal)
+          prompt: [{ type: 'text', text: `You are a read-only investigator, not an implementer or workflow controller. Answer exactly this question. Do not edit, run commands, delegate or change task records. Use glob/grep to discover paths; do not repeatedly guess missing filenames. Read only relevant source windows; follow project constraints. Return useful partial findings when context is missing.\nTask goal: ${current.title}\nUser-requested delivery: ${current.delivery!.reason}\nQuestion: ${JSON.stringify(question)}\nDependency reports (unverified): ${JSON.stringify(dependencies)}\nFinish with structured_output if offered; otherwise return ONLY JSON {"status":"complete"|"partial"|"blocked","summary":"findings and reasoning","evidence":[{"file":"repo-relative path","start_line":1,"end_line":2,"quote":"exact source text in this window"}],"limitations":["unknowns"]}. A run finishing does not imply parent acceptance. Cite evidence, not confidence scores. Report the central finding first and avoid pasting complete files.` }] }), exec.signal)
       await update(attempt.id, entry => { entry.status = 'running'; entry.run_id = run!.childId })
       const result = await run.result
       if (result.stopReason !== 'completed') throw new Error(result.diagnostic ?? result.stopReason)
