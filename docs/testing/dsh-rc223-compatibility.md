@@ -31,6 +31,6 @@
 
 7 项跳过是原有缺少旧文件式预设宿主资源的可选检查，不作为当前兼容性通过证据。首次受限沙箱运行有 8 项因创建临时目录链接而触发 EPERM；普通本机权限下复验全部通过。SDK 夹具调试中修正了本地模型路由，并按宿主契约同时接受取消回执与取消异常；没有放宽生产门禁。
 
-发布 CI 首轮的两个 Windows 当前 SDK 作业在 npm 同时解析宿主与多版本 peer 插件时达到 600 秒超时，尚未进入运行验证。夹具改为先独立准备精确公共宿主，再统一解包本次 tarball；缓存与无缓存采用同一插件解包和加载路径，继续执行宿主 peer 校验、类型检查及全部 SDK 断言。实际 npm 安装插件的检查仍由 `verify:package` 保留。
+发布 CI 前两轮的 Windows 当前 SDK 作业均在夹具内 npm 依赖准备时达到 600 秒超时，尚未进入运行验证；拆分宿主与插件安装未消除该环境问题。Windows CI 改为沿用旧宿主已通过的独立 PowerShell 依赖准备步骤，输出实时安装进度，随后向全新 SDK 夹具复制已安装的公开依赖。插件始终解包本次 tarball，继续执行宿主 peer 校验、类型检查及全部 SDK 断言。实际 npm 安装插件的检查仍由 `verify:package` 保留。
 
 原始日志位于工作树上一层评测目录：`adaptation-build.log`、`adaptation-typecheck.log`、`adaptation-targeted.log`、`adaptation-full-test-node24.log`、`adaptation-package.log`、`adaptation-contract-rc3.log`、`adaptation-preset-rc3-final.log`、`adaptation-preset-rc1.log`、`adaptation-preset-legacy-rc3.log`。这些日志和测试 profile 不随 npm 包发布。上述为本机结果；远程 CI 与发布状态以关联 PR 和 GitHub Release 为准。

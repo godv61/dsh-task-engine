@@ -55,9 +55,9 @@ if(cachedModules){
     // load a different task-engine from the cache instead of this packed copy.
     cpSync(join(cache,entry.name),join(local,entry.name),{recursive:true,dereference:true})
 }else{
-  // Resolve the exact public host on its own. Including this multi-version
-  // peer plugin in that solve exceeded ten minutes on Windows runners. Both
-  // paths below load the same fresh tarball, never a cached plugin copy.
+  // Resolve the exact public host on its own. Both paths below load the same
+  // fresh tarball, never a cached plugin copy. Host admission still validates
+  // its peers; verify:package separately covers actual npm plugin installation.
   command(['install','--ignore-scripts','--no-audit','--no-fund','--prefer-offline','--fetch-retries=0',
     ...['dsh','dsh-sdk-client','dsh-agent-preset-registry','dsh-tool-subagent'].map(name=>`@deepseek-ai/${name}@${hostVersion}`)])
 }
