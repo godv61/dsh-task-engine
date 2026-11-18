@@ -74,6 +74,25 @@ test('a summary cannot overwrite metadata, another task, or another child worksp
 })
 
 const formTemplate = '<!doctype html>\n<style>body{color:#123}</style>\n<script type="application/json" id="form-data">{"sample":true}</script>\n<script>window.formUsesOwnLogic=true</script>\n'
+test('requirement pre-execution recheck allows Word text reading while preserving all write and conversion limits', async () => {
+  const f=fixture();await f.create()
+  let reached=0
+  const execute=async(name,args)=>f.listeners.get('tools/pre-execute')({agent:f.agent,name,arguments:args},async()=>{reached++;return{kind:'executed'}})
+  assert.equal((await execute('office_convert',{input:'需求.docx',format:'txt'})).kind,'executed')
+  assert.equal((await execute('office_render',{input:'需求.docx',pages:[1]})).kind,'executed')
+  for(const [name,args] of [['office_convert',{input:'需求.docx',format:'pdf'}],['office_recalculate',{input:'book.xlsx',format:'xlsx'}],['write',{}],['pwsh',{}]]) {
+    assert.equal((await execute(name,args)).kind,'deny')
+  }
+  assert.equal(reached,2);assert.equal(f.state().requirement_confirmed,false);assert.deepEqual(f.state().files,[])
+  await f.record();const summary=await f.prepare();await f.confirm(summary.requirement.hash)
+  assert.equal(f.guards[0]({agent:f.agent,name:'office_convert',arguments:{input:'需求.docx',format:'pdf'}}),undefined)
+  // A user edit after admission must close the broader conversion path at pre-execute.
+  f.files.set(join(f.cwd,summary.requirement.path),'user changed the confirmed summary')
+  assert.equal((await execute('office_convert',{input:'需求.docx',format:'pdf'})).kind,'deny')
+  assert.equal((await execute('office_convert',{input:'需求.docx',format:'txt'})).kind,'executed')
+  assert.equal(reached,3)
+})
+
 async function materialFixture(options) {
   const f = fixture(options)
   f.files.set(join(f.cwd, '.dsh/meta.json'), JSON.stringify({ meta_bindings: { 'requirements-analysis': ['form-kit'] } }))

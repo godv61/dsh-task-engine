@@ -19,9 +19,21 @@ const requirementChecks = new WeakMap<object, () => Promise<string | undefined>>
 const presentationUndo = new WeakMap<object, () => void>()
 const unrestrictedTools = new WeakMap<object, ReadonlySet<string>>()
 const plannedCommands = new WeakMap<object, { task: string; root?: string; groups: { id: string; words: string[] }[] }>()
-const readTools = new Set(['read', 'glob', 'grep', 'skill', 'working_directory', 'ask_user_question', 'dev_task', 'structured_output', 'list_agents'])
+const readTools = new Set(['read', 'glob', 'grep', 'skill', 'working_directory', 'ask_user_question', 'dev_task', 'structured_output', 'list_agents', 'office_convert', 'office_render'])
 const entryTools = new Set(['dev_task', 'working_directory', 'skill', 'ask_user_question'])
 const commandTools = ['pwsh', 'powershell', 'bash', 'sh', 'shell', 'terminal', 'exec_command']
+/** Host conversion preserves the input and writes only to its private output store.
+ * Read-only agents may extract Word text, not export arbitrary deliverables or recalculate workbooks.
+ * Validate execution arguments too: scoped/nested calls can remain visible.
+ */
+function documentReadProblem(name: string, args: unknown): string | undefined {
+  if (name !== 'office_convert') return undefined
+  const input = args as { input?: unknown; format?: unknown } | null | undefined
+  if (input && typeof input === 'object' && !Array.isArray(input)
+    && input.format === 'txt' && typeof input.input === 'string' && /\.(?:docx?|odt)$/iu.test(input.input)
+    && Object.keys(input).every(key => key === 'input' || key === 'format')) return undefined
+  return '只读阶段 office_convert 仅允许 input 为 .doc/.docx/.odt 文档、format="txt"，不接受其他参数；用 read 读取返回的临时 file，无需终端复制。其他导出和重算仍需按任务权限执行。'
+}
 export function untrackedDelegationProblem(name: string): string | undefined {
   return /^(?:spawn_teammate$|subagent(?:_|$)|send_message$|interrupt_agent$|workflow(?:_|$)|ralph(?:_|$))/u.test(name)
     ? 'Engineering delegation must be tracked. No delegation action was executed. Use dev_task delegate only for an active intent=analysis task with questions, delegation_benefit and execution_reason; for implementation use plan_execution/dispatch in development. Start a linked follow-up for new work after archival.' : undefined
@@ -117,6 +129,10 @@ export async function bindTaskDelivery(ctx: Context, agent: Agent | undefined, s
 }
 export function analysisAccessProblem(agent: object | undefined, name: string, args?: unknown): string | undefined {
   if (agent && modes.get(agent) === 'pending' && !entryTools.has(name)) return 'Before repository tools, select the user deliverable through dev_task: status/create intent=analysis for diagnosis/proposal, or intent=implementation for requested code changes. Ordinary questions can be answered directly. No tool was executed.'
+  if (agent && ['analysis', 'requirements', 'history'].includes(modes.get(agent) ?? '')) {
+    const problem = documentReadProblem(name, args)
+    if (problem) return problem
+  }
   const operation = (args as { operation?: string } | undefined)?.operation
   if (agent && modes.get(agent) === 'history' && (!readTools.has(name) || name === 'dev_task'
     && !['status', 'config', 'assess', 'create'].includes(operation ?? '')))
@@ -128,9 +144,15 @@ export function analysisAccessProblem(agent: object | undefined, name: string, a
     && !['analysis', 'implementation'].includes((args as { intent?: string }).intent ?? '')) return '当前处于需求确认阶段，新任务必须明确 intent=analysis|implementation，不能退回旧调用绕过确认'
   const metadataSafe = name !== 'dev_task' || ['status', 'config', 'assess', 'create', 'delegate', 'submit_analysis', 'recover_analysis', 'complete'].includes(operation ?? '')
   return agent && modes.get(agent) === 'analysis' && (!readTools.has(name) || !metadataSafe)
-    ? 'This task is analysis-only. Use read/glob/grep and submit source evidence. Implementation or command side effects require a separately authorized implementation task.' : undefined
+    ? 'This task is analysis-only. Use read/glob/grep and submit source evidence. For Word documents load office, use office_convert(input, format="txt"), then read the returned temporary file; office_render can inspect pages. Implementation or command side effects require a separately authorized implementation task.' : undefined
 }
 export function installDeliveryAccess(ctx: Context, restore: (agent: Agent) => Promise<TaskState | undefined>): void {
+  ctx.get('systemPrompt')?.section({ name: 'task-engine:document-reading', order: 900, text: ({ scope }) => {
+    const mode = scope && modes.get(scope)
+    return mode === 'analysis' || mode === 'requirements' || mode === 'history'
+      ? '当前为只读阶段。Word 原件请加载 office 技能，调用 office_convert，仅传 input 与 format="txt"，再 read 返回的临时 file。office_render 可查看页面；TXT 不覆盖图片和版式。临时转换不改原件或业务文件；不要按转换工具的通用交付提示执行 shell 复制，也不要为读取文档新建实施任务。需求未确认时写入与终端暂时隐藏，不代表会话永久缺少实施工具。转换服务不可用或无读取权限时如实报告未读范围，不冒称已读。'
+      : ''
+  } })
   const aliases = ctx.tools.schemas?.().filter(tool => untrackedDelegationProblem(tool.name)).map(tool => tool.name) ?? []
   if (aliases.length) ctx.tools.restrict?.({ deny: aliases })
   ctx.tools.guard?.(exec => untrackedDelegationProblem(exec.name) ?? analysisAccessProblem(exec.agent, exec.name, exec.arguments)
@@ -140,6 +162,9 @@ export function installDeliveryAccess(ctx: Context, restore: (agent: Agent) => P
     if (exec.agent) {
       const problem = await requirementChecks.get(exec.agent)?.()
       if (problem && !readTools.has(exec.name)) return { kind: 'deny', reason: problem }
+      // The requirement recheck can change the mode after a call was admitted.
+      const access = analysisAccessProblem(exec.agent, exec.name, exec.arguments)
+      if (access) return { kind: 'deny', reason: access }
       const planned = nativeVerificationProblem(exec.agent, exec.name, exec.arguments)
       if (planned) return { kind: 'deny', reason: planned }
     }
