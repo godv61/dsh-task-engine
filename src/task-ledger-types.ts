@@ -21,6 +21,7 @@ export interface TaskLedgerItem {
     output?: string
     error?: string
     finished_at?: string
+    team?: import('./engine.ts').TeamDispatchLink
     metrics?: import('./delivery-contract.ts').RunMetrics
   }
   dispatch_history?: NonNullable<TaskLedgerItem['dispatch']>[]

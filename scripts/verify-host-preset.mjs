@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process'
 
 const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'))
 const hostVersion=process.env.TASK_ENGINE_DSH_VERSION??manifest.devDependencies['@deepseek-ai/dsh-typert-protocol']
+const team=hostVersion==='0.2.2-rc.5'
 const supported=manifest.peerDependencies['@deepseek-ai/dsh-typert-protocol'].split('||').map(version=>version.trim())
 assert.ok(supported.includes(hostVersion)||hostVersion===manifest.devDependencies['@deepseek-ai/dsh-typert-protocol'],`DSH ${hostVersion} is neither supported nor the pinned development candidate`)
 
@@ -34,7 +35,7 @@ function command(args,cwd=root){
   console.log(`Preparing preset fixture: npm ${args[0]} (timeout ${timeout/1000}s)`)
   const result=spawnSync(process.execPath,[process.env.npm_execpath,...args],{cwd,env,encoding:'utf8',timeout,maxBuffer:8*1024*1024})
   if(result.error)throw new Error(`Preset fixture npm ${args[0]} failed: ${result.error.message}\n${String(result.stderr??'').slice(-4000)}`,{cause:result.error})
-  if(result.status!==0)throw new Error(result.stderr||result.stdout)
+  if(result.status!==0)throw new Error([result.stdout,result.stderr].filter(Boolean).join('\n'))
   return result.stdout
 }
 const packed=command(['pack','--json','--pack-destination',root],resolve(import.meta.dirname,'..'))
@@ -71,9 +72,17 @@ const modules=join(root,'node_modules','@deepseek-ai')
 // running the packed build. Dependencies in the authoring worktree stay intact.
 const sourceRoot=resolve(import.meta.dirname,'..')
 if(existsSync(join(sourceRoot,'src'))){
-  for(const config of ['tsconfig.json','tsconfig.client.json']){
+  const configs=['tsconfig.json','tsconfig.client.json']
+  if(team){
+    copyFileSync(new URL('./fixtures/team-contract.ts',import.meta.url),join(root,'team-contract.ts'))
+    configs.push('team-contract')
+  }
+  for(const config of configs){
+    const teamTypes=config==='team-contract'
     const target=join(root,`host-${config}`)
-    writeFileSync(target,JSON.stringify({extends:join(sourceRoot,config),compilerOptions:{
+    writeFileSync(target,JSON.stringify({extends:join(sourceRoot,teamTypes?'tsconfig.json':config),
+      ...(teamTypes?{files:[join(root,'team-contract.ts')],include:[],exclude:[]}:{}),compilerOptions:{
+      ...(teamTypes?{rootDir:root,declaration:false}:{}),
       baseUrl:root,paths:{'@deepseek-ai/*':[join(modules,'*')]},
       typeRoots:[join(sourceRoot,'node_modules','@types')],noEmit:true}}))
     const checked=spawnSync(process.execPath,[join(sourceRoot,'node_modules','typescript','bin','tsc'),'-p',target],
@@ -85,12 +94,13 @@ if(existsSync(join(sourceRoot,'src'))){
 const probe=join(root,'probe.mjs'),proof=join(root,'proof.json')
 copyFileSync(new URL('./fixtures/preset-probe.mjs',import.meta.url),probe)
 copyFileSync(new URL('./fixtures/tool-runtime.mjs',import.meta.url),join(root,'tool-runtime.mjs'))
-const activation=['0.2.2-rc.1','0.2.2-rc.3'].includes(hostVersion)
+const activation=['0.2.2-rc.1','0.2.2-rc.3','0.2.2-rc.5'].includes(hostVersion)
 if(activation)copyFileSync(new URL('./fixtures/activation-probe.mjs',import.meta.url),join(root,'activation-probe.mjs'))
 const overlay=join(root,'probe.patch.yml')
 // Exercise a PTC deployment ancestor on the new host; the engine presets must
 // select native execution without changing the deployment or sibling Agents.
-const ptc=['0.2.2-rc.1','0.2.2-rc.3'].includes(hostVersion)
+const ptc=activation
+if(team)copyFileSync(new URL('./fixtures/team-probe.mjs',import.meta.url),join(root,'team-probe.mjs'))
 writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id: tool-executor-ptc\n  disabled: false\n':''}${activation?'- id: agent-default-model\n  config: { provider: activation-fixture, model: offline }\n':''}- insert:
     - id: preset-registry
       name: '@deepseek-ai/dsh-agent-preset-registry'
@@ -102,20 +112,30 @@ writeFileSync(overlay,`${ptc?'- id: tool-executor-native\n  disabled: true\n- id
       name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
     - id: preset-probe
       name: '${pathToFileURL(probe).href}'
-${activation?`    - id: activation-probe\n      name: '${pathToFileURL(join(root,'activation-probe.mjs')).href}'\n`:''}
+${activation?`    - id: activation-probe\n      name: '${pathToFileURL(join(root,'activation-probe.mjs')).href}'\n`:''}${team?`    - id: team-probe\n      name: '${pathToFileURL(join(root,'team-probe.mjs')).href}'\n`:''}
 `)
 const {DeepSeekHarness}=await import(pathToFileURL(join(modules,'dsh-sdk-client','lib','index.js')).href)
-const harness=new DeepSeekHarness({profile:'sdk',dshBin:join(modules,'dsh','lib','bin.js'),dshHome:home,
-  processCwd:root,cwd:project,provider:activation?'activation-fixture':'preset-fixture',model:'offline',initializeTimeoutMs:60000,requestTimeoutMs:60000,
+const makeHarness=(provider,model='offline',reasoningEffort)=>new DeepSeekHarness({profile:'sdk',dshBin:join(modules,'dsh','lib','bin.js'),dshHome:home,
+  processCwd:root,cwd:project,provider,model,reasoningEffort,initializeTimeoutMs:60000,requestTimeoutMs:60000,
   patches:[overlay,join(root,'node_modules','@godv61','dsh-task-engine','cordis.patch.yml')],env:{...env,TASK_ENGINE_PRESET_PROBE_RESULT:proof,TASK_ENGINE_PRESET_PTC:String(ptc),
-    TASK_ENGINE_ACTIVATION_PROBE_RESULT:join(root,'activation-proof.json')}})
+    TASK_ENGINE_ACTIVATION_PROBE_RESULT:join(root,'activation-proof.json'),TASK_ENGINE_TEAM_PROBE_RESULT:join(root,'team-proof.json')}})
+const harness=makeHarness(activation?'activation-fixture':'preset-fixture')
+let result,childResult
 try{
   await harness.session('preset-eng-fixture').getWorkingDirectory()
   await harness.session('preset-readonly-fixture').getWorkingDirectory()
-  const result=JSON.parse(readFileSync(proof,'utf8'))
+  result=JSON.parse(readFileSync(proof,'utf8'))
   assert.equal(result.model_calls,0);assert.equal(result.observations.length,2)
   assert.ok(!existsSync(join(project,'forbidden.txt')))
   if(activation)await harness.session('preset-activation-fixture').getWorkingDirectory()
-  const childResult=activation?JSON.parse(readFileSync(join(root,'activation-proof.json'),'utf8')):undefined
-  console.log(JSON.stringify({host:hostVersion,...result,...(childResult?{managed_activation:childResult}:{})},null,2))
+  childResult=activation?JSON.parse(readFileSync(join(root,'activation-proof.json'),'utf8')):undefined
 }finally{await harness.close()}
+let teamResult
+if(team){
+  const teams=makeHarness('team-fixture','deepseek-v4.1-flash','max')
+  try{
+    await teams.session('preset-team-fixture').getWorkingDirectory()
+    teamResult=JSON.parse(readFileSync(join(root,'team-proof.json'),'utf8'))
+  }finally{await teams.close()}
+}
+console.log(JSON.stringify({host:hostVersion,...result,...(childResult?{managed_activation:childResult}:{}),...(teamResult?{agent_teams:teamResult}:{})},null,2))

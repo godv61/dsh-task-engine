@@ -223,7 +223,9 @@ const runMetricsSchema = z.object({ elapsed_ms: z.number(), tool_calls: z.number
 
 /** Browser-safe shape of one task ledger item's dispatch/review audit. */
 const taskDispatchSchema = z.object({ metrics: runMetricsSchema.optional(), description: z.string(), at: z.string(), provider: z.string().optional(), run_id: z.string().optional(),
-  status: z.string().optional(), execution: z.string().optional(), output: z.string().optional(), error: z.string().optional(), finished_at: z.string().optional() })
+  status: z.string().optional(), execution: z.string().optional(), output: z.string().optional(), error: z.string().optional(), finished_at: z.string().optional(),
+  team: z.object({ board_id: z.string().optional(), member: z.string().optional(), message_id: z.string().optional(),
+    activation_id: z.string().optional(), cancelled: z.boolean().optional(), board_problem: z.string().optional() }).optional() })
 const executionPlanSchema = z.object({ requested: z.enum(['auto', 'direct', 'spawn', 'fork']), mode: z.enum(['direct', 'spawn', 'fork']),
   delegation_benefit: z.enum(['parallel','context_isolation','independent_check']).optional(),
   reason: z.string(), boundary: z.enum(['local', 'independent', 'coupled']), context: z.enum(['brief', 'history']),

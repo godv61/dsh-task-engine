@@ -30,7 +30,7 @@ function itemView(item: TaskItem): unknown {
       acceptance: undefined, acceptance_count: plan.acceptance.length,
       reason: excerpt(plan.reason) } } : {}),
     ...(dispatch ? { dispatch: { execution: dispatch.execution, status: dispatch.status, run_id: dispatch.run_id,
-      at: dispatch.at, error: dispatch.error, description: excerpt(dispatch.description),
+      at: dispatch.at, error: dispatch.error, team: dispatch.team, description: excerpt(dispatch.description),
       ...(dispatch.output ? { output_available: true, output_characters: dispatch.output.length } : {}) } } : {}),
     ...(review ? { review: { ...review, verification_key: undefined,
       ...(review.verification_key ? { verification_key_hash: hashText(review.verification_key) } : {}),

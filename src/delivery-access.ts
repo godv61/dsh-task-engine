@@ -10,6 +10,7 @@ import { loadTask } from './task-store.ts'
 import { commandName, commandWords } from './command-words.ts'
 import { resolve } from 'node:path'
 import { presentNativeTools } from './tool-executor-compat.ts'
+import { teamsEnabled } from './team-delivery.ts'
 import { executionCapabilities } from './execution-plan.ts'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 
@@ -19,7 +20,7 @@ const requirementChecks = new WeakMap<object, () => Promise<string | undefined>>
 const presentationUndo = new WeakMap<object, () => void>()
 const unrestrictedTools = new WeakMap<object, ReadonlySet<string>>()
 const plannedCommands = new WeakMap<object, { task: string; root?: string; groups: { id: string; words: string[] }[] }>()
-const readTools = new Set(['read', 'glob', 'grep', 'skill', 'working_directory', 'ask_user_question', 'dev_task', 'structured_output', 'list_agents', 'office_convert', 'office_render'])
+const readTools = new Set(['read', 'glob', 'grep', 'skill', 'working_directory', 'ask_user_question', 'dev_task', 'structured_output', 'list_agents', 'team_task_list', 'team_task_get', 'office_convert', 'office_render'])
 const entryTools = new Set(['dev_task', 'working_directory', 'skill', 'ask_user_question'])
 const commandTools = ['pwsh', 'powershell', 'bash', 'sh', 'shell', 'terminal', 'exec_command']
 /** Host conversion preserves the input and writes only to its private output store.
@@ -35,8 +36,8 @@ function documentReadProblem(name: string, args: unknown): string | undefined {
   return '只读阶段 office_convert 仅允许 input 为 .doc/.docx/.odt 文档、format="txt"，不接受其他参数；用 read 读取返回的临时 file，无需终端复制。其他导出和重算仍需按任务权限执行。'
 }
 export function untrackedDelegationProblem(name: string): string | undefined {
-  return /^(?:spawn_teammate$|subagent(?:_|$)|send_message$|interrupt_agent$|workflow(?:_|$)|ralph(?:_|$))/u.test(name)
-    ? 'Engineering delegation must be tracked. No delegation action was executed. Use dev_task delegate only for an active intent=analysis task with questions, delegation_benefit and execution_reason; for implementation use plan_execution/dispatch in development. Start a linked follow-up for new work after archival.' : undefined
+  return /^(?:spawn_teammate$|subagent(?:_|$)|send_message$|interrupt_agent$|team_task_(?:create|update)$|workflow(?:_|$)|ralph(?:_|$))/u.test(name)
+    ? 'Engineering delegation must be tracked. Use dev_task dispatch/team_resume/team_cancel for tracked Team implementation. Use dev_task delegate only for an active intent=analysis task with questions, delegation_benefit and execution_reason; for implementation use plan_execution/dispatch in development. Start a linked follow-up for new work after archival.' : undefined
 }
 export function bindDeliveryIntent(agent: object | undefined, intent: AccessMode | undefined): void {
   if (!agent) return
@@ -138,7 +139,7 @@ export function analysisAccessProblem(agent: object | undefined, name: string, a
     && !['status', 'config', 'assess', 'create'].includes(operation ?? '')))
     return '此任务为历史记录，仅可查看；继续工作请创建新任务。'
   if (agent && modes.get(agent) === 'requirements' && (!readTools.has(name) || name === 'dev_task'
-    && !['status', 'assess', 'config', 'create', 'load_skill', 'record', 'scope', 'revise', 'advance', 'clarify_requirement', 'prepare_requirement', 'confirm_requirement', 'write_requirement_material', 'retire_requirement_material'].includes(operation ?? '')))
+    && !['status', 'assess', 'config', 'create', 'load_skill', 'record', 'scope', 'revise', 'advance', 'clarify_requirement', 'prepare_requirement', 'confirm_requirement', 'write_requirement_material', 'retire_requirement_material', 'team_cancel', 'team_collect', 'recover_dispatch'].includes(operation ?? '')))
     return '需求尚未由用户确认；可以查阅、澄清和整理需求，不能修改业务文件、执行命令或启动实施'
   if (agent && modes.get(agent) === 'requirements' && name === 'dev_task' && operation === 'create'
     && !['analysis', 'implementation'].includes((args as { intent?: string }).intent ?? '')) return '当前处于需求确认阶段，新任务必须明确 intent=analysis|implementation，不能退回旧调用绕过确认'
@@ -190,6 +191,11 @@ export function installDeliveryAccess(ctx: Context, restore: (agent: Agent) => P
       else bindDeliveryIntent(agent, 'pending')
       restored.add(agent)
     } else if (agent) await requirementChecks.get(agent)?.()
-    return next()
+    const presentation = await next()
+    if (!agent || !presentation.sections.some(section => section.name === 'team:policy')) return presentation
+    const teamEnabled = teamsEnabled(ctx, agent)
+    return { ...presentation, sections: presentation.sections.map(section => section.name === 'team:policy' && section.text
+      ? { ...section, text: teamEnabled ? '团队模式已开启。工程实施使用 dev_task dispatch 分派已登记独立实施项，使用 team_resume 发送受控续跑消息、team_cancel 请求停止，使用原生 list_agents、team_task_list、team_task_get 和 wait_agent 查看。成员结束后用 team_collect 收取，再由 Lead 运行真实验证和验收。只读调查走 dev_task delegate。' : '此宿主缺少工程团队协作所需的公共任务板接口。工程交付继续使用 dev_task 的受控派发和验证。' }
+      : section) }
   })
 }

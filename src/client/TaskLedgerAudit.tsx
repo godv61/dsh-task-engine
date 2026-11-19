@@ -100,7 +100,10 @@ export function itemAudit(item: TaskLedgerItem): ReturnType<typeof createElement
     ...item.dispatch_history.map((entry, index) => createElement('p', { key: index }, `${entry.provider ?? 'direct'} · ${entry.run_id ?? ''} · ${entry.status ?? ''} · ${timeText(entry.at)}`))))
   if (item.dispatch !== undefined) {
     if (item.dispatch.run_id) lines.push(createElement('details', { key: 'child' },
-      createElement('summary', null, `${executionLabel(item.dispatch.provider ?? 'spawn')} · ${statusLabel(item.dispatch.status)} · ${item.dispatch.run_id}`),
+      createElement('summary', null, `${executionLabel(item.dispatch.provider ?? 'spawn')} · ${statusLabel(item.dispatch.status)} · ${item.dispatch.team?.member ?? item.dispatch.run_id}`),
+      item.dispatch.team?.board_id ? createElement('p', { style: metaLine }, `DSH 团队任务 ${item.dispatch.team.board_id} · 成员会话 ${item.dispatch.run_id}`) : null,
+      item.dispatch.team?.message_id ? createElement('p', { style: metaLine }, `消息回执 ${item.dispatch.team.message_id}`) : null,
+      item.dispatch.team?.board_problem ? createElement('p', { role: 'alert' }, item.dispatch.team.board_problem) : null,
       item.dispatch.metrics ? createElement('p', { style: metaLine }, metricsText(item.dispatch.metrics)) : null,
       createElement('pre', { style: { whiteSpace: 'pre-wrap' } }, item.dispatch.output ?? ''),
       item.dispatch.error ? createElement('p', { role: 'alert' }, item.dispatch.error) : null))
