@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { testEvidence, receiptHasRequiredTests, skillCommandProblem } from './lib/verification-tests.js'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -87,4 +87,231 @@ test('actual stdlib unittest distinguishes passing cases from skips, expected fa
     assert.equal(testEvidence(`python -B -m unittest discover -s "${root}" -v`, result.stdout + '\n' + result.stderr).count, count, result.stderr)
     assert.equal(receiptHasRequiredTests({ command: 'python -B -m unittest discover -v', stdout: result.stdout, stderr: result.stderr }), count > 0)
   })
+})
+
+test('a CTest run reports the cases that actually ran', () => {
+  const cases = [
+    // Clean, failing, empty and --output-on-failure summaries.
+    ['ctest --test-dir build --output-on-failure', '100% tests passed, 0 tests failed out of 192', 192],
+    ['ctest --test-dir build', '100% tests passed out of 192', 192],
+    ['ctest --test-dir build', '0% tests passed out of 0', 0],
+    ['ctest --test-dir build --output-on-failure', '66% tests passed, 65 tests failed out of 192', 0],
+    ['/usr/bin/ctest', '100% tests passed, 0 tests failed out of 1', 1],
+    ['./cmake-build/ctest', '100% tests passed, 0 tests failed out of 4', 4],
+    ['ctest', 'No tests were found!!!', 0],
+    ['ctest --test-dir build', 'Test #1: link\n    Test Passed.', null],
+    // A quoted Windows path with spaces is still the ctest program.
+    ['"C:\\Program Files\\CMake\\bin\\ctest.exe" --test-dir build', '100% tests passed, 0 tests failed out of 3', 3],
+    // CTest keeps 100% when cases are skipped; skipped cases are not passing evidence.
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......***Skipped\n2/2 Test #2: b .......   Passed\n\n100% tests passed out of 2', 1],
+    ['ctest --test-dir build',
+      '1/1 Test #1: only .......***Skipped\n\n100% tests passed out of 1', 0],
+    // A multi-config generator without -C prints "***Not Run" for every case: it never launched, so
+    // the 100% summary is not passing evidence.
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......***Not Run\n2/2 Test #2: b .......***Not Run\n\n100% tests passed, 0 tests failed out of 2', 0],
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......   Passed\n2/2 Test #2: b .......***Not Run\n\n100% tests passed out of 2', 1],
+    // A disabled case also prints "***Not Run" but is already left out of the reported total.
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......   Passed\n2/2 Test #2: b .......***Not Run (Disabled)\n\n100% tests passed out of 1', 1],
+    ['ctest --test-dir build',
+      '1/2 Test #1: a .......***Failed\n2/2 Test #2: b .......***Skipped\n\n50% tests passed, 1 tests failed out of 2', 0],
+    // Only the program that ran the suite may offer a CTest summary.
+    ['/work/build/tests', '100% tests passed, 0 tests failed out of 3', null],
+    ['echo "100% tests passed, 0 tests failed out of 3"', 'fake', null],
+    ['cat ctest-output.txt', '100% tests passed, 0 tests failed out of 3', null],
+    ['sh -c "ctest --test-dir build"', '100% tests passed, 0 tests failed out of 3', null],
+    ['cmd /c ctest --test-dir build', '100% tests passed, 0 tests failed out of 3', null],
+    ['npm test', '100% tests passed, 0 tests failed out of 3', null],
+  ]
+  for (const [command, stdout, expected] of cases) {
+    assert.equal(testEvidence(command, stdout).count, expected, command)
+    assert.equal(receiptHasRequiredTests({ command, stdout, stderr: '' }), expected > 0, command)
+  }
+})
+
+test('a real CTest run reports passing cases and rejects an all-skipped suite', async t => {
+  const cmake = process.env.CMAKE_BINARY ?? 'cmake'
+  const ctest = process.env.CTEST_BINARY ?? 'ctest'
+  const requireReal = process.env.REQUIRE_CPP_EVIDENCE === '1'
+  const cmakeProbe = spawnSync(cmake, ['--version'], { encoding: 'utf8' })
+  const ctestProbe = spawnSync(ctest, ['--version'], { encoding: 'utf8' })
+  if (cmakeProbe.error?.code === 'ENOENT' || ctestProbe.error?.code === 'ENOENT') {
+    // A skipped smoke test proves nothing; CI sets this flag so a missing toolchain fails the run.
+    if (requireReal) assert.fail('CMake and CTest must be installed when REQUIRE_CPP_EVIDENCE=1')
+    t.skip('CMake/CTest is not installed; parser cases remain covered above')
+    return
+  }
+  assert.equal(cmakeProbe.status, 0, cmakeProbe.stderr)
+  assert.equal(ctestProbe.status, 0, ctestProbe.stderr)
+  const root = mkdtempSync(join(tmpdir(), 'ctest-evidence-'))
+  // This exact absolute directory was created above, with no caller-supplied path.
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  // The generator stays whatever the host defaults to unless CI pins one. A multi-config
+  // generator (Visual Studio, Xcode) needs `-C <config>` or every test reports "***Not Run".
+  const extra = []
+  if (process.env.CMAKE_GENERATOR) extra.push('-G', process.env.CMAKE_GENERATOR)
+  const configure = (name, body) => {
+    writeFileSync(join(root, 'CMakeLists.txt'), body)
+    const dir = join(root, name)
+    const result = spawnSync(cmake, ['-S', root, '-B', dir, `-DNODE=${process.execPath}`, ...extra], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    return dir
+  }
+  const multiConfig = dir => {
+    const cache = join(dir, 'CMakeCache.txt')
+    return existsSync(cache) && /^CMAKE_CONFIGURATION_TYPES:/mu.test(readFileSync(cache, 'utf8'))
+  }
+  const run = dir => {
+    const result = spawnSync(ctest, ['--test-dir', dir, ...(multiConfig(dir) ? ['-C', 'Debug'] : []), '--output-on-failure'], { encoding: 'utf8' })
+    return { status: result.status, output: `${result.stdout}\n${result.stderr}` }
+  }
+  const head = 'cmake_minimum_required(VERSION 3.20)\nproject(evidence NONE)\nenable_testing()\n'
+  const mixed = configure('mixed', `${head}add_test(NAME pass COMMAND \${CMAKE_COMMAND} -E true)\nadd_test(NAME skip COMMAND \${NODE} -e "process.exit(77)")\nset_tests_properties(skip PROPERTIES SKIP_RETURN_CODE 77)\n`)
+  const mixedRun = run(mixed)
+  assert.equal(mixedRun.status, 0, mixedRun.output)
+  // The directory path is quoted (and contains a space on many hosts), like a real Windows call.
+  assert.equal(testEvidence(`ctest --test-dir "${mixed}" --output-on-failure`, mixedRun.output).count, 1, mixedRun.output)
+  const skipped = configure('skipped', `${head}add_test(NAME skip COMMAND \${NODE} -e "process.exit(77)")\nset_tests_properties(skip PROPERTIES SKIP_RETURN_CODE 77)\n`)
+  const skippedRun = run(skipped)
+  assert.equal(skippedRun.status, 0, skippedRun.output)
+  assert.equal(testEvidence(`ctest --test-dir "${skipped}"`, skippedRun.output).count, 0, skippedRun.output)
+  assert.equal(receiptHasRequiredTests({ command: `ctest --test-dir "${skipped}"`, stdout: skippedRun.output, stderr: '' }), false)
+  const failing = configure('failing', `${head}add_test(NAME fail COMMAND \${NODE} -e "process.exit(1)")\n`)
+  const failingRun = run(failing)
+  assert.notEqual(failingRun.status, 0)
+  assert.equal(testEvidence(`ctest --test-dir "${failing}"`, failingRun.output).count, 0, failingRun.output)
+  // A multi-config generator without `-C` reports every case as "***Not Run"; that is not evidence.
+  writeFileSync(join(root, 'CMakeLists.txt'), `${head}add_test(NAME pass COMMAND \${CMAKE_COMMAND} -E true)\n`)
+  const multi = join(root, 'multi-config')
+  const multiConfigure = spawnSync(cmake, ['-S', root, '-B', multi, `-DNODE=${process.execPath}`, '-G', 'Ninja Multi-Config'], { encoding: 'utf8' })
+  if (multiConfigure.status === 0) {
+    const multiRun = spawnSync(ctest, ['--test-dir', multi, '--output-on-failure'], { encoding: 'utf8' })
+    const multiOutput = `${multiRun.stdout}\n${multiRun.stderr}`
+    assert.match(multiOutput, /\*\*\*Not Run/u, multiOutput)
+    assert.equal(testEvidence(`ctest --test-dir "${multi}"`, multiOutput).count, 0, multiOutput)
+  } else if (requireReal && process.platform !== 'win32') {
+    // Windows keeps its default Visual Studio generator here; Linux must have Ninja to prove this case.
+    assert.fail(`Ninja Multi-Config must be available when REQUIRE_CPP_EVIDENCE=1: ${multiConfigure.stdout}${multiConfigure.stderr}`)
+  }
+})
+
+test('a GoogleTest run reports the cases that actually ran', () => {
+  const passed = '[==========] 5 tests from 2 test suites ran.\n[  PASSED  ] 5 tests.'
+  const cases = [
+    // A compiled suite invoked by its path is the only positive form.
+    ['/work/build/foray_platform_tests', '[==========] 192 tests from 39 test suites ran.\n[  PASSED  ] 192 tests.', 192],
+    ['./build/suite_tests', passed, 5],
+    ['"C:\\work\\build\\Debug\\suite_tests.exe"', passed, 5],
+    ['./build/suite_tests', '[==========] Running 4 tests from 1 test suite.\n[       OK ] A.B (0 ms)\n[==========] 4 tests from 1 test suite ran. (2 ms total)\n[  PASSED  ] 4 tests.', 4],
+    // A failing case keeps the run out of the passing column even when other cases pass.
+    ['./build/suite_tests', '[==========] 5 tests from 2 test suites ran.\n[  FAILED  ] 3 tests, listed below:\n[  PASSED  ] 2 tests.', 0],
+    ['./build/suite_tests', '[==========] 2 tests from 1 test suite ran.\n[  FAILED  ] Suite.Broken\n[  PASSED  ] 1 test.', 0],
+    ['./build/empty_tests', '[==========] 0 tests from 0 test suites ran.\n[  PASSED  ] 0 tests.', 0],
+    // Skipped cases stay out of PASSED; a fully skipped suite cannot pass.
+    ['./build/suite_tests',
+      '[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 2 tests.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] Suite.B', 2],
+    ['./build/all_skipped_tests',
+      '[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 0 tests.\n[  SKIPPED ] 2 tests, listed below:\n[  SKIPPED ] S.A\n[  SKIPPED ] S.B', 0],
+    // `--gtest_repeat` prints one summary per repetition; the last run is the one that counts, so the
+    // total and the passing count must be read from the same repetition.
+    ['./build/suite_tests',
+      '[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 2 tests.\n[==========] 3 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 3 tests.', 3],
+    ['./build/suite_tests',
+      '[==========] 4 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 4 tests.\n[==========] 2 tests from 1 test suite ran. (0 ms total)\n[  PASSED  ] 1 test.\n[  SKIPPED ] 1 test, listed below:\n[  SKIPPED ] S.B', 1],
+    // Printers, readers and other runners cannot forge the summary.
+    ['echo "[==========] 5 tests from 2 test suites ran. [  PASSED  ] 5 tests."', 'fake', null],
+    ['cat gtest-output.txt', passed, null],
+    [`sh -c "echo '[==========] 5 tests from 2 test suites ran.'"`, passed, null],
+    ['python -c "print(\'[  PASSED  ] 5 tests.\')"', passed, null],
+    ['cmd /d /c type old-results.txt', passed, null],
+    ['powershell -NoProfile -Command "Get-Content old-results.txt"', passed, null],
+    ['type old-results.txt', passed, null],
+    ['more old-results.txt', passed, null],
+    ['findstr passed old-results.txt', passed, null],
+    ['Get-Content old-results.txt', passed, null],
+    // A PATH lookup and a script are not the compiled suite either.
+    ['suite_tests', passed, null],
+    ['./run-tests.sh', passed, null],
+    ['node ./build/suite_tests', passed, null],
+    // An interpreter forwarding a script whose name merely looks like a suite.
+    ['"D:\\Git\\usr\\bin\\perl.exe" fake-gtest.pl', passed, null],
+    ['/usr/bin/perl fake-gtest.pl', passed, null],
+    ['/usr/bin/python3.11 fake.py', passed, null],
+    ['/usr/bin/python fake-gtest.py', passed, null],
+    ['/opt/tools/fake_runner fake.pl', passed, null],
+    ['./run-suite.rb', passed, null],
+  ]
+  for (const [command, stdout, expected] of cases) {
+    assert.equal(testEvidence(command, stdout).count, expected, command)
+    assert.equal(receiptHasRequiredTests({ command, stdout, stderr: '' }), expected > 0, command)
+  }
+})
+
+test('a script that really prints a GoogleTest summary still cannot provide evidence', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'forged-gtest-'))
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  const script = join(root, 'fake-gtest.mjs')
+  writeFileSync(script, "console.log('[==========] 5 tests from 2 test suites ran.\\n[  PASSED  ] 5 tests.')\n")
+  const result = spawnSync(process.execPath, [script], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr)
+  // The script really ran and its own stdout carries a valid summary.
+  assert.match(result.stdout, /\[  PASSED  \] 5 tests\./u)
+  // An argument that looks like a suite, and an `--test` flag, cannot turn a script into the suite.
+  for (const command of [
+    `"${process.execPath}" "${script}"`,
+    `node "${script}"`,
+    `"${process.execPath}" "${script}" --test`,
+    `node "${script}" --test`,
+  ]) assert.equal(testEvidence(command, result.stdout).count, null, command)
+  // The same bytes are evidence when the invoked program is a compiled suite, not a script.
+  assert.equal(testEvidence(`"/work/build/suite_tests"`, result.stdout).count, 5)
+})
+
+test('a real GoogleTest binary reports the tests that actually ran', async t => {
+  const requireReal = process.env.REQUIRE_CPP_EVIDENCE === '1'
+  const cmake = process.env.CMAKE_BINARY ?? 'cmake'
+  const cmakeProbe = spawnSync(cmake, ['--version'], { encoding: 'utf8' })
+  if (cmakeProbe.error?.code === 'ENOENT') {
+    if (requireReal) assert.fail('CMake must be installed when REQUIRE_CPP_EVIDENCE=1')
+    t.skip('CMake is not installed; parser cases remain covered above')
+    return
+  }
+  assert.equal(cmakeProbe.status, 0, cmakeProbe.stderr)
+  const root = mkdtempSync(join(tmpdir(), 'gtest-evidence-'))
+  // This exact absolute directory was created above, with no caller-supplied path.
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  writeFileSync(join(root, 'mixed.cpp'), '#include <gtest/gtest.h>\nTEST(S, A) { EXPECT_EQ(1, 1); }\nTEST(S, B) { EXPECT_EQ(2, 2); }\nTEST(S, C) { GTEST_SKIP() << "not applicable"; }\n')
+  writeFileSync(join(root, 'skipped.cpp'), '#include <gtest/gtest.h>\nTEST(S, A) { GTEST_SKIP() << "not applicable"; }\n')
+  writeFileSync(join(root, 'CMakeLists.txt'), 'cmake_minimum_required(VERSION 3.20)\nproject(gtest_evidence CXX)\nfind_package(GTest REQUIRED)\nadd_executable(mixed mixed.cpp)\ntarget_link_libraries(mixed PRIVATE GTest::gtest_main)\nadd_executable(all_skipped skipped.cpp)\ntarget_link_libraries(all_skipped PRIVATE GTest::gtest_main)\n')
+  const build = join(root, 'build')
+  const extra = []
+  if (process.env.CMAKE_GENERATOR) extra.push('-G', process.env.CMAKE_GENERATOR)
+  if (process.env.CMAKE_TOOLCHAIN_FILE) extra.push(`-DCMAKE_TOOLCHAIN_FILE=${process.env.CMAKE_TOOLCHAIN_FILE}`)
+  const configure = spawnSync(cmake, ['-S', root, '-B', build, ...extra], { encoding: 'utf8' })
+  if (configure.status !== 0) {
+    const output = `${configure.stdout}\n${configure.stderr}`
+    // Only a genuinely absent package may skip; a broken configuration is a real failure.
+    const missing = /could not find gtest|could not find a package configuration file provided by "gtest"|find_package\(gtest\)/iu.test(output)
+    if (missing && !requireReal) { t.skip('The GoogleTest development package is not installed; parser cases remain covered above'); return }
+    assert.fail(`cmake configure failed:\n${output}`)
+  }
+  const cache = join(build, 'CMakeCache.txt')
+  const multiConfig = existsSync(cache) && /^CMAKE_CONFIGURATION_TYPES:/mu.test(readFileSync(cache, 'utf8'))
+  const compile = spawnSync(cmake, ['--build', build, ...(multiConfig ? ['--config', 'Debug'] : [])], { encoding: 'utf8' })
+  assert.equal(compile.status, 0, compile.stdout + compile.stderr)
+  const binary = name => join(build, ...(multiConfig ? ['Debug'] : []), `${name}${process.platform === 'win32' ? '.exe' : ''}`)
+  const run = name => {
+    const result = spawnSync(binary(name), [], { encoding: 'utf8' })
+    return { status: result.status, output: `${result.stdout}\n${result.stderr}` }
+  }
+  const mixed = run('mixed')
+  assert.equal(mixed.status, 0, mixed.output)
+  assert.equal(testEvidence(`"${binary('mixed')}"`, mixed.output).count, 2, mixed.output)
+  const skipped = run('all_skipped')
+  assert.equal(skipped.status, 0, skipped.output)
+  assert.equal(testEvidence(`"${binary('all_skipped')}"`, skipped.output).count, 0, skipped.output)
+  assert.equal(receiptHasRequiredTests({ command: `"${binary('all_skipped')}"`, stdout: skipped.output, stderr: '' }), false)
 })

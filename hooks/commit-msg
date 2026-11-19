@@ -64,6 +64,14 @@ function commandName(word) {
   const parts = (word ?? "").replace(/\\/gu, "/").split("/");
   return parts[parts.length - 1].replace(/\.(?:exe|cmd|bat)$/iu, "").toLowerCase();
 }
+function invokedProgram(command) {
+  const words = commandWords(command);
+  if (!words?.length) return void 0;
+  return { program: words[0], argv: words.slice(1) };
+}
+function programFamily(name) {
+  return name.replace(/\d+(?:\.\d+)*$/u, "");
+}
 
 // src/go-test-evidence.ts
 function goTestEvidence(command, output) {
@@ -132,6 +140,87 @@ function unittestTestEvidence(command, output) {
   }
   return { count: Number.isSafeInteger(total) && Number.isSafeInteger(excluded) && excluded <= total ? total - excluded : null };
 }
+function ctestTestEvidence(command, output) {
+  const words = commandWords(command);
+  if (!words || commandName(words[0]) !== "ctest") return null;
+  const normalized = output.replace(/\r\n/gu, "\n");
+  if (/(?:^|\n)\s*No tests were found/iu.test(normalized)) return { count: 0 };
+  const summary = [...normalized.matchAll(/(\d+)%\s+tests?\s+passed(?:,\s*(\d+)\s+tests?\s+failed)?\s+out\s+of\s*(\d+)/giu)].pop();
+  if (!summary) return { count: null };
+  const failed = Number(summary[2] ?? 0);
+  const total = Number(summary[3]);
+  if (!Number.isSafeInteger(total) || failed > 0) return { count: 0 };
+  const skipped = (normalized.match(/\*\*\*Skipped\b/gu) ?? []).length;
+  const notRun = (normalized.match(/\*\*\*Not Run(?! \(Disabled\))/gu) ?? []).length;
+  return { count: Math.max(0, total - skipped - notRun) };
+}
+var gtestOtherPrograms = /* @__PURE__ */ new Set([
+  "node",
+  "nodejs",
+  "deno",
+  "bun",
+  "npm",
+  "pnpm",
+  "yarn",
+  "npx",
+  "pnpx",
+  "bunx",
+  "pytest",
+  "python",
+  "py",
+  "perl",
+  "ruby",
+  "php",
+  "lua",
+  "tclsh",
+  "wish",
+  "rscript",
+  "julia",
+  "groovy",
+  "java",
+  "dotnet",
+  "mono",
+  "cmd",
+  "powershell",
+  "pwsh",
+  "sh",
+  "bash",
+  "zsh",
+  "dash",
+  "ksh",
+  "fish",
+  "ctest",
+  "cmake",
+  "make",
+  "ninja",
+  "cat",
+  "type",
+  "more",
+  "findstr",
+  "get-content",
+  "echo"
+]);
+var gtestScriptExtension = /\.(?:sh|bash|zsh|ps1|psm1|bat|cmd|pl|pm|py|rb|php|js|mjs|cjs|ts|lua|tcl|jar|class)$/iu;
+function isGoogleTestInvocation(command) {
+  const invocation = invokedProgram(command);
+  if (!invocation) return false;
+  if (!/[\\/]/u.test(invocation.program) || gtestScriptExtension.test(invocation.program)) return false;
+  const name = commandName(invocation.program);
+  if (gtestOtherPrograms.has(name) || gtestOtherPrograms.has(programFamily(name))) return false;
+  return !invocation.argv.some((word) => !word.startsWith("-") && gtestScriptExtension.test(word));
+}
+function gtestTestEvidence(command, output) {
+  if (!isGoogleTestInvocation(command)) return null;
+  const normalized = output.replace(/\r\n/gu, "\n");
+  const ran = [...normalized.matchAll(/\[==========\]\s+(\d+)\s+tests?\s+from\s+\d+\s+test suites?\s+ran\./giu)].pop();
+  if (!ran) return null;
+  if (/\[  FAILED  \]/iu.test(normalized)) return { count: 0 };
+  const passed = [...normalized.matchAll(/\[  PASSED  \]\s+(\d+)\s+tests?\./giu)].pop();
+  const total = Number(ran[1]);
+  if (!passed || !Number.isSafeInteger(total)) return { count: null };
+  const skipped = Number([...normalized.matchAll(/\[  SKIPPED \]\s+(\d+)\s+tests?/giu)].pop()?.[1] ?? 0);
+  return { count: skipped >= total ? 0 : Number(passed[1]) };
+}
 function mavenTestEvidence(command, output) {
   const maven = /(?:^|[\s;&|])(?:[^\s]*[\\/])?(?:mvn|mvn\.cmd|mvnw|mvnw\.cmd)(?=\s|$)/iu.test(command);
   const testGoal = /(?:^|\s)["']?(?:test|verify|package|install|surefire:test|failsafe:(?:integration-test|verify)|org\.apache\.maven\.plugins:maven-surefire-plugin:(?:[^\s:"']+:)?test|org\.apache\.maven\.plugins:maven-failsafe-plugin:(?:[^\s:"']+:)?(?:integration-test|verify))["']?(?=\s|$)/iu.test(command);
@@ -161,6 +250,10 @@ function testEvidence(command, output) {
   if (go) return go;
   const unittest = unittestTestEvidence(command, output);
   if (unittest) return unittest;
+  const ctest = ctestTestEvidence(command, output);
+  if (ctest) return ctest;
+  const gtest = gtestTestEvidence(command, output);
+  if (gtest) return gtest;
   if (isGradleTestCommand(command)) {
     if (/\bBUILD FAILED\b/iu.test(output)) return { count: 0 };
     const summaries = [...output.matchAll(/\b(\d+) tests? completed(?:,\s*(\d+) failed)?(?:,\s*(\d+) skipped)?/giu)];

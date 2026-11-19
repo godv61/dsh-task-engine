@@ -81,7 +81,7 @@ Skill 的 `loading` 属于阶段挂载，值为 `required` 或 `on-demand`，缺
 
 - 本地 Sonar 审核必须先对照参考分支的 Git 差异、项目 `include_paths` 与任务 `files`；漏登文件不得产生“完整审核通过”。
 - `ide-local` 的逐项误报处置只能在当前审核、当前代码指纹上由宿主人工批准；原始告警和结果保留。CI 或上传式服务端 Gate 不接受本地处置。
-- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Python 标准库 unittest、Go test、Cargo test 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。unittest 要求原生 `python -m unittest`（或 Python/py 等价入口）与完整最终摘要，扣除 skipped/expected failures，FAILED 和零测试不能通过。未知命令和缺少证据的成功退出也不能让测试门禁通过。
+- 验证命令必须产生非零测试证据：Maven Surefire/Failsafe、Node TAP/Jest/Vitest、pytest、Python 标准库 unittest、Go test、Cargo test、CTest/GoogleTest 的可识别摘要，或本次 Gradle `test` 新生成的 JUnit XML。unittest 要求原生 `python -m unittest`（或 Python/py 等价入口）与完整最终摘要，扣除 skipped/expected failures，FAILED 和零测试不能通过。未知命令和缺少证据的成功退出也不能让测试门禁通过。
 - `items` 默认按 ID 合并；显式 `items_mode=replace` 才允许移除未实施的项目。已完成或有审查记录的项仍保留。
 - 文档只维护项目首页、本 HTML 使用手册和本开发指南，三处描述均以当前功能为准。
 
@@ -137,3 +137,7 @@ Go 回执只接受 `go test -json` 的结构化事件：按 Package/Test 区分�
 任务读写、会话权限及提交钩子共用 `task-paths.ts`，工作区按 `.dsh/tasks/<id>/task.json` 查找直接任务目录。`task_directory` 记录相对源码根的命名空间，使子工作区的需求文档、材料、审核产物与其台账物理同目录。台账视图共用 `task-ledger-types.ts`，`task-ledger-content.ts` 只投影已记录产物与文件，`task-ledger-document.ts` 生成可读副本，不增加第二份状态或写接口。正文使用宿主 Markdown 渲染器；历史运行证据集中在 `TaskLedgerAudit.tsx`。见 `docs/testing/task-workspace.md`。
 
 新宿主使用 `tools.setExecutor` 和官方 `NativeToolExecutor`，执行器固定在工程/只读预设范围；不在 Agent 上临时注册后撤销（宿主会留下不可用选择）。预设切换恢复父级执行器，工程实施阶段仍为原生工具；宿主和其它预设可继续使用 PTC。旧宿主沿用 `presentAs` 的临时展示切换。每个 Agent 的 restrict/guard 及策略证明在切换/卸载时清理，首轮提示词组装结束即记录真实审核工具清单。参见 `docs/testing/dsh-rc22-compatibility.md`。
+
+CTest 证据由 `verification-tests.ts` 的 `ctestTestEvidence` 读取：`N% tests passed, M tests failed out of T`（M 非零按 0 计）与干净跑完的 `100% tests passed out of T`；`***Skipped` 标记的用例不计入通过，`***Not Run`（多配置生成器未带 `-C` 时每个用例都会这样出现）同样不计入通过，而 `***Not Run (Disabled)` 的用例本来就不在 `out of T` 的总数里、不能重复扣；全部跳过、`No tests were found!!!` 和 `out of 0` 都按 0 计。命令判定复用 `command-words.ts` 的 `commandWords`/`commandName`，只看首词是否为 `ctest`，所以 Windows 上带引号和空格的路径可识别，`sh -c "ctest …"` 这类外壳包装和 `echo`、`cat` 之类只打印文字的命令都拿不到证据。多配置生成器（Visual Studio、Xcode）需要 `-C <config>`，冒烟测试从 `CMakeCache.txt` 的 `CMAKE_CONFIGURATION_TYPES` 判断是否需要该参数。`.github/workflows/verify.yml` 的 `cpp-evidence` job 在 ubuntu-latest（Ninja）与 windows-latest（默认 Visual Studio 生成器）上以 `REQUIRE_CPP_EVIDENCE=1` 真跑 CTest 与 GoogleTest。
+
+GoogleTest 证据由 `gtestTestEvidence` 读取：`[==========] N tests from M test suites ran.` 出现后，`[  PASSED  ] K tests` 的 K 就是通过数，出现 `[  FAILED  ]` 或 `[  SKIPPED ]` 数量达到总数时按 0 计。命令侧由 `command-words.ts` 的 `invokedProgram` 解析：程序必须带路径且不是脚本扩展名，`programFamily` 把尾部版本号归一（`python3.11`→`python`），解释器与其它运行器集合（`node`、`python`、`perl`、`php`、`cmd`、`powershell`、`ctest` 等）一律拒绝，参数里出现脚本扩展名（`perl.exe fake-gtest.pl`、`fake_runner fake.pl`）同样拒绝。没有 GoogleTest 摘要时返回 `null` 而不是零，这样 Gradle 等后续解析不会被一条路径型命令吞掉。
