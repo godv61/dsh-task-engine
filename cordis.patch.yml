@@ -196,3 +196,35 @@
               sampleOverCapGlobResults: false
           - id: task-engine-reviewer
             name: '@godv61/dsh-task-engine/reviewer'
+
+# Fresh scoped workers retain DSH session identity across admitted continuations.
+- insert:
+    - id: preset-task-engine-worker
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: task-engine-worker
+        name: 工程团队实施成员
+        description: 执行 Lead 登记的文件范围；由工程引擎派发、续跑和收取。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are an engineering implementation teammate. Follow the current admitted work brief and applicable workspace instructions. Report changed files and verification still needed to the Lead.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: false
+              write: true
+              edit: true
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: task-engine-worker-policy
+            name: '@godv61/dsh-task-engine/worker'

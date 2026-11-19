@@ -282,6 +282,16 @@ export interface FlowSnapshot {
   resources?: FrozenResource[]
 }
 
+/** Native Team links are scoped to the dispatch's recorded parent session. */
+export interface TeamDispatchLink {
+  board_id?: string
+  member?: string
+  message_id?: string
+  activation_id?: string
+  cancelled?: boolean
+  board_problem?: string
+}
+
 /** One delegated implementation unit: a subagent fetch plus its two-stage review. */
 export interface ItemDispatch {
   /** Subagent task description (the `description` passed to the `subagent` tool). */
@@ -297,6 +307,7 @@ export interface ItemDispatch {
   finished_at?: string
   metrics?: import('./delivery-contract.ts').RunMetrics
   parent_session?: string
+  team?: TeamDispatchLink
 }
 
 /**

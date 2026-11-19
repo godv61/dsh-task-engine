@@ -73,6 +73,8 @@ import { analysisWorkflow, deliveryContract, deliveryView, isAnalysis, type Dele
 import { executeAnalysisCommand } from './analysis-commands.ts'
 import { assertInsideRoot } from './path-guard.ts'
 import { runMetrics, parentMetrics, unknownMetrics } from './run-observation.ts'
+import { activeDispatch, manageTeamImplementation, startTeamImplementation } from './team-implementation.ts'
+import { ownedTeamWork, releaseTeamWork, syncTeamBoard, teamFileKey, teamParentOperationProblem, teamsEnabled } from './team-delivery.ts'
 import { bindTaskDelivery, executionPathProblem, installDeliveryAccess } from './delivery-access.ts'
 import { invalidateRequirement, requirementConfirmed, requirementSource, requirementsView, taskExecutionProblem, type ClarificationQuestion } from './requirements.ts'
 import { executeRequirementCommand, requirementDocumentProblem, REQUIREMENT_OPERATIONS } from './requirement-commands.ts'
@@ -1222,6 +1224,7 @@ export interface OpArgs extends MaterialArgs {
   item_id?: string
   description?: string
   execution?: 'direct' | 'spawn' | 'fork'
+  team_message?: string
   execution_policy?: 'auto' | 'main_only'
   execution_reason?: string
   task_boundary?: 'local' | 'independent' | 'coupled'
@@ -1607,7 +1610,7 @@ interface ApprovalAsk {
   }): Promise<'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'>
 }
 
-const OPERATIONS = ['status', 'assess', 'create', ...REQUIREMENT_OPERATIONS, 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
+const OPERATIONS = ['status', 'assess', 'create', ...REQUIREMENT_OPERATIONS, 'plan', 'delegate', 'submit_analysis', 'recover_analysis', 'accept_item', 'load_skill', 'record', 'items', 'scope', 'plan_verification', 'plan_execution', 'dispatch', 'team_resume', 'team_collect', 'team_cancel', 'review_dispatch', 'recover_dispatch', 'review_item', 'advance', 'verify', 'sonar_check', 'sonar_disposition', 'learn_rule', 'review', 'commit', 'complete', 'revise', 'config', 'install_hook', 'verify_hook', 'init', 'init_project', 'set_risk', 'skill_result'] as const
 
 const TOOL_DESCRIPTION =
   'New intent=implementation adaptive tasks require a human-confirmed requirement version before business writes: clarify_requirement asks actual business questions; write_requirement_material saves task-owned text or HTML template materials without running commands; record requirement fields; prepare_requirement writes a summary Markdown; confirm_requirement expected_hash asks the human to accept that exact version. Material generation or returned form data never supplies approval. Ordinary tool approval never supplies business consent. ' +
@@ -1740,6 +1743,7 @@ export function registerDevTask(ctx: Context): void {
       verification_group: { type: 'string', description: 'plan_verification/verify: stable test-group ID, for example backend or frontend. Plan each group with command, item_ids, and concrete regular files (production, tests, relevant configuration), not directories or wildcards. Planned files may not exist yet. Verify executes its declared command; no group is inferred from printed output.' },
       item_ids: { type: 'array', items: { type: 'string' }, description: 'plan_verification: implementation items validated by this group. Each item includes its own implementation and tests, never a later test item depending on its completion.' },
       affected_items: { type: 'array', items: { type: 'string' }, description: 'revise(defect): explicit affected item IDs. Shared files and downstream consumers also reopen. Omit for unknown or task-wide impact. Requirements/solution revisions remain task-wide.' },
+      team_message: { type: 'string', description: 'team_resume: follow-up for the same implementation item and native member; prior execution must be collected, and the Lead must re-verify changed files.' },
       dispatch_role: { type: 'string', enum: ['implementation', 'review'], description: 'recover_dispatch: which interrupted child to recover; default implementation.' },
       spec_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Specification-conformance verdict (review_item).' },
       quality_outcome: { type: 'string', enum: ['pass', 'fail'], description: 'Code-quality verdict (review_item).' },
@@ -1781,6 +1785,8 @@ export function registerDevTask(ctx: Context): void {
     },
     async execute(args: Record<string, unknown>, exec: ToolRunContext): Promise<string> {
       const a = args as unknown as OpArgs
+      const teamOperationProblem = teamParentOperationProblem(exec.agent, a.task_id, a.operation)
+      if (teamOperationProblem) throw new Error(teamOperationProblem)
       const fs = ctx.fs
       // Task governance stays anchored to the original project. Native-tool cd does
       // not move its ledger or grant another root; child/check commands use task.root explicitly.
@@ -2168,7 +2174,7 @@ export function registerDevTask(ctx: Context): void {
       }
       if (workflow.requirement_review && !state.completed) {
         const problem = await requirementDocumentProblem(fs, state, cwd)
-        if ((!requirementConfirmed(state, workflow) || problem) && !['status', 'load_skill', 'record', 'scope', 'revise', 'advance'].includes(a.operation))
+        if ((!requirementConfirmed(state, workflow) || problem) && !['status', 'load_skill', 'record', 'scope', 'revise', 'advance', 'team_cancel', 'team_collect', 'recover_dispatch'].includes(a.operation))
           throw new Error(problem ?? '需求尚未由用户确认；先 clarify_requirement（有疑问时）、record、prepare_requirement、confirm_requirement，再实施')
         if (problem && a.operation === 'advance') throw new Error(problem)
       }
@@ -2176,8 +2182,11 @@ export function registerDevTask(ctx: Context): void {
       if (isAnalysis(state) && a.operation !== 'status') return await executeAnalysisCommand(a, {
         ctx, exec, fs, state, cwd, session, mutationPath: mutationPath!, writeMode: () => resolveWriteMode(ctx, a, exec),
       })
-      if (state.items.some(item => [item.dispatch, item.independent_review].some(run => ['starting', 'running'].includes(run?.status ?? '')))
-        && a.operation !== 'status' && a.operation !== 'recover_dispatch') {
+      const teamMode = teamsEnabled(ctx, exec.agent)
+      const activeItems = state.items.filter(item => activeDispatch(item.dispatch) || activeDispatch(item.independent_review))
+      const parallelAdmission = teamMode && ['dispatch', 'team_resume'].includes(a.operation)
+        && activeItems.every(item => item.dispatch?.team && !activeDispatch(item.independent_review) && item.dispatch.parent_session === session?.id)
+      if (activeItems.length && !parallelAdmission && !['status', 'recover_dispatch', 'team_collect', 'team_cancel'].includes(a.operation)) {
         throw new Error('a child dispatch is still active; wait or recover it before changing the parent task')
       }
 
@@ -2347,7 +2356,7 @@ export function registerDevTask(ctx: Context): void {
           legal_next: legalTargets(state.stage, workflow),
           actionable_operations: ['status', 'load_skill', 'record', 'scope', 'items', 'plan_verification', 'verify', 'revise',
             ...(['任务编排', '开发', '代码开发'].includes(state.stage) ? ['plan_execution'] : []),
-            ...(['开发', '代码开发'].includes(state.stage) ? ['dispatch', 'accept_item', 'review_item', 'review_dispatch'] : []),
+            ...(['开发', '代码开发'].includes(state.stage) ? ['dispatch', ...(teamMode || state.items.some(item => item.dispatch?.team) ? ['team_resume', 'team_collect', 'team_cancel'] : []), 'accept_item', 'review_item', 'review_dispatch'] : []),
             ...(state.stage === '代码审核' ? ['sonar_check', 'review'] : []),
             ...(commitState.allowed ? ['commit'] : []),
             ...(state.stage === workflow.stages.at(-1) && !completionIssues.length && !state.completed ? ['complete'] : []), 'advance'],
@@ -2746,7 +2755,8 @@ export function registerDevTask(ctx: Context): void {
           for (const input of a.plans) {
             const item = requireItem(state, input.id)
             if (item.dispatch || item.review) throw new Error('plan cannot replace started work; revise/replan the affected item explicitly')
-            const plan = makeExecutionPlan(state, item, input, executionCapabilities(ctx, !!exec.agent))
+            const capabilities = executionCapabilities(ctx, !!exec.agent)
+          const plan = makeExecutionPlan(state, item, input, teamMode ? { ...capabilities, fork: false } : capabilities)
             if (plan.mode === 'direct') {
               const problem = executionPathProblem(ctx, exec.agent, 'implementation', { mainOnly: true })
               if (problem) throw new Error(problem)
@@ -2831,7 +2841,8 @@ export function registerDevTask(ctx: Context): void {
           const item = requireItem(state, a.item_id)
           if (item.status !== 'todo') throw new Error('reopen the item as todo before replanning execution')
           await validateTaskFiles(fs, a.files ?? [], state.root ?? cwd ?? '', 'plan_execution', 'delivery')
-          const plan = makeExecutionPlan(state, item, a, executionCapabilities(ctx, !!exec.agent))
+          const capabilities = executionCapabilities(ctx, !!exec.agent)
+          const plan = makeExecutionPlan(state, item, a, teamMode ? { ...capabilities, fork: false } : capabilities)
           if (plan.mode === 'direct') {
             const problem = executionPathProblem(ctx, exec.agent, 'implementation', { mainOnly: true })
             if (problem) throw new Error(problem)
@@ -2847,7 +2858,12 @@ export function registerDevTask(ctx: Context): void {
               : 'Complete dependencies, then dispatch with item_id only; the engine uses this plan. Parent verifies delivery and executes the recorded review strategy before accept_item.' })
           break
         }
-        case 'dispatch': {
+        case 'team_collect':
+        case 'team_cancel':
+          return await manageTeamImplementation({ ctx, parent: exec.agent, state, item: requireItem(state, a.item_id), cwd,
+            mode: await resolveWriteMode(ctx, a, exec), operation: a.operation, signal: exec.signal })
+        case 'dispatch':
+        case 'team_resume': {
           await assertTaskFileInputs(fs, state, cwd)
           const item = requireItem(state, a.item_id)
           const plan = item.execution_plan
@@ -2863,15 +2879,58 @@ export function registerDevTask(ctx: Context): void {
           const testPlanning = groupPlanningBlockers(state)
           if (testPlanning.length) throw new Error(testPlanning.join('; '))
           if (!['开发', '代码开发'].includes(state.stage)) throw new Error('dispatch runs only in implementation stage')
-          if (item.dispatch?.status === 'running' || item.dispatch?.status === 'starting') throw new Error('delegation already in progress; inspect status before retrying')
-          if (state.items.some(other => other.id !== item.id && other.status === 'doing')) throw new Error('finish or pause the current doing item before dispatching another item; review_item records verdicts only, then use items to set its status to done')
+          if (activeDispatch(item.dispatch)) throw new Error('delegation already in progress; inspect status before retrying')
+          const previous = item.dispatch
+          const teamDispatch = teamMode && execution !== 'direct'
+          const resuming = a.operation === 'team_resume'
+          if (resuming && (!teamDispatch || !a.team_message?.trim() || !previous?.team?.message_id || !previous.run_id
+            || previous.parent_session !== session?.id || !['completed', 'failed'].includes(previous.status ?? '')))
+            throw new Error('team_resume 需要开启团队、同一实施项已收取的原生成员、原始 Lead 和具体 team_message。')
+          if (teamDispatch) {
+            if (item.status === 'done' || previous?.status === 'completed' && !resuming)
+              throw new Error('此实施项已经执行完成；请验证和验收，或在验收前用 team_resume 明确续跑。')
+            if (execution !== 'spawn' || !plan || plan.boundary !== 'independent' || !plan.delegation_benefit || plan.changes?.length)
+              throw new Error('团队实施需要独立范围、有明确委派收益且仅创建或编辑文件的 spawn 计划。请重排计划，或在所有成员结束后由 Lead 直接实施。')
+            const currentFiles = new Set(plan.files.map(file => teamFileKey(state.root ?? cwd!, file)))
+            for (const other of state.items) {
+              if (other === item || other.status !== 'doing' && !activeDispatch(other.dispatch)) continue
+              if (!other.dispatch?.team || !other.execution_plan || other.execution_plan.files.some(file => currentFiles.has(teamFileKey(state.root ?? cwd!, file))))
+                throw new Error('存在正在处理的直接实施项或重叠文件；请先完成或收取冲突实施项。')
+            }
+            const binding = bindingsForStage(state.stage, workflow)
+            for (const entry of binding?.skills ?? []) {
+              if (requiredSkill(entry) && !skillLoadForSession(state, formatResourceRef(entry.skill), session))
+                throw new Error('团队派发前请用 load_skill 加载本阶段强制 Skill：' + formatResourceRef(entry.skill))
+            }
+            const rules = binding && await rulesForBinding(binding, fs, cwd, state.flow?.resources)
+            const unavailable = [...await changedSkillRefs(binding, fs, cwd, state.flow?.resources),
+              ...await missingSkillRefs(binding, fs, cwd), ...(rules?.missing ?? [])]
+            if (unavailable.length) throw new Error('团队实施所需 Skill 或 Rule 不可用或已改变：' + unavailable.join(', '))
+          } else if (activeItems.length || state.items.some(other => other.id !== item.id && other.status === 'doing')) {
+            throw new Error('finish or pause the current doing item before dispatching another item; review_item records verdicts only, then use items to set its status to done')
+          }
           if (execution !== 'direct' && !executionCapabilities(ctx, !!exec.agent)[execution])
             throw new Error(`requested ${execution} provider or required depthLimit capability is unavailable; replan before dispatch; no child was started`)
           item.status = 'doing'
           delete item.review
           delete item.independent_review
           item.dispatch_history = dispatchHistory(item)
-          item.dispatch = { description: a.description ?? plan?.reason ?? '', at: new Date().toISOString(), execution }
+          item.dispatch = { description: a.team_message ?? a.description ?? plan?.reason ?? '', at: new Date().toISOString(), execution }
+          if (teamDispatch) {
+            const parent = exec.agent!
+            item.dispatch.provider = 'spawn'
+            item.dispatch.parent_session = parent.id
+            const prompt = [
+              '你是有文件范围限制的实施成员。完成本轮工作并报告改动与待验证项。由 Lead 执行命令、真实验证、审核和验收。',
+              `工程任务 ${state.id}: ${state.title}；实施项 ${item.id}: ${item.title}`,
+              `本轮要求：${item.dispatch.description}`,
+              `工作目录：${state.root ?? cwd}。仅修改计划列出的交付文件，保留现有工作树改动。`,
+              JSON.stringify(plan), JSON.stringify(state.artifacts),
+              await renderBindings(state.stage, workflow, fs, cwd, state.flow?.resources, true),
+            ].join('\n\n')
+            return await startTeamImplementation({ ctx, parent, state, item, dispatch: item.dispatch, cwd, prompt,
+              mode: await resolveWriteMode(ctx, a, exec), signal: exec.signal, reuse: resuming ? previous!.run_id : undefined })
+          }
           if (execution !== 'direct') {
             if (!exec.agent) throw new Error('delegation requires the live parent agent')
             const runtime = taskSubagents(ctx)
@@ -3021,16 +3080,26 @@ ${structuredReview ? 'Finish by calling the host structured_output tool with' : 
           // projection includes activity and diagnostics for the child and its descendants.
           const children = await runtime.listDescendants(session.id, exec.signal)
           const index = dispatch.run_id ? children.findIndex(child => child.id === dispatch.run_id && child.parentId === session.id) : -1
-          if (dispatch.run_id && index < 0) throw new Error('cannot establish child liveness; recorded run is missing from the host catalog')
+          if (dispatch.run_id && index < 0 && !(item.dispatch?.team && !recoveringReview && dispatch.status === 'starting' && !item.dispatch.team.message_id)) throw new Error('cannot establish child liveness; recorded run is missing from the host catalog')
           const end = index < 0 ? -1 : children.findIndex((child, i) => i > index && child.depth <= children[index]!.depth)
           const candidates = index < 0 ? children : children.slice(index, end < 0 ? undefined : end)
           if (candidates.some(child => child.kind !== 'child' || child.activity !== 'inactive'))
             throw new Error('child may still be running or unavailable; stop it with the host controls before recovery')
+          const teamRun = !recoveringReview && item.dispatch?.team && dispatch.run_id && exec.agent
+            ? ownedTeamWork(exec.agent, state.id, item.id, dispatch.run_id) : undefined
+          if (teamRun && (!teamRun.outcome || item.dispatch?.team?.message_id))
+            throw new Error('团队运行已登记；请先取消或等待，再用 team_collect 收取。')
           dispatch.status = 'failed'
           dispatch.error = 'Parent recovered an interrupted dispatch; child success is unproven. Dispatch again and verify the delivery.'
           dispatch.finished_at = new Date().toISOString()
           if (!recoveringReview) { item.status = 'todo'; delete item.independent_review }
           delete item.review
+          if (!recoveringReview && item.dispatch?.team && exec.agent) {
+            await syncTeamBoard(ctx, exec.agent, state.id, item.id, item.title, item.execution_plan?.files ?? [], item.dispatch)
+            await writeTask(fs, state, cwd, await resolveWriteMode(ctx, a, exec))
+            if (teamRun) releaseTeamWork(teamRun)
+            return dispatch.error
+          }
           note = dispatch.error
           break
         }
